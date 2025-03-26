@@ -28,7 +28,7 @@ export class AnthropicClient {
     try {
       const formattedMessages = this.formatMessages(messages, document);
       const requestBody = {
-        model: 'claude-3-opus-20240229',
+        model: 'claude-3-5-haiku-latest',
         messages: formattedMessages,
         stream: true,
         max_tokens: 4000
