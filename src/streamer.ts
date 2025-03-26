@@ -3,6 +3,7 @@ import { MessageParam, StreamerState } from './types';
 import { Lock } from './utils/lock';
 import { AnthropicClient } from './anthropicClient';
 import { findAssistantBlocks } from './parser';
+import { log } from './extension';
 
 /**
  * Service for streaming LLM responses
@@ -27,33 +28,61 @@ export class StreamingService {
     streamer: StreamerState
   ): Promise<void> {
     try {
+      log(`Starting to stream response for ${messages.length} messages`);
+      
       // Start streaming completion, passing document for file path resolution
       const stream = await this.client.streamCompletion(messages, this.document);
+      log('Stream connection established');
+      
+      // Debug the document state before streaming
+      const currentText = this.document.getText();
+      log(`Current document text length: ${currentText.length} chars`);
+      log(`Current streamer tokens: ${streamer.tokens.length} tokens`);
       
       for await (const tokens of stream) {
         if (!streamer.isActive) {
+          log('Streamer no longer active, stopping stream');
           break;
         }
         
-        await this.updateDocumentWithTokens(streamer, tokens);
+        if (tokens.length > 0) {
+          log(`Received ${tokens.length} tokens: "${tokens.join('')}"`);
+          try {
+            await this.updateDocumentWithTokens(streamer, tokens);
+          } catch (error) {
+            log(`Error updating document with tokens: ${error}`);
+            // Continue streaming even if one update fails
+          }
+        } else {
+          log('Received empty tokens array, skipping update');
+        }
       }
+      
+      log('Stream completed successfully');
     } catch (error) {
+      log(`Streaming error: ${error}`);
       console.error('Streaming error:', error);
       // Show error in status bar
       vscode.window.setStatusBarMessage(`FileChat streaming error: ${error}`, 5000);
     } finally {
+      log('Streaming finished, marking streamer as inactive');
       streamer.isActive = false;
     }
   }
   
   /**
    * Updates document with new tokens idempotently
+   * Follows the pattern:
+   * 1. Save history of tokens in streamer
+   * 2. Search for past text in last assistant block
+   * 3. If found, append new tokens; if not found, abort streamer
    */
   private async updateDocumentWithTokens(
     streamer: StreamerState,
     newTokens: string[]
   ): Promise<void> {
     if (newTokens.length === 0) {
+      log('No tokens to update');
       return;
     }
     
@@ -63,37 +92,70 @@ export class StreamingService {
       const text = this.document.getText();
       const tokensSoFar = streamer.tokens.join('');
       
-      // Find all assistant blocks
-      const assistantBlocks = findAssistantBlocks(text);
+      log(`Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join('')}"`);
       
-      if (assistantBlocks.length === 0) {
+      // First, find the last #%% assistant marker in the text
+      const lastAssistantIdx = text.lastIndexOf('#%% assistant');
+      if (lastAssistantIdx === -1) {
+        log('No #%% assistant marker found in document, stopping streamer');
         streamer.isActive = false;
         return;
       }
       
-      // Get the last assistant block
-      const lastBlock = assistantBlocks[assistantBlocks.length - 1];
-      const blockStart = lastBlock.end;
+      // Find the end of the assistant marker line
+      let blockStart = lastAssistantIdx + 13; // Length of '#%% assistant'
+      
+      // Skip any whitespace after the marker
+      while (blockStart < text.length && 
+             (text[blockStart] === ' ' || text[blockStart] === '\t')) {
+        blockStart++;
+      }
+      
+      // Skip newline if present
+      if (blockStart < text.length && text[blockStart] === '\n') {
+        blockStart++;
+      }
+      
+      log(`Found last assistant marker at position ${lastAssistantIdx}, block starts at ${blockStart}`);
+      log(`Document text at block start (20 chars): "${text.substring(blockStart, blockStart+20)}"`);
       
       // Check if our tokens match what's already in the document
+      // This is the key idempotent check - we need to find our previous tokens
       const textAfterBlock = text.substring(blockStart);
       if (!textAfterBlock.startsWith(tokensSoFar)) {
-        // Our tokens don't match, document might have been modified
+        log(`Tokens don't match what's in the document, stopping streamer`);
+        log(`Expected: "${tokensSoFar.substring(0, 20)}${tokensSoFar.length > 20 ? '...' : ''}"`);
+        log(`Found: "${textAfterBlock.substring(0, 20)}${textAfterBlock.length > 20 ? '...' : ''}"`);
         streamer.isActive = false;
         return;
       }
       
-      // Insert new tokens at the end of our existing tokens
+      // Calculate the insert position at the end of our existing tokens
       const insertPosition = this.document.positionAt(blockStart + tokensSoFar.length);
+      log(`Inserting at position: line ${insertPosition.line}, character ${insertPosition.character}`);
+      
+      // Insert text using a workspace edit as per original design
+      log(`Inserting text: "${newTokens.join('')}"`);
       
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, insertPosition, newTokens.join(''));
       
-      await vscode.workspace.applyEdit(edit);
+      // Log before applying edit
+      log(`About to apply edit at document version: ${this.document.version}`);
+      const applied = await vscode.workspace.applyEdit(edit);
+      log(`Edit applied: ${applied}`);
+      
+      // If edit failed, we log the error but don't try alternative approaches
+      // This follows the idempotent design in the original docs
+      if (!applied) {
+        log('WorkspaceEdit failed, streamer will continue to try with next tokens');
+      }
       
       // Update tokens history
       streamer.tokens.push(...newTokens);
+      log(`Updated token history, now have ${streamer.tokens.length} tokens total`);
     } catch (error) {
+      log(`Error updating document: ${error}`);
       console.error('Error updating document:', error);
       streamer.isActive = false;
     } finally {

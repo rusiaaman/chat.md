@@ -4,13 +4,14 @@ import * as path from 'path';
 import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
+import { log } from './extension';
 
 /**
  * Client for communicating with the Anthropic API
  */
 export class AnthropicClient {
   private readonly apiUrl = 'https://api.anthropic.com/v1/messages';
-  private readonly apiVersion = '2023-06-01';
+  private readonly apiVersion = '2023-06-01'; // This version should work for streaming
   
   constructor(private readonly apiKey: string) {}
   
@@ -22,51 +23,65 @@ export class AnthropicClient {
     messages: readonly MessageParam[],
     document?: vscode.TextDocument
   ): AsyncGenerator<string[], void, unknown> {
-    const formattedMessages = this.formatMessages(messages, document);
-    const requestBody = {
-      model: 'claude-3-5-haiku-latest',
-      messages: formattedMessages,
-      stream: true,
-      max_tokens: 4000
-    };
+    log(`Starting API request with ${messages.length} messages`);
     
-    const requestOptions = {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Anthropic-Version': this.apiVersion,
-        'x-api-key': this.apiKey
+    try {
+      const formattedMessages = this.formatMessages(messages, document);
+      const requestBody = {
+        model: 'claude-3-opus-20240229',
+        messages: formattedMessages,
+        stream: true,
+        max_tokens: 4000
+      };
+      
+      log(`Using model: ${requestBody.model}`);
+      
+      const requestOptions = {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Anthropic-Version': this.apiVersion,
+          'x-api-key': this.apiKey
+        }
+      };
+      
+      log('Creating HTTPS request');
+      const req = https.request(this.apiUrl, requestOptions);
+      
+      req.on('error', (error) => {
+        log(`API request error: ${error}`);
+        console.error('API request error:', error);
+        throw error;
+      });
+      
+      log('Writing request body');
+      req.write(JSON.stringify(requestBody));
+      req.end();
+      
+      log('Waiting for response');
+      const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
+        req.on('response', resolve);
+        req.on('error', reject);
+      });
+      
+      log(`Received response with status code: ${response.statusCode}`);
+      
+      if (response.statusCode !== 200) {
+        let errorData = '';
+        for await (const chunk of response) {
+          errorData += chunk.toString();
+        }
+        const errorMessage = `API request failed with status ${response.statusCode}: ${errorData}`;
+        log(errorMessage);
+        throw new Error(errorMessage);
       }
-    };
-    
-    // Create an async generator that will stream the response
-    let buffer = '';
-    
-    const req = https.request(this.apiUrl, requestOptions);
-    
-    req.on('error', (error) => {
-      console.error('API request error:', error);
+      
+      log('Processing streaming response');
+      yield* this.createStreamGenerator(response);
+    } catch (error) {
+      log(`Error in streamCompletion: ${error}`);
       throw error;
-    });
-    
-    req.write(JSON.stringify(requestBody));
-    req.end();
-    
-    const response = await new Promise<http.IncomingMessage>((resolve, reject) => {
-      req.on('response', resolve);
-      req.on('error', reject);
-    });
-    
-    if (response.statusCode !== 200) {
-      let errorData = '';
-      for await (const chunk of response) {
-        errorData += chunk.toString();
-      }
-      throw new Error(`API request failed with status ${response.statusCode}: ${errorData}`);
     }
-    
-    // Process the streaming response
-    yield* this.createStreamGenerator(response);
   }
   
   /**
@@ -76,29 +91,77 @@ export class AnthropicClient {
     response: http.IncomingMessage
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = '';
+    let eventCount = 0;
     
-    for await (const chunk of response) {
-      buffer += chunk.toString();
-      
-      // Process complete events in buffer
-      while (true) {
-        const eventEnd = buffer.indexOf('\n\n');
-        if (eventEnd === -1) break;
+    try {
+      for await (const chunk of response) {
+        buffer += chunk.toString();
+        log(`Received chunk of size ${chunk.length}`);
         
-        const event = buffer.substring(0, eventEnd);
-        buffer = buffer.substring(eventEnd + 2);
+        // Log raw buffer for debugging (limited size)
+        if (buffer.length < 200) {
+          log(`Current buffer: ${buffer}`);
+        } else {
+          log(`Current buffer (first 200 chars): ${buffer.substring(0, 200)}...`);
+        }
         
-        if (event.startsWith('data: ')) {
-          try {
-            const data = JSON.parse(event.substring(6));
-            if (data.type === 'content_block_delta' && data.delta && data.delta.text) {
-              yield [data.delta.text];
+        // Process complete events in buffer
+        while (true) {
+          const eventEnd = buffer.indexOf('\n\n');
+          if (eventEnd === -1) break;
+          
+          const event = buffer.substring(0, eventEnd);
+          buffer = buffer.substring(eventEnd + 2);
+          
+          eventCount++;
+          log(`Processing event ${eventCount}: ${event.substring(0, 100)}${event.length > 100 ? '...' : ''}`);
+          
+          if (event.startsWith('event: ')) {
+            // Get the event type (after 'event: ' and before newline)
+            const eventType = event.substring(7, event.indexOf('\n'));
+            log(`SSE event type: ${eventType}`);
+          }
+          
+          if (event.includes('data: ')) {
+            try {
+              // Extract the data part (after 'data: ')
+              const dataStart = event.indexOf('data: ') + 6;
+              const jsonData = event.substring(dataStart);
+              log(`Parsing JSON: ${jsonData}`);
+              
+              const data = JSON.parse(jsonData);
+              log(`Event type: ${data.type}`);
+              
+              // Handle different event types from Claude API
+              if (data.type === 'content_block_delta' && data.delta && data.delta.type === 'text_delta' && data.delta.text) {
+                log(`Received token: "${data.delta.text}"`);
+                // Ensure we're sending tokens for text_delta events
+                yield [data.delta.text];
+              } else if (data.type === 'content_block_start') {
+                log(`Content block start: ${JSON.stringify(data.content_block)}`);
+              } else if (data.type === 'message_delta') {
+                log(`Message delta received: ${JSON.stringify(data.delta)}`);
+              } else if (data.type === 'message_start') {
+                log(`Message start received: ${JSON.stringify(data.message)}`);
+              } else if (data.type === 'message_stop') {
+                log('Received message_stop event');
+              } else if (data.type === 'ping') {
+                log('Received ping event');
+              } else {
+                log(`Unknown event type: ${data.type}`);
+              }
+            } catch (e) {
+              log(`Error parsing event data: ${e}`);
+              log(`Raw event data: ${event}`);
             }
-          } catch (e) {
-            // Ignore parse errors
           }
         }
       }
+      
+      log(`Stream completed, processed ${eventCount} events`);
+    } catch (error) {
+      log(`Error in createStreamGenerator: ${error}`);
+      throw error;
     }
   }
   

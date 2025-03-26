@@ -4,6 +4,7 @@ import { Lock } from './utils/lock';
 import { StreamingService } from './streamer';
 import { StreamerState } from './types';
 import { getAnthropicApiKey } from './config';
+import { log } from './extension';
 
 /**
  * Listens for document changes and manages streaming LLM responses
@@ -46,9 +47,13 @@ export class DocumentListener {
    */
   private async checkDocument(): Promise<void> {
     if (this.document.fileName.endsWith('.chat.md')) {
+      log(`Checking document: ${this.document.fileName}`);
       const text = this.document.getText();
       if (hasEmptyAssistantBlock(text)) {
+        log(`Found empty assistant block, starting streaming`);
         await this.startStreaming();
+      } else {
+        log(`No empty assistant block found`);
       }
     }
   }
@@ -62,8 +67,10 @@ export class DocumentListener {
     }
     
     if (this.document.fileName.endsWith('.chat.md')) {
+      log(`Document changed: ${this.document.fileName}`);
       const text = this.document.getText();
       if (hasEmptyAssistantBlock(text)) {
+        log(`Found empty assistant block after change, starting streaming`);
         await this.startStreaming();
       }
     }
@@ -79,14 +86,19 @@ export class DocumentListener {
       const apiKey = getAnthropicApiKey();
       
       if (!apiKey) {
-        vscode.window.showErrorMessage('Anthropic API key not configured. Please use the "Configure Chat Markdown API Key" command.');
+        const message = 'Anthropic API key not configured. Please use the "Configure Chat Markdown API Key" command.';
+        log(message);
+        vscode.window.showErrorMessage(message);
         return;
       }
       
       const text = this.document.getText();
       const messages = parseDocument(text);
       
+      log(`Parsed ${messages.length} messages from document`);
+      
       if (messages.length === 0) {
+        log('No messages to process, not starting streaming');
         return;
       }
       
@@ -94,6 +106,7 @@ export class DocumentListener {
       
       // Check if we already have an active streamer for this message
       if (this.streamers.has(messageIndex) && this.streamers.get(messageIndex)!.isActive) {
+        log(`Streamer for message index ${messageIndex} already active, not starting new one`);
         return;
       }
       
@@ -105,13 +118,14 @@ export class DocumentListener {
       };
       
       this.streamers.set(messageIndex, streamer);
+      log(`Created new streamer for message index ${messageIndex}`);
       
       // Start streaming in background
       const streamingService = new StreamingService(apiKey, this.document, this.lock);
       
       // Start streaming without awaiting to allow it to run in the background
       streamingService.streamResponse(messages, streamer).catch(err => {
-        console.error('Streaming error:', err);
+        log(`Streaming error: ${err}`);
         streamer.isActive = false;
       });
     } finally {

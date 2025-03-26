@@ -6,11 +6,21 @@ import { getAnthropicApiKey, setAnthropicApiKey } from './config';
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
 
+// Output channel for logging
+export const outputChannel = vscode.window.createOutputChannel('FileChat');
+
+// Helper function for logging
+export function log(message: string): void {
+  outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
+  // Make sure the output channel is visible
+  outputChannel.show(true);
+}
+
 /**
  * Activate the extension
  */
 export function activate(context: vscode.ExtensionContext) {
-  console.log('FileChat extension is now active');
+  log('FileChat extension is now active');
   
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: '**/*.chat.md' };
@@ -99,6 +109,15 @@ function setupDocumentListener(document: vscode.TextDocument, context: vscode.Ex
     
     // Don't set up duplicates
     if (!documentListeners.has(key)) {
+      // Make sure the document is shown in an editor
+      // This helps ensure document edits can be applied
+      vscode.window.showTextDocument(document, { preview: false })
+        .then(() => {
+          log(`Document shown in editor: ${document.fileName}`);
+        }, (err: Error) => {
+          log(`Error showing document: ${err}`);
+        });
+      
       const listener = new DocumentListener(document);
       const disposable = listener.startListening();
       documentListeners.set(key, disposable);

@@ -1,4 +1,5 @@
 import { MessageParam, Content, Role } from './types';
+import { log } from './extension';
 
 /**
  * Parses a .chat.md file into structured messages
@@ -104,9 +105,26 @@ function parseUserContent(text: string): Content[] {
  * Used to determine when to start streaming
  */
 export function hasEmptyAssistantBlock(text: string): boolean {
-  // Check for pattern of "#%% assistant" at the end with optional whitespace
-  const emptyAssistantRegex = /#%% assistant\s*$/i;
-  return emptyAssistantRegex.test(text.trim() + '\n');
+  // Log the exact document text for debugging (truncated)
+  const displayText = text.length > 100 ? text.substring(text.length - 100) : text;
+  log(`Checking for empty assistant block in: "${displayText.replace(/\n/g, '\\n')}"`);
+  
+  // Look for "#%% assistant" near the end followed by no content
+  // We'll be more lenient with this test to catch more cases
+  const normalizedText = text.trim() + '\n';
+  const lastBlockPos = normalizedText.lastIndexOf('#%% assistant');
+  
+  if (lastBlockPos === -1) {
+    log('No assistant block found');
+    return false;
+  }
+  
+  // Check if there's any significant content after the last #%% assistant
+  const textAfterBlock = normalizedText.substring(lastBlockPos + 13).trim();
+  const isEmpty = textAfterBlock.length === 0;
+  
+  log(`Last assistant block at position ${lastBlockPos}, content after: "${textAfterBlock.substring(0, 20)}", isEmpty: ${isEmpty}`);
+  return isEmpty;
 }
 
 /**
