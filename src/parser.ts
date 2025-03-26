@@ -11,7 +11,17 @@ import * as vscode from 'vscode';
  */
 export function parseDocument(text: string, document?: vscode.TextDocument): readonly MessageParam[] {
   const messages: MessageParam[] = [];
-  const blocks = text.split(/^#%% (user|assistant)(\n\s*|\s*)$/im);
+  
+  // Regex to split document on #%% markers - fixing the pattern to properly match all cases
+  // We need to keep the original pattern that works, not the modified one that's causing issues
+  const regex = /^#%% (user|assistant)\s*$/im;
+  const blocks = text.split(regex);
+  
+  // Debug logging
+  log(`Split document into ${blocks.length} blocks`);
+  for (let i = 0; i < Math.min(blocks.length, 10); i++) {
+    log(`Block ${i}: "${blocks[i].substring(0, 20).replace(/\n/g, '\\n')}${blocks[i].length > 20 ? '...' : ''}"`);
+  }
   
   // Skip first empty element if exists
   let startIdx = blocks[0].trim() === '' ? 1 : 0;
@@ -231,7 +241,7 @@ export function hasEmptyAssistantBlock(text: string): boolean {
  */
 export function findAssistantBlocks(text: string): {start: number, end: number}[] {
   const blocks: {start: number, end: number}[] = [];
-  const regex = /^#%% assistant(\n\s*|\s*)$/im;
+  const regex = /^#%% assistant\s*$/im;
   
   let match;
   const lines = text.split('\n');
@@ -258,7 +268,7 @@ export function findAllAssistantBlocks(text: string): {markerStart: number, cont
   let lineOffset = 0;
   
   for (let i = 0; i < lines.length; i++) {
-    if (/^#%% assistant(\n\s*|\s*)$/i.test(lines[i])) {
+    if (/^#%% assistant\s*$/i.test(lines[i])) {
       // Found an assistant block
       const markerStart = lineOffset;
       

@@ -108,13 +108,8 @@ export class StreamingService {
       log(`Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join('')}"`);
       
       // First, find the last #%% assistant marker in the text
-      // We'll look for two forms: "#%% assistant" followed by a newline or just whitespace
-      let lastAssistantIdx = text.lastIndexOf('#%% assistant\n');
-      
-      // If not found with newline, try without
-      if (lastAssistantIdx === -1) {
-        lastAssistantIdx = text.lastIndexOf('#%% assistant');
-      }
+      // Revert to the original working pattern
+      const lastAssistantIdx = text.lastIndexOf('#%% assistant');
       if (lastAssistantIdx === -1) {
         log('No #%% assistant marker found in document, stopping streamer');
         streamer.isActive = false;
