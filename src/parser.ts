@@ -11,7 +11,7 @@ import * as vscode from 'vscode';
  */
 export function parseDocument(text: string, document?: vscode.TextDocument): readonly MessageParam[] {
   const messages: MessageParam[] = [];
-  const blocks = text.split(/^#%% (user|assistant)\s*$/im);
+  const blocks = text.split(/^#%% (user|assistant)(\n\s*|\s*)$/im);
   
   // Skip first empty element if exists
   let startIdx = blocks[0].trim() === '' ? 1 : 0;
@@ -231,7 +231,7 @@ export function hasEmptyAssistantBlock(text: string): boolean {
  */
 export function findAssistantBlocks(text: string): {start: number, end: number}[] {
   const blocks: {start: number, end: number}[] = [];
-  const regex = /^#%% assistant\s*$/im;
+  const regex = /^#%% assistant(\n\s*|\s*)$/im;
   
   let match;
   const lines = text.split('\n');
@@ -258,7 +258,7 @@ export function findAllAssistantBlocks(text: string): {markerStart: number, cont
   let lineOffset = 0;
   
   for (let i = 0; i < lines.length; i++) {
-    if (/^#%% assistant\s*$/i.test(lines[i])) {
+    if (/^#%% assistant(\n\s*|\s*)$/i.test(lines[i])) {
       // Found an assistant block
       const markerStart = lineOffset;
       
