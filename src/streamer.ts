@@ -125,9 +125,12 @@ export class StreamingService {
         blockStart++;
       }
       
-      // Skip newline if present
+      // Skip newline - should always be present based on our hasEmptyAssistantBlock check
       if (blockStart < text.length && text[blockStart] === '\n') {
         blockStart++;
+      } else {
+        // If no newline, log a warning but continue
+        log('Warning: No newline found after #%% assistant, but continuing anyway');
       }
       
       log(`Found last assistant marker at position ${lastAssistantIdx}, block starts at ${blockStart}`);

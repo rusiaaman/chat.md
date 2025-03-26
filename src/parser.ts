@@ -205,34 +205,36 @@ export function hasEmptyAssistantBlock(text: string): boolean {
   const displayText = text.length > 100 ? text.substring(text.length - 100) : text;
   log(`Checking for empty assistant block in: "${displayText.replace(/\n/g, '\\n')}"`);
   
-  // Look for "#%% assistant" near the end followed by no content
-  // Parse the document into blocks to properly identify the last one
-  const lines = text.split('\n');
-  let lastRole = '';
-  let isEmptyBlock = false;
+  // Check if the document ends with a pattern that should trigger streaming
+  // Specifically, we want "#%% assistant" followed by a newline and optional whitespace at the end
+  const lastAssistantIndex = text.lastIndexOf('#%% assistant');
   
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (line.toLowerCase().startsWith('#%% ')) {
-      const role = line.substring(4).trim().toLowerCase();
-      
-      // If we just saw an assistant block and it was empty, record that
-      if (lastRole === 'assistant' && isEmptyBlock) {
-        log(`Found empty assistant block at line ${i-1}`);
-      }
-      
-      lastRole = role;
-      isEmptyBlock = true; // Start with assumption this block is empty
-    } else if (line !== '') {
-      // Non-empty content means the current block is not empty
-      isEmptyBlock = false;
-    }
+  // If no assistant block found or it's not near the end, return false
+  if (lastAssistantIndex === -1 || lastAssistantIndex < text.length - 30) {
+    log('No assistant block found near the end of the document');
+    return false;
   }
   
-  // If the last block was an assistant block and it was empty, return true
-  const isEmpty = (lastRole === 'assistant' && isEmptyBlock);
-  log(`Last role block: ${lastRole}, isEmpty: ${isEmpty}`);
-  return isEmpty;
+  // Check if there's a newline after "#%% assistant"
+  const textAfterMarker = text.substring(lastAssistantIndex + 13); // Length of '#%% assistant'
+  
+  // First, check for at least one newline
+  if (!textAfterMarker.includes('\n')) {
+    log('No newline after "#%% assistant", not triggering streaming');
+    return false;
+  }
+  
+  // Now check if there's only whitespace after the newline
+  const hasContentAfterNewline = /\n\s*[^\s]/.test(textAfterMarker);
+  
+  if (hasContentAfterNewline) {
+    log('Found content after newline, not an empty assistant block');
+    return false;
+  }
+  
+  // If we got here, we have "#%% assistant" followed by a newline and only whitespace after that
+  log('Found empty assistant block with newline, triggering streaming');
+  return true;
 }
 
 /**
