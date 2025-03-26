@@ -1,5 +1,7 @@
 import { MessageParam, Content, Role } from './types';
 import { log } from './extension';
+import { isImageFile, resolveFilePath, readFileAsText, fileExists } from './utils/fileUtils';
+import * as vscode from 'vscode';
 
 /**
  * Parses a .chat.md file into structured messages
@@ -7,7 +9,7 @@ import { log } from './extension';
  * 
  * Note: Will exclude the last empty assistant block (used for triggering streaming)
  */
-export function parseDocument(text: string): readonly MessageParam[] {
+export function parseDocument(text: string, document?: vscode.TextDocument): readonly MessageParam[] {
   const messages: MessageParam[] = [];
   const blocks = text.split(/^#%% (user|assistant)\s*$/im);
   
@@ -39,7 +41,7 @@ export function parseDocument(text: string): readonly MessageParam[] {
     
     if (role === 'user') {
       // Only add user message if it has actual content
-      const parsedContent = parseUserContent(content);
+      const parsedContent = parseUserContent(content, document);
       if (parsedContent.length > 0) {
         messages.push({
           role,
@@ -60,15 +62,99 @@ export function parseDocument(text: string): readonly MessageParam[] {
 /**
  * Parses user content to extract text and file references
  */
-function parseUserContent(text: string): Content[] {
+function parseUserContent(text: string, document?: vscode.TextDocument): Content[] {
   const content: Content[] = [];
+  
+  // Original format: "Attached file at /path/to/file"
   const fileAttachmentRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
+  
+  // New format: Markdown-style links like [#file](test.py)
+  const markdownLinkRegex = /\[#file\]\(([^)]+)\)/g;
+  
+  // Process any direct Markdown-style links first
+  if (document) {
+    const mdMatches: {index: number, path: string, isImage: boolean, content?: string}[] = [];
+    let mdMatch;
+    
+    // First pass - collect all matches and resolve paths
+    while ((mdMatch = markdownLinkRegex.exec(text)) !== null) {
+      const filePath = mdMatch[1];
+      const resolvedPath = resolveFilePath(filePath, document);
+      const isImage = isImageFile(filePath);
+      
+      // For text files, read the content
+      let fileContent;
+      if (!isImage && fileExists(resolvedPath)) {
+        fileContent = readFileAsText(resolvedPath);
+      }
+      
+      mdMatches.push({
+        index: mdMatch.index,
+        path: filePath,
+        isImage,
+        content: fileContent
+      });
+    }
+    
+    // Sort matches in reverse order to avoid index shifts during replacement
+    mdMatches.sort((a, b) => b.index - a.index);
+    
+    // Replace each match with the formatted content
+    for (const match of mdMatches) {
+      const replacement = match.isImage 
+        ? `Attached file at ${match.path}\n[image content]`
+        : `Attached file at ${match.path}\n\`\`\`\n${match.content || 'Unable to read file content'}\n\`\`\``;
+        
+      text = text.substring(0, match.index) + replacement + text.substring(match.index + `[#file](${match.path})`.length);
+    }
+  }
   
   let lastIndex = 0;
   let match;
   
+  // Process original format first
   while ((match = fileAttachmentRegex.exec(text)) !== null) {
     // Add text before the attachment
+    const beforeText = text.substring(lastIndex, match.index).trim();
+    if (beforeText) {
+      content.push({ type: 'text', value: beforeText });
+    }
+    
+    const path = match[1];
+    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || 
+        path.endsWith('.gif') || path.endsWith('.webp')) {
+      content.push({ type: 'image', path });
+    } else {
+      // For non-image files, extract content from code block
+      content.push({ type: 'text', value: match[2] || '' });
+    }
+    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Reset for processing Markdown-style links
+  text = text.substring(0, lastIndex) + text.substring(lastIndex).replace(markdownLinkRegex, (match, filePath) => {
+    log(`Found Markdown-style file link: ${filePath}`);
+    
+    // Determine if it's an image file based on extension
+    if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.jpeg') || 
+        filePath.endsWith('.gif') || filePath.endsWith('.webp')) {
+      // Convert to the format specified in CLAUDE.md for images
+      return `\nAttached file at ${filePath}\n[image content]`;
+    } else {
+      // For text files, placeholder - actual content will be loaded when resolving paths
+      return `\nAttached file at ${filePath}\n\`\`\`\nFile content will be loaded\n\`\`\``;
+    }
+  });
+  
+  // Process the updated text with any converted Markdown links
+  lastIndex = 0;
+  const updatedFileRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
+  
+  while ((match = updatedFileRegex.exec(text)) !== null) {
+    // Skip matches that were already processed in the first pass
+    if (match.index < lastIndex) continue;
+    
     const beforeText = text.substring(lastIndex, match.index).trim();
     if (beforeText) {
       content.push({ type: 'text', value: beforeText });
@@ -110,20 +196,32 @@ export function hasEmptyAssistantBlock(text: string): boolean {
   log(`Checking for empty assistant block in: "${displayText.replace(/\n/g, '\\n')}"`);
   
   // Look for "#%% assistant" near the end followed by no content
-  // We'll be more lenient with this test to catch more cases
-  const normalizedText = text.trim() + '\n';
-  const lastBlockPos = normalizedText.lastIndexOf('#%% assistant');
+  // Parse the document into blocks to properly identify the last one
+  const lines = text.split('\n');
+  let lastRole = '';
+  let isEmptyBlock = false;
   
-  if (lastBlockPos === -1) {
-    log('No assistant block found');
-    return false;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.toLowerCase().startsWith('#%% ')) {
+      const role = line.substring(4).trim().toLowerCase();
+      
+      // If we just saw an assistant block and it was empty, record that
+      if (lastRole === 'assistant' && isEmptyBlock) {
+        log(`Found empty assistant block at line ${i-1}`);
+      }
+      
+      lastRole = role;
+      isEmptyBlock = true; // Start with assumption this block is empty
+    } else if (line !== '') {
+      // Non-empty content means the current block is not empty
+      isEmptyBlock = false;
+    }
   }
   
-  // Check if there's any significant content after the last #%% assistant
-  const textAfterBlock = normalizedText.substring(lastBlockPos + 13).trim();
-  const isEmpty = textAfterBlock.length === 0;
-  
-  log(`Last assistant block at position ${lastBlockPos}, content after: "${textAfterBlock.substring(0, 20)}", isEmpty: ${isEmpty}`);
+  // If the last block was an assistant block and it was empty, return true
+  const isEmpty = (lastRole === 'assistant' && isEmptyBlock);
+  log(`Last role block: ${lastRole}, isEmpty: ${isEmpty}`);
   return isEmpty;
 }
 
@@ -145,6 +243,43 @@ export function findAssistantBlocks(text: string): {start: number, end: number}[
       const end = start + lines[i].length;
       blocks.push({start, end});
     }
+  }
+  
+  return blocks;
+}
+
+/**
+ * Finds all assistant blocks with their content start positions
+ * Used for more precise token insertion
+ */
+export function findAllAssistantBlocks(text: string): {markerStart: number, contentStart: number}[] {
+  const blocks: {markerStart: number, contentStart: number}[] = [];
+  const lines = text.split('\n');
+  let lineOffset = 0;
+  
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#%% assistant\s*$/i.test(lines[i])) {
+      // Found an assistant block
+      const markerStart = lineOffset;
+      
+      // Calculate the content start (after the marker line)
+      let contentStart = lineOffset + lines[i].length;
+      
+      // Skip any whitespace after the marker
+      while (contentStart < text.length && 
+             (text[contentStart] === ' ' || text[contentStart] === '\t')) {
+        contentStart++;
+      }
+      
+      // Skip newline if present
+      if (contentStart < text.length && text[contentStart] === '\n') {
+        contentStart++;
+      }
+      
+      blocks.push({markerStart, contentStart});
+    }
+    
+    lineOffset += lines[i].length + 1; // +1 for the newline
   }
   
   return blocks;

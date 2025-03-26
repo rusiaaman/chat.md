@@ -47,3 +47,24 @@ export function readFileAsBuffer(filePath: string): Buffer | undefined {
     return undefined;
   }
 }
+
+/**
+ * Read text file content as string
+ * Returns undefined if file can't be read
+ */
+export function readFileAsText(filePath: string): string | undefined {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    console.error(`Error reading file ${filePath}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * Check if a file is an image based on extension
+ */
+export function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+}

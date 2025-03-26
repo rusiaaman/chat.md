@@ -39,6 +39,17 @@ export class StreamingService {
       log(`Current document text length: ${currentText.length} chars`);
       log(`Current streamer tokens: ${streamer.tokens.length} tokens`);
       
+      // Extract message for logging
+      const lastUserMessage = messages.length > 0 && messages[messages.length - 1].role === 'user' 
+        ? messages[messages.length - 1].content
+          .filter(c => c.type === 'text')
+          .map(c => (c as any).value)
+          .join(' ')
+        : 'No user message';
+      log(`Streaming response to: "${lastUserMessage.substring(0, 50)}${lastUserMessage.length > 50 ? '...' : ''}"`);
+      
+      let tokenCount = 0;
+      
       for await (const tokens of stream) {
         if (!streamer.isActive) {
           log('Streamer no longer active, stopping stream');
@@ -46,7 +57,9 @@ export class StreamingService {
         }
         
         if (tokens.length > 0) {
+          tokenCount += tokens.length;
           log(`Received ${tokens.length} tokens: "${tokens.join('')}"`);
+          
           try {
             await this.updateDocumentWithTokens(streamer, tokens);
           } catch (error) {
@@ -58,7 +71,7 @@ export class StreamingService {
         }
       }
       
-      log('Stream completed successfully');
+      log(`Stream completed successfully, processed ${tokenCount} tokens total`);
     } catch (error) {
       log(`Streaming error: ${error}`);
       console.error('Streaming error:', error);

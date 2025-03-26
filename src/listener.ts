@@ -69,9 +69,13 @@ export class DocumentListener {
     if (this.document.fileName.endsWith('.chat.md')) {
       log(`Document changed: ${this.document.fileName}`);
       const text = this.document.getText();
+      
+      // Check if any change added an empty assistant block
       if (hasEmptyAssistantBlock(text)) {
         log(`Found empty assistant block after change, starting streaming`);
         await this.startStreaming();
+      } else {
+        log(`No empty assistant block found after change`);
       }
     }
   }
@@ -93,7 +97,7 @@ export class DocumentListener {
       }
       
       const text = this.document.getText();
-      const messages = parseDocument(text);
+      const messages = parseDocument(text, this.document);
       
       log(`Parsed ${messages.length} messages from document`);
       
