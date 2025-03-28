@@ -14,7 +14,7 @@ export function parseDocument(text: string, document?: vscode.TextDocument): rea
   
   // Regex to split document on #%% markers - fixing the pattern to properly match all cases
   // We need to keep the original pattern that works, not the modified one that's causing issues
-  const regex = /^#%% (user|assistant)\s*$/im;
+  const regex = /^#%% (user|assistant|tool_execute)\s*$/im;
   const blocks = text.split(regex);
   
   // Debug logging
@@ -41,7 +41,7 @@ export function parseDocument(text: string, document?: vscode.TextDocument): rea
       break;
     }
     
-    const role = blocks[i].toLowerCase().trim() as Role;
+    const role = blocks[i].toLowerCase().trim();
     const content = blocks[i + 1].trim();
     
     // Skip empty assistant blocks entirely (they're just triggers)
@@ -49,7 +49,20 @@ export function parseDocument(text: string, document?: vscode.TextDocument): rea
       continue;
     }
     
-    if (role === 'user') {
+    // Detect if this is a tool_execute block
+    if (role === 'tool_execute') {
+      // Tool execute blocks are treated as user messages
+      if (content) {
+        messages.push({
+          role: 'user',
+          content: [{ type: 'text', value: content }]
+        });
+      }
+      // Skip this block in normal processing
+      continue;
+    }
+    
+    if (role === 'user' as Role) {
       // Only add user message if it has actual content
       const parsedContent = parseUserContent(content, document);
       if (parsedContent.length > 0) {
@@ -235,6 +248,22 @@ export function hasEmptyAssistantBlock(text: string): boolean {
   // If we got here, we have "#%% assistant" followed by a newline and only whitespace after that
   log('Found empty assistant block with newline, triggering streaming');
   return true;
+}
+
+/**
+ * Checks if a document has an empty tool_execute block
+ * Used to determine when to execute a tool
+ */
+export function hasEmptyToolExecuteBlock(text: string): boolean {
+  // Check if the document contains a "#%% tool_execute" followed by nothing or just whitespace
+  const regex = /#%% tool_execute\s*$/m;
+  const hasEmptyBlock = regex.test(text);
+  
+  if (hasEmptyBlock) {
+    log('Found empty tool_execute block, will trigger tool execution');
+  }
+  
+  return hasEmptyBlock;
 }
 
 /**

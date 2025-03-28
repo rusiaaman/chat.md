@@ -5,7 +5,7 @@ import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
 import { log } from './extension';
-import { getModelName } from './config';
+import { getModelName, TOOL_CALLING_SYSTEM_PROMPT } from './config';
 
 /**
  * Client for communicating with the Anthropic API
@@ -30,12 +30,15 @@ export class AnthropicClient {
       const formattedMessages = this.formatMessages(messages, document);
       const modelName = getModelName() || 'claude-3-5-haiku-latest';
       
-      const requestBody = {
+      const requestBody: any = {
         model: modelName,
         messages: formattedMessages,
+        system: TOOL_CALLING_SYSTEM_PROMPT,
         stream: true,
         max_tokens: 4000
       };
+      
+      log(`Using hardcoded system prompt for tool calling (${TOOL_CALLING_SYSTEM_PROMPT.length} chars)`);
       
       log(`Using Anthropic model: ${requestBody.model}`);
       

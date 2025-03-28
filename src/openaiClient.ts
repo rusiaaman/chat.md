@@ -6,7 +6,7 @@ import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
 import { log } from './extension';
-import { getModelName, getBaseUrl } from './config';
+import { getModelName, getBaseUrl, TOOL_CALLING_SYSTEM_PROMPT } from './config';
 
 /**
  * Client for communicating with the OpenAI API
@@ -49,15 +49,25 @@ export class OpenAIClient {
     log(`Starting OpenAI API request with ${messages.length} messages`);
     
     try {
+      // First prepare messages with system prompt
+      const systemMessage = { role: 'system', content: TOOL_CALLING_SYSTEM_PROMPT };
+      
+      // Format regular messages
       const formattedMessages = this.formatMessages(messages, document);
+      
+      // Add system message as the first message
+      const allMessages = [systemMessage, ...formattedMessages];
+      
       const modelName = getModelName() || 'gpt-3.5-turbo';
       
       const requestBody = {
         model: modelName,
-        messages: formattedMessages,
+        messages: allMessages,
         stream: true,
         max_tokens: 4000
       };
+      
+      log(`Using hardcoded system prompt for tool calling (${TOOL_CALLING_SYSTEM_PROMPT.length} chars)`);
       
       log(`Using OpenAI model: ${requestBody.model}`);
       

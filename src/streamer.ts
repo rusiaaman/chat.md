@@ -87,11 +87,53 @@ export class StreamingService {
           tokenCount += tokens.length;
           log(`Received ${tokens.length} tokens: "${tokens.join('')}"`);
           
-          try {
-            await this.updateDocumentWithTokens(streamer, tokens);
-          } catch (error) {
-            log(`Error updating document with tokens: ${error}`);
-            // Continue streaming even if one update fails
+          // Check if adding these tokens would complete a tool call
+          const currentTokens = [...streamer.tokens, ...tokens].join('');
+          const toolCallCompleted = this.checkForCompletedToolCall(currentTokens);
+          
+          if (toolCallCompleted) {
+            log('Detected completed tool call, stopping streaming after updating document');
+            
+            try {
+              // Update the document with current tokens
+              await this.updateDocumentWithTokens(streamer, tokens);
+              
+              // Add tool_execute block after the last token
+              const text = this.document.getText();
+              const blockStart = this.findBlockStartPosition(text, streamer);
+              
+              if (blockStart !== -1) {
+                const tokensWithNewTokens = [...streamer.tokens, ...tokens].join('');
+                const insertPosition = this.document.positionAt(blockStart + tokensWithNewTokens.length);
+                
+                const edit = new vscode.WorkspaceEdit();
+                edit.insert(this.document.uri, insertPosition, '\n\n#%% tool_execute\n');
+                const applied = await vscode.workspace.applyEdit(edit);
+                
+                if (applied) {
+                  log('Successfully inserted tool_execute block');
+                } else {
+                  log('Failed to insert tool_execute block');
+                }
+              } else {
+                log('Could not find position to insert tool_execute block');
+              }
+              
+              // Mark streamer as inactive to stop streaming
+              streamer.isActive = false;
+              break;
+            } catch (error) {
+              log(`Error handling tool call: ${error}`);
+              // Continue as normal if handling tool call fails
+            }
+          } else {
+            // Normal token processing
+            try {
+              await this.updateDocumentWithTokens(streamer, tokens);
+            } catch (error) {
+              log(`Error updating document with tokens: ${error}`);
+              // Continue streaming even if one update fails
+            }
           }
         } else {
           log('Received empty tokens array, skipping update');
@@ -117,6 +159,62 @@ export class StreamingService {
    * 2. Search for past text in last assistant block
    * 3. If found, append new tokens; if not found, abort streamer
    */
+  /**
+   * Find the start position for the current block
+   */
+  private findBlockStartPosition(text: string, streamer: StreamerState): number {
+    // Get all assistant blocks in the document
+    const assistantMarkers = findAllAssistantBlocks(text);
+    
+    if (assistantMarkers.length === 0) {
+      return -1;
+    }
+    
+    // Get the last assistant block
+    const lastMarker = assistantMarkers[assistantMarkers.length - 1];
+    return lastMarker.contentStart;
+  }
+  
+  /**
+   * Check if text contains a complete tool call
+   */
+  private checkForCompletedToolCall(text: string): boolean {
+    // Simple regex to match completed tool calls
+    const toolCallMatch = /<tool_call>[\s\S]*?<\/tool_call>/s.exec(text);
+    
+    if (toolCallMatch) {
+      // Make sure this is a complete tool call by checking if there's
+      // a proper closing tag with no text after it that would be part of the same call
+      const fullMatch = toolCallMatch[0];
+      const matchEndIndex = toolCallMatch.index + fullMatch.length;
+      
+      // Check if there's another opening tag after this complete tag
+      const nextOpeningTagIndex = text.indexOf('<tool_call>', matchEndIndex);
+      
+      // Log the completed tool call
+      log(`Found completed tool call: "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? '...' : ''}"`);
+      
+      // If no more opening tags or next tag is after significant text, this is a complete call
+      if (nextOpeningTagIndex === -1) {
+        log('No additional tool calls found after this one');
+        return true;
+      }
+      
+      // Check if there's meaningful content between the end of this tag and the next opening tag
+      const textBetween = text.substring(matchEndIndex, nextOpeningTagIndex).trim();
+      if (textBetween.length < 10) {
+        // If there's minimal content between tags, it might be part of the same logical call
+        log('Found multiple tool calls in sequence, waiting for all to complete');
+        return false;
+      }
+      
+      log('Found completed tool call followed by significant content');
+      return true;
+    }
+    
+    return false;
+  }
+
   private async updateDocumentWithTokens(
     streamer: StreamerState,
     newTokens: string[]

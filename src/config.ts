@@ -1,6 +1,38 @@
 import * as vscode from 'vscode';
 
 /**
+ * Default system prompt for tool calling
+ * Used when making API requests to LLMs
+ */
+export const TOOL_CALLING_SYSTEM_PROMPT = `
+This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following format to call a tool:
+
+<tool_call>
+<tool_name>readFile</tool_name>
+<param name="path">
+/path/to/file.txt
+</param>
+</tool_call>
+
+Available tools:
+1. readFile - Reads the content of a file
+   Parameters:
+   - path: The path to the file to read (required)
+   
+After calling a tool, wait for the result which will be provided in the following format:
+
+<tool_result>
+The content or result of the tool execution will appear here.
+</tool_result>
+
+Tool usage guidelines:
+- Only use tools when necessary to fulfill the user's request
+- Always wait for tool results before continuing
+- Use the exact XML format shown above
+- Make sure to use correct parameter names
+`;
+
+/**
  * Gets the configured provider (anthropic or openai)
  * Returns 'anthropic' as default if not configured
  */
