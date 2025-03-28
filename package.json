@@ -3,6 +3,11 @@
   "displayName": "Chat Markdown",
   "description": "Interact with LLMs directly in markdown files",
   "version": "0.1.0",
+  "publisher": "arusia",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arusia/filechat"
+  },
   "engines": {
     "vscode": "^1.60.0"
   },
@@ -23,14 +28,44 @@
       {
         "command": "filechat.configureApi",
         "title": "Configure Chat Markdown API Key"
+      },
+      {
+        "command": "filechat.configureModel",
+        "title": "Configure Chat Markdown Model"
+      },
+      {
+        "command": "filechat.configureBaseUrl",
+        "title": "Configure OpenAI-Compatible Base URL"
       }
     ],
     "configuration": {
       "title": "Chat Markdown",
       "properties": {
+        "filechat.provider": {
+          "type": "string",
+          "enum": ["anthropic", "openai"],
+          "default": "anthropic",
+          "description": "AI provider to use (anthropic or openai)",
+          "scope": "application"
+        },
+        "filechat.model_name": {
+          "type": "string",
+          "description": "Model name to use with the selected provider (leave empty for default)",
+          "scope": "application"
+        },
+        "filechat.base_url": {
+          "type": "string",
+          "description": "Base URL for OpenAI-compatible APIs (only used when provider is 'openai')",
+          "scope": "application"
+        },
+        "filechat.apiKey": {
+          "type": "string",
+          "description": "API Key for the selected provider",
+          "scope": "application"
+        },
         "filechat.anthropicApiKey": {
           "type": "string",
-          "description": "Anthropic API Key",
+          "description": "Anthropic API Key (legacy setting, use filechat.apiKey instead)",
           "scope": "application"
         }
       }

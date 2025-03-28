@@ -2,21 +2,36 @@ import * as vscode from 'vscode';
 import { MessageParam, StreamerState } from './types';
 import { Lock } from './utils/lock';
 import { AnthropicClient } from './anthropicClient';
+import { OpenAIClient } from './openaiClient';
 import { findAssistantBlocks, findAllAssistantBlocks } from './parser';
 import { log } from './extension';
+import { getProvider } from './config';
 
 /**
  * Service for streaming LLM responses
  */
 export class StreamingService {
-  private readonly client: AnthropicClient;
+  private readonly anthropicClient?: AnthropicClient;
+  private readonly openaiClient?: OpenAIClient;
+  private readonly provider: string;
   
   constructor(
     apiKey: string,
     private readonly document: vscode.TextDocument,
     private readonly lock: Lock
   ) {
-    this.client = new AnthropicClient(apiKey);
+    this.provider = getProvider();
+    log(`Using LLM provider: ${this.provider}`);
+    
+    if (this.provider === 'anthropic') {
+      this.anthropicClient = new AnthropicClient(apiKey);
+    } else if (this.provider === 'openai') {
+      this.openaiClient = new OpenAIClient(apiKey);
+    } else {
+      log(`Unknown provider: ${this.provider}, falling back to Anthropic`);
+      this.provider = 'anthropic';
+      this.anthropicClient = new AnthropicClient(apiKey);
+    }
   }
   
   /**
@@ -30,8 +45,16 @@ export class StreamingService {
     try {
       log(`Starting to stream response for ${messages.length} messages`);
       
-      // Start streaming completion, passing document for file path resolution
-      const stream = await this.client.streamCompletion(messages, this.document);
+      // Start streaming completion based on provider, passing document for file path resolution
+      let stream;
+      if (this.provider === 'anthropic' && this.anthropicClient) {
+        stream = await this.anthropicClient.streamCompletion(messages, this.document);
+      } else if (this.provider === 'openai' && this.openaiClient) {
+        stream = await this.openaiClient.streamCompletion(messages, this.document);
+      } else {
+        throw new Error(`Provider ${this.provider} not properly configured`);
+      }
+      
       log('Stream connection established');
       
       // Debug the document state before streaming

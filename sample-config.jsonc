@@ -1,0 +1,19 @@
+{
+  // Chat Markdown configuration examples
+  
+  // AI provider: 'anthropic' or 'openai'
+  "filechat.provider": "anthropic",
+  
+  // Model name examples
+  // For Anthropic:
+  "filechat.model_name": "claude-3-5-sonnet-20240620",
+  
+  // For OpenAI (uncomment if using OpenAI):
+  // "filechat.model_name": "gpt-4-turbo",
+  
+  // Your API key (store securely)
+  "filechat.apiKey": "your-api-key-here",
+  
+  // Legacy setting (for backward compatibility)
+  "filechat.anthropicApiKey": "your-anthropic-api-key-here"
+}

@@ -3,7 +3,7 @@ import { parseDocument, hasEmptyAssistantBlock } from './parser';
 import { Lock } from './utils/lock';
 import { StreamingService } from './streamer';
 import { StreamerState } from './types';
-import { getAnthropicApiKey } from './config';
+import { getApiKey, getAnthropicApiKey, getProvider } from './config';
 import { log } from './extension';
 
 /**
@@ -87,10 +87,17 @@ export class DocumentListener {
     await this.lock.acquire();
     
     try {
-      const apiKey = getAnthropicApiKey();
+      // Check for API key based on provider
+      const provider = getProvider();
+      let apiKey = getApiKey();
+      
+      // For backward compatibility, try the legacy anthropic key if we're using Anthropic
+      if (!apiKey && provider === 'anthropic') {
+        apiKey = getAnthropicApiKey();
+      }
       
       if (!apiKey) {
-        const message = 'Anthropic API key not configured. Please use the "Configure Chat Markdown API Key" command.';
+        const message = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API key not configured. Please use the "Configure Chat Markdown API Key" command.`;
         log(message);
         vscode.window.showErrorMessage(message);
         return;
