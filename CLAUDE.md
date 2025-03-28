@@ -57,7 +57,7 @@ At each loop step of the streamer there are a list of tokens received.
 
 The history of tokens of current streamer (a single turn) is also saved in the streamer.
 
-The past text is searched for in the last assistant block and if found the new tokens are appended regardless of presence of any subsequent text.
+The past text is searched for in the last non-empty assistant block and if found the new tokens are appended regardless of presence of any subsequent text.
 
 If no such text is found (say user deleted), the streamer should abort and cancelled. The streamer's data deleted.
 
