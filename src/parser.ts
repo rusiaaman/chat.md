@@ -255,15 +255,33 @@ export function hasEmptyAssistantBlock(text: string): boolean {
  * Used to determine when to execute a tool
  */
 export function hasEmptyToolExecuteBlock(text: string): boolean {
-  // Check if the document contains a "#%% tool_execute" followed by nothing or just whitespace
-  const regex = /#%% tool_execute\s*$/m;
-  const hasEmptyBlock = regex.test(text);
+  // Log document suffix for debugging
+  const displayText = text.length > 100 ? text.substring(text.length - 100) : text;
+  log(`Checking for empty tool_execute block in: "${displayText.replace(/\n/g, '\\n')}"`);
+
+  // More precise approach: find all tool_execute blocks and check if any are empty
+  // Look for blocks that are either at the end of the document or followed by another block
+  const blockMatches = [];
+  const regex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+  let match;
   
-  if (hasEmptyBlock) {
-    log('Found empty tool_execute block, will trigger tool execution');
+  while ((match = regex.exec(text)) !== null) {
+    const blockContent = match[1].trim();
+    const position = match.index;
+    blockMatches.push({ position, content: blockContent });
+    
+    log(`Found tool_execute block at ${position}: content=${blockContent ? 'non-empty' : 'empty'}`);
   }
   
-  return hasEmptyBlock;
+  // Check if we found any empty blocks
+  const emptyBlocks = blockMatches.filter(block => block.content === '');
+  
+  if (emptyBlocks.length > 0) {
+    log(`Found ${emptyBlocks.length} empty tool_execute block(s), will trigger tool execution`);
+    return true;
+  }
+  
+  return false;
 }
 
 /**

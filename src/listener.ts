@@ -96,25 +96,34 @@ export class DocumentListener {
     try {
       const text = this.document.getText();
       
-      // Find the empty tool_execute block
-      const toolExecuteMatch = /#%% tool_execute\s*$/m.exec(text);
-      if (!toolExecuteMatch) {
-        log('No empty tool_execute block found');
+      // Find all tool_execute blocks and check which ones are empty
+      const blockRegex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+      const emptyBlocks = [];
+      let match;
+      
+      while ((match = blockRegex.exec(text)) !== null) {
+        const content = match[1].trim();
+        const position = match.index;
+        const blockLength = match[0].length;
+        
+        if (content === '') {
+          emptyBlocks.push({ position, blockLength });
+          log(`Found empty tool_execute block at position ${position}`);
+        } else {
+          log(`Found non-empty tool_execute block at position ${position}`);
+        }
+      }
+      
+      if (emptyBlocks.length === 0) {
+        log('No empty tool_execute blocks found');
         return;
       }
       
-      // Check if this block already has content (already executed)
-      const blockStart = toolExecuteMatch.index + toolExecuteMatch[0].length;
-      const blockEndMatch = /#%%/m.exec(text.substring(blockStart));
-      const blockEnd = blockEndMatch ? blockStart + blockEndMatch.index : text.length;
-      const blockContent = text.substring(blockStart, blockEnd).trim();
+      // Use the LAST empty block
+      const lastEmptyBlock = emptyBlocks[emptyBlocks.length - 1];
+      log(`Using last empty tool_execute block at position ${lastEmptyBlock.position}`);
       
-      if (blockContent.length > 0) {
-        log('Tool_execute block already has content, not executing again');
-        return;
-      }
-      
-      const toolExecutePosition = toolExecuteMatch.index;
+      const toolExecutePosition = lastEmptyBlock.position;
       
       // Find the previous assistant block with a tool call
       const textBeforeToolExecute = text.substring(0, toolExecutePosition);
@@ -139,9 +148,18 @@ export class DocumentListener {
       const assistantResponse = lastMatch[1].trim();
       log(`Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? '...' : ''}"`);
       
-      // Look for tool call XML
-      const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/s;
-      const toolCallMatch = toolCallRegex.exec(assistantResponse);
+      // Look for tool call XML - find the LAST match instead of first
+      const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/sg; // Added 'g' flag to find all matches
+      
+      // Find all matches and use the last one
+      let toolCallMatch;
+      let lastToolCallMatch = null;
+      while ((toolCallMatch = toolCallRegex.exec(assistantResponse)) !== null) {
+        lastToolCallMatch = toolCallMatch;
+      }
+      
+      // Use the last match
+      toolCallMatch = lastToolCallMatch;
       
       if (!toolCallMatch) {
         log('No tool call found in assistant response');
@@ -184,14 +202,33 @@ export class DocumentListener {
    */
   private async insertToolResult(result: string): Promise<void> {
     const text = this.document.getText();
-    const toolExecuteMatch = /#%% tool_execute\s*$/m.exec(text);
     
-    if (!toolExecuteMatch) {
-      log('Tool_execute block not found for inserting result');
+    // Find all tool_execute blocks and check which ones are empty
+    const blockRegex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+    const emptyBlocks = [];
+    let match;
+    
+    while ((match = blockRegex.exec(text)) !== null) {
+      const content = match[1].trim();
+      const position = match.index;
+      const blockLength = match[0].length;
+      
+      if (content === '') {
+        emptyBlocks.push({ position, blockLength });
+        log(`Found empty tool_execute block at position ${position} for result insertion`);
+      }
+    }
+    
+    if (emptyBlocks.length === 0) {
+      log('No empty tool_execute blocks found for inserting result');
       return;
     }
     
-    const position = this.document.positionAt(toolExecuteMatch.index + toolExecuteMatch[0].length);
+    // Use the LAST empty block
+    const lastEmptyBlock = emptyBlocks[emptyBlocks.length - 1];
+    log(`Inserting tool result at position ${lastEmptyBlock.position + lastEmptyBlock.blockLength}`);
+    
+    const position = this.document.positionAt(lastEmptyBlock.position + lastEmptyBlock.blockLength);
     
     // Create an edit that adds the tool result followed by a new assistant block
     const edit = new vscode.WorkspaceEdit();
