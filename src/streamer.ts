@@ -316,8 +316,13 @@ export class StreamingService {
           log(`Using last assistant block at position ${lastAssistantIdx}, block starts at ${blockStart}`);
           log(`Last block is ${isEmptyBlock ? 'empty' : 'non-empty'}`);
           
-          // If the last block is non-empty or if we're just starting (no tokens yet), use it
-          if (!isEmptyBlock || streamer.tokens.length === 0) {
+          // Check if we're just starting or only have whitespace
+          const currentTokens = streamer.tokens.join('').trim();
+          const isStarting = streamer.tokens.length === 0 || currentTokens.length === 0;
+          log(`Tokens so far: ${isStarting ? 'none or whitespace only' : 'has content'}`);
+          
+          // If the last block is non-empty or if we're just starting, use it
+          if (!isEmptyBlock || isStarting) {
             break;
           }
         }
