@@ -1,5 +1,7 @@
 import { MessageParam, Content, Role } from './types';
 import { log } from './extension';
+import { isImageFile, resolveFilePath, readFileAsText, fileExists } from './utils/fileUtils';
+import * as vscode from 'vscode';
 
 /**
  * Parses a .chat.md file into structured messages
@@ -7,9 +9,19 @@ import { log } from './extension';
  * 
  * Note: Will exclude the last empty assistant block (used for triggering streaming)
  */
-export function parseDocument(text: string): readonly MessageParam[] {
+export function parseDocument(text: string, document?: vscode.TextDocument): readonly MessageParam[] {
   const messages: MessageParam[] = [];
-  const blocks = text.split(/^#%% (user|assistant)\s*$/im);
+  
+  // Regex to split document on #%% markers - fixing the pattern to properly match all cases
+  // We need to keep the original pattern that works, not the modified one that's causing issues
+  const regex = /^#%% (user|assistant|tool_execute)\s*$/im;
+  const blocks = text.split(regex);
+  
+  // Debug logging
+  log(`Split document into ${blocks.length} blocks`);
+  for (let i = 0; i < Math.min(blocks.length, 10); i++) {
+    log(`Block ${i}: "${blocks[i].substring(0, 20).replace(/\n/g, '\\n')}${blocks[i].length > 20 ? '...' : ''}"`);
+  }
   
   // Skip first empty element if exists
   let startIdx = blocks[0].trim() === '' ? 1 : 0;
@@ -29,7 +41,7 @@ export function parseDocument(text: string): readonly MessageParam[] {
       break;
     }
     
-    const role = blocks[i].toLowerCase().trim() as Role;
+    const role = blocks[i].toLowerCase().trim();
     const content = blocks[i + 1].trim();
     
     // Skip empty assistant blocks entirely (they're just triggers)
@@ -37,9 +49,22 @@ export function parseDocument(text: string): readonly MessageParam[] {
       continue;
     }
     
-    if (role === 'user') {
+    // Detect if this is a tool_execute block
+    if (role === 'tool_execute') {
+      // Tool execute blocks are treated as user messages
+      if (content) {
+        messages.push({
+          role: 'user',
+          content: [{ type: 'text', value: content }]
+        });
+      }
+      // Skip this block in normal processing
+      continue;
+    }
+    
+    if (role === 'user' as Role) {
       // Only add user message if it has actual content
-      const parsedContent = parseUserContent(content);
+      const parsedContent = parseUserContent(content, document);
       if (parsedContent.length > 0) {
         messages.push({
           role,
@@ -60,15 +85,99 @@ export function parseDocument(text: string): readonly MessageParam[] {
 /**
  * Parses user content to extract text and file references
  */
-function parseUserContent(text: string): Content[] {
+function parseUserContent(text: string, document?: vscode.TextDocument): Content[] {
   const content: Content[] = [];
+  
+  // Original format: "Attached file at /path/to/file"
   const fileAttachmentRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
+  
+  // New format: Markdown-style links like [#file](test.py)
+  const markdownLinkRegex = /\[#file\]\(([^)]+)\)/g;
+  
+  // Process any direct Markdown-style links first
+  if (document) {
+    const mdMatches: {index: number, path: string, isImage: boolean, content?: string}[] = [];
+    let mdMatch;
+    
+    // First pass - collect all matches and resolve paths
+    while ((mdMatch = markdownLinkRegex.exec(text)) !== null) {
+      const filePath = mdMatch[1];
+      const resolvedPath = resolveFilePath(filePath, document);
+      const isImage = isImageFile(filePath);
+      
+      // For text files, read the content
+      let fileContent;
+      if (!isImage && fileExists(resolvedPath)) {
+        fileContent = readFileAsText(resolvedPath);
+      }
+      
+      mdMatches.push({
+        index: mdMatch.index,
+        path: filePath,
+        isImage,
+        content: fileContent
+      });
+    }
+    
+    // Sort matches in reverse order to avoid index shifts during replacement
+    mdMatches.sort((a, b) => b.index - a.index);
+    
+    // Replace each match with the formatted content
+    for (const match of mdMatches) {
+      const replacement = match.isImage 
+        ? `Attached file at ${match.path}\n[image content]`
+        : `Attached file at ${match.path}\n\`\`\`\n${match.content || 'Unable to read file content'}\n\`\`\``;
+        
+      text = text.substring(0, match.index) + replacement + text.substring(match.index + `[#file](${match.path})`.length);
+    }
+  }
   
   let lastIndex = 0;
   let match;
   
+  // Process original format first
   while ((match = fileAttachmentRegex.exec(text)) !== null) {
     // Add text before the attachment
+    const beforeText = text.substring(lastIndex, match.index).trim();
+    if (beforeText) {
+      content.push({ type: 'text', value: beforeText });
+    }
+    
+    const path = match[1];
+    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || 
+        path.endsWith('.gif') || path.endsWith('.webp')) {
+      content.push({ type: 'image', path });
+    } else {
+      // For non-image files, extract content from code block
+      content.push({ type: 'text', value: match[2] || '' });
+    }
+    
+    lastIndex = match.index + match[0].length;
+  }
+  
+  // Reset for processing Markdown-style links
+  text = text.substring(0, lastIndex) + text.substring(lastIndex).replace(markdownLinkRegex, (match, filePath) => {
+    log(`Found Markdown-style file link: ${filePath}`);
+    
+    // Determine if it's an image file based on extension
+    if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.jpeg') || 
+        filePath.endsWith('.gif') || filePath.endsWith('.webp')) {
+      // Convert to the format specified in CLAUDE.md for images
+      return `\nAttached file at ${filePath}\n[image content]`;
+    } else {
+      // For text files, placeholder - actual content will be loaded when resolving paths
+      return `\nAttached file at ${filePath}\n\`\`\`\nFile content will be loaded\n\`\`\``;
+    }
+  });
+  
+  // Process the updated text with any converted Markdown links
+  lastIndex = 0;
+  const updatedFileRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
+  
+  while ((match = updatedFileRegex.exec(text)) !== null) {
+    // Skip matches that were already processed in the first pass
+    if (match.index < lastIndex) continue;
+    
     const beforeText = text.substring(lastIndex, match.index).trim();
     if (beforeText) {
       content.push({ type: 'text', value: beforeText });
@@ -109,22 +218,70 @@ export function hasEmptyAssistantBlock(text: string): boolean {
   const displayText = text.length > 100 ? text.substring(text.length - 100) : text;
   log(`Checking for empty assistant block in: "${displayText.replace(/\n/g, '\\n')}"`);
   
-  // Look for "#%% assistant" near the end followed by no content
-  // We'll be more lenient with this test to catch more cases
-  const normalizedText = text.trim() + '\n';
-  const lastBlockPos = normalizedText.lastIndexOf('#%% assistant');
+  // Check if the document ends with a pattern that should trigger streaming
+  // Specifically, we want "#%% assistant" followed by a newline and optional whitespace at the end
+  const lastAssistantIndex = text.lastIndexOf('#%% assistant');
   
-  if (lastBlockPos === -1) {
-    log('No assistant block found');
+  // If no assistant block found or it's not near the end, return false
+  if (lastAssistantIndex === -1 || lastAssistantIndex < text.length - 30) {
+    log('No assistant block found near the end of the document');
     return false;
   }
   
-  // Check if there's any significant content after the last #%% assistant
-  const textAfterBlock = normalizedText.substring(lastBlockPos + 13).trim();
-  const isEmpty = textAfterBlock.length === 0;
+  // Check if there's a newline after "#%% assistant"
+  const textAfterMarker = text.substring(lastAssistantIndex + 13); // Length of '#%% assistant'
   
-  log(`Last assistant block at position ${lastBlockPos}, content after: "${textAfterBlock.substring(0, 20)}", isEmpty: ${isEmpty}`);
-  return isEmpty;
+  // First, check for at least one newline
+  if (!textAfterMarker.includes('\n')) {
+    log('No newline after "#%% assistant", not triggering streaming');
+    return false;
+  }
+  
+  // Now check if there's only whitespace after the newline
+  const hasContentAfterNewline = /\n\s*[^\s]/.test(textAfterMarker);
+  
+  if (hasContentAfterNewline) {
+    log('Found content after newline, not an empty assistant block');
+    return false;
+  }
+  
+  // If we got here, we have "#%% assistant" followed by a newline and only whitespace after that
+  log('Found empty assistant block with newline, triggering streaming');
+  return true;
+}
+
+/**
+ * Checks if a document has an empty tool_execute block
+ * Used to determine when to execute a tool
+ */
+export function hasEmptyToolExecuteBlock(text: string): boolean {
+  // Log document suffix for debugging
+  const displayText = text.length > 100 ? text.substring(text.length - 100) : text;
+  log(`Checking for empty tool_execute block in: "${displayText.replace(/\n/g, '\\n')}"`);
+
+  // More precise approach: find all tool_execute blocks and check if any are empty
+  // Look for blocks that are either at the end of the document or followed by another block
+  const blockMatches = [];
+  const regex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+  let match;
+  
+  while ((match = regex.exec(text)) !== null) {
+    const blockContent = match[1].trim();
+    const position = match.index;
+    blockMatches.push({ position, content: blockContent });
+    
+    log(`Found tool_execute block at ${position}: content=${blockContent ? 'non-empty' : 'empty'}`);
+  }
+  
+  // Check if we found any empty blocks
+  const emptyBlocks = blockMatches.filter(block => block.content === '');
+  
+  if (emptyBlocks.length > 0) {
+    log(`Found ${emptyBlocks.length} empty tool_execute block(s), will trigger tool execution`);
+    return true;
+  }
+  
+  return false;
 }
 
 /**
@@ -145,6 +302,43 @@ export function findAssistantBlocks(text: string): {start: number, end: number}[
       const end = start + lines[i].length;
       blocks.push({start, end});
     }
+  }
+  
+  return blocks;
+}
+
+/**
+ * Finds all assistant blocks with their content start positions
+ * Used for more precise token insertion
+ */
+export function findAllAssistantBlocks(text: string): {markerStart: number, contentStart: number}[] {
+  const blocks: {markerStart: number, contentStart: number}[] = [];
+  const lines = text.split('\n');
+  let lineOffset = 0;
+  
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#%% assistant\s*$/i.test(lines[i])) {
+      // Found an assistant block
+      const markerStart = lineOffset;
+      
+      // Calculate the content start (after the marker line)
+      let contentStart = lineOffset + lines[i].length;
+      
+      // Skip any whitespace after the marker
+      while (contentStart < text.length && 
+             (text[contentStart] === ' ' || text[contentStart] === '\t')) {
+        contentStart++;
+      }
+      
+      // Skip newline if present
+      if (contentStart < text.length && text[contentStart] === '\n') {
+        contentStart++;
+      }
+      
+      blocks.push({markerStart, contentStart});
+    }
+    
+    lineOffset += lines[i].length + 1; // +1 for the newline
   }
   
   return blocks;

@@ -1,62 +1,90 @@
 import * as https from 'https';
 import * as http from 'http';
 import * as path from 'path';
+import * as url from 'url';
 import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
 import { log } from './extension';
-import { getModelName, TOOL_CALLING_SYSTEM_PROMPT } from './config';
+import { getModelName, getBaseUrl, TOOL_CALLING_SYSTEM_PROMPT } from './config';
 
 /**
- * Client for communicating with the Anthropic API
+ * Client for communicating with the OpenAI API
  */
-export class AnthropicClient {
-  private readonly apiUrl = 'https://api.anthropic.com/v1/messages';
-  private readonly apiVersion = '2023-06-01'; // This version should work for streaming
+export class OpenAIClient {
+  private readonly apiUrl: string;
   
-  constructor(private readonly apiKey: string) {}
+  constructor(private readonly apiKey: string) {
+    // Use custom base URL if provided, otherwise use OpenAI's default
+    const baseUrl = getBaseUrl();
+    if (baseUrl) {
+      // Construct the full URL by joining the base URL with the chat completions endpoint
+      this.apiUrl = this.joinUrl(baseUrl, '/chat/completions');
+      log(`Using custom OpenAI base URL: ${baseUrl}`);
+    } else {
+      this.apiUrl = 'https://api.openai.com/v1/chat/completions';
+      log('Using default OpenAI API URL');
+    }
+  }
   
   /**
-   * Stream completion from Anthropic API
+   * Safely joins a base URL with a path
+   */
+  private joinUrl(baseUrl: string, path: string): string {
+    // Remove trailing slash from base URL if present
+    const base = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    // Remove leading slash from path if present
+    const cleanPath = path.startsWith('/') ? path : '/' + path;
+    return base + cleanPath;
+  }
+  
+  /**
+   * Stream completion from OpenAI API
    * Returns generator that yields token chunks
    */
   public async *streamCompletion(
     messages: readonly MessageParam[],
     document?: vscode.TextDocument
   ): AsyncGenerator<string[], void, unknown> {
-    log(`Starting API request with ${messages.length} messages`);
+    log(`Starting OpenAI API request with ${messages.length} messages`);
     
     try {
-      const formattedMessages = this.formatMessages(messages, document);
-      const modelName = getModelName() || 'claude-3-5-haiku-latest';
+      // First prepare messages with system prompt
+      const systemMessage = { role: 'system', content: TOOL_CALLING_SYSTEM_PROMPT };
       
-      const requestBody: any = {
+      // Format regular messages
+      const formattedMessages = this.formatMessages(messages, document);
+      
+      // Add system message as the first message
+      const allMessages = [systemMessage, ...formattedMessages];
+      
+      const modelName = getModelName() || 'gpt-3.5-turbo';
+      
+      const requestBody = {
         model: modelName,
-        messages: formattedMessages,
-        system: TOOL_CALLING_SYSTEM_PROMPT,
+        messages: allMessages,
         stream: true,
         max_tokens: 4000
       };
       
       log(`Using hardcoded system prompt for tool calling (${TOOL_CALLING_SYSTEM_PROMPT.length} chars)`);
       
-      log(`Using Anthropic model: ${requestBody.model}`);
+      log(`Using OpenAI model: ${requestBody.model}`);
       
       const requestOptions = {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Anthropic-Version': this.apiVersion,
-          'x-api-key': this.apiKey
+          'Authorization': `Bearer ${this.apiKey}`
         }
       };
       
-      log('Creating HTTPS request');
+      log('Creating HTTPS request to OpenAI');
       const req = https.request(this.apiUrl, requestOptions);
       
       req.on('error', (error) => {
-        log(`API request error: ${error}`);
-        console.error('API request error:', error);
+        log(`OpenAI API request error: ${error}`);
+        console.error('OpenAI API request error:', error);
         throw error;
       });
       
@@ -77,12 +105,12 @@ export class AnthropicClient {
         for await (const chunk of response) {
           errorData += chunk.toString();
         }
-        const errorMessage = `API request failed with status ${response.statusCode}: ${errorData}`;
+        const errorMessage = `OpenAI API request failed with status ${response.statusCode}: ${errorData}`;
         log(errorMessage);
         throw new Error(errorMessage);
       }
       
-      log('Processing streaming response');
+      log('Processing streaming response from OpenAI');
       yield* this.createStreamGenerator(response);
     } catch (error) {
       log(`Error in streamCompletion: ${error}`);
@@ -91,7 +119,8 @@ export class AnthropicClient {
   }
   
   /**
-   * Creates a generator to process streaming response
+   * Creates a generator to process streaming response from OpenAI
+   * OpenAI's streaming format is different from Anthropic's
    */
   private async *createStreamGenerator(
     response: http.IncomingMessage
@@ -104,13 +133,6 @@ export class AnthropicClient {
         buffer += chunk.toString();
         log(`Received chunk of size ${chunk.length}`);
         
-        // Log raw buffer for debugging (limited size)
-        if (buffer.length < 200) {
-          log(`Current buffer: ${buffer}`);
-        } else {
-          log(`Current buffer (first 200 chars): ${buffer.substring(0, 200)}...`);
-        }
-        
         // Process complete events in buffer
         while (true) {
           const eventEnd = buffer.indexOf('\n\n');
@@ -119,42 +141,30 @@ export class AnthropicClient {
           const event = buffer.substring(0, eventEnd);
           buffer = buffer.substring(eventEnd + 2);
           
-          eventCount++;
-          log(`Processing event ${eventCount}: ${event.substring(0, 100)}${event.length > 100 ? '...' : ''}`);
-          
-          if (event.startsWith('event: ')) {
-            // Get the event type (after 'event: ' and before newline)
-            const eventType = event.substring(7, event.indexOf('\n'));
-            log(`SSE event type: ${eventType}`);
+          if (event.trim() === 'data: [DONE]') {
+            log('Received [DONE] event, stream complete');
+            break;
           }
           
-          if (event.includes('data: ')) {
+          if (event.startsWith('data: ')) {
             try {
               // Extract the data part (after 'data: ')
               const dataStart = event.indexOf('data: ') + 6;
               const jsonData = event.substring(dataStart);
-              log(`Parsing JSON: ${jsonData}`);
               
-              const data = JSON.parse(jsonData);
-              log(`Event type: ${data.type}`);
-              
-              // Handle different event types from Claude API
-              if (data.type === 'content_block_delta' && data.delta && data.delta.type === 'text_delta' && data.delta.text) {
-                log(`Received token: "${data.delta.text}"`);
-                // Ensure we're sending tokens for text_delta events
-                yield [data.delta.text];
-              } else if (data.type === 'content_block_start') {
-                log(`Content block start: ${JSON.stringify(data.content_block)}`);
-              } else if (data.type === 'message_delta') {
-                log(`Message delta received: ${JSON.stringify(data.delta)}`);
-              } else if (data.type === 'message_start') {
-                log(`Message start received: ${JSON.stringify(data.message)}`);
-              } else if (data.type === 'message_stop') {
-                log('Received message_stop event');
-              } else if (data.type === 'ping') {
-                log('Received ping event');
-              } else {
-                log(`Unknown event type: ${data.type}`);
+              if (jsonData.trim()) {
+                const data = JSON.parse(jsonData);
+                
+                // OpenAI's format has choices with delta that contains content
+                if (data.choices && data.choices.length > 0) {
+                  const delta = data.choices[0].delta;
+                  
+                  if (delta && delta.content) {
+                    eventCount++;
+                    log(`Received token event ${eventCount}: "${delta.content}"`);
+                    yield [delta.content];
+                  }
+                }
               }
             } catch (e) {
               log(`Error parsing event data: ${e}`);
@@ -172,7 +182,8 @@ export class AnthropicClient {
   }
   
   /**
-   * Formats messages for the Anthropic API
+   * Formats messages for the OpenAI API
+   * OpenAI expects a slightly different format than Anthropic
    */
   private formatMessages(messages: readonly MessageParam[], document?: vscode.TextDocument): any[] {
     return messages.map(msg => ({
@@ -182,12 +193,26 @@ export class AnthropicClient {
   }
   
   /**
-   * Formats content items for Anthropic API
+   * Formats content items for OpenAI API
    */
-  private formatContent(contentItems: readonly Content[], document?: vscode.TextDocument): any[] {
-    return contentItems.map(content => {
+  private formatContent(contentItems: readonly Content[], document?: vscode.TextDocument): any {
+    // For text-only content, return as simple string
+    if (contentItems.every(item => item.type === 'text')) {
+      return contentItems
+        .filter(item => item.type === 'text')
+        .map(item => (item as any).value)
+        .join('\n\n');
+    }
+    
+    // For mixed content (images + text), return as array
+    const formattedContent = [];
+    
+    for (const content of contentItems) {
       if (content.type === 'text') {
-        return { type: 'text', text: content.value };
+        formattedContent.push({
+          type: 'text',
+          text: content.value
+        });
       } else if (content.type === 'image') {
         try {
           // Resolve image path relative to document if needed
@@ -198,28 +223,34 @@ export class AnthropicClient {
           // Read image file and convert to base64
           const imageData = readFileAsBuffer(imagePath);
           if (!imageData) {
-            return { type: 'text', text: `[Failed to load image: ${content.path}]` };
+            formattedContent.push({
+              type: 'text',
+              text: `[Failed to load image: ${content.path}]`
+            });
+            continue;
           }
           
           const base64Data = imageData.toString('base64');
           const mimeType = this.getMimeType(imagePath);
           
-          return {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: mimeType,
-              data: base64Data
+          formattedContent.push({
+            type: 'image_url',
+            image_url: {
+              url: `data:${mimeType};base64,${base64Data}`
             }
-          };
+          });
         } catch (error) {
           console.error(`Error processing image ${content.path}:`, error);
-          // Return empty text if image can't be processed
-          return { type: 'text', text: `[Failed to load image: ${content.path}]` };
+          // Return text if image can't be processed
+          formattedContent.push({
+            type: 'text',
+            text: `[Failed to load image: ${content.path}]`
+          });
         }
       }
-      return { type: 'text', text: '' };
-    });
+    }
+    
+    return formattedContent;
   }
   
   /**

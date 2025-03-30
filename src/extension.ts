@@ -1,7 +1,18 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { DocumentListener } from './listener';
-import { getAnthropicApiKey, setAnthropicApiKey } from './config';
+import { 
+  getAnthropicApiKey, 
+  setAnthropicApiKey, 
+  getApiKey, 
+  setApiKey, 
+  getProvider, 
+  setProvider,
+  getModelName,
+  setModelName,
+  getBaseUrl,
+  setBaseUrl
+} from './config';
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -78,11 +89,30 @@ export function activate(context: vscode.ExtensionContext) {
     }),
     
     vscode.commands.registerCommand('filechat.configureApi', async () => {
-      // Check current key
-      const currentKey = getAnthropicApiKey();
+      // Get current provider and key
+      const currentProvider = getProvider();
+      const currentKey = getApiKey() || (currentProvider === 'anthropic' ? getAnthropicApiKey() : undefined);
+      
+      // First, let user select the provider
+      const providerOptions = ['anthropic', 'openai'];
+      const selectedProvider = await vscode.window.showQuickPick(providerOptions, {
+        placeHolder: 'Select AI provider',
+        title: 'Configure Chat Markdown API',
+        canPickMany: false,
+        ignoreFocusOut: true
+      });
+      
+      if (!selectedProvider) {
+        return; // User cancelled
+      }
+      
+      // Save provider setting
+      await setProvider(selectedProvider);
+      
+      // Then get API key
       const message = currentKey 
-        ? 'Your Anthropic API key is configured. Enter a new key to update it.' 
-        : 'Enter your Anthropic API key:';
+        ? `Your ${selectedProvider} API key is configured. Enter a new key to update it.` 
+        : `Enter your ${selectedProvider} API key:`;
       
       const apiKey = await vscode.window.showInputBox({
         prompt: message,
@@ -91,10 +121,129 @@ export function activate(context: vscode.ExtensionContext) {
       });
       
       if (apiKey !== undefined) {  // Undefined means user cancelled
-        await setAnthropicApiKey(apiKey);
+        await setApiKey(apiKey);
+        
+        // For backward compatibility, also set Anthropic key
+        if (selectedProvider === 'anthropic') {
+          await setAnthropicApiKey(apiKey);
+        }
+        
         vscode.window.showInformationMessage(
-          apiKey ? 'Anthropic API key configured successfully' : 'Anthropic API key cleared'
+          apiKey ? `${selectedProvider} API key configured successfully` : `${selectedProvider} API key cleared`
         );
+      }
+    }),
+    
+    vscode.commands.registerCommand('filechat.configureModel', async () => {
+      // Get current provider and model
+      const provider = getProvider();
+      const currentModel = getModelName();
+      
+      // Show different default suggestions based on provider
+      let modelSuggestions: string[] = [];
+      if (provider === 'anthropic') {
+        modelSuggestions = [
+          'claude-3-opus-20240229',
+          'claude-3-sonnet-20240229',
+          'claude-3-haiku-20240307',
+          'claude-3-5-sonnet-20240620',
+          'claude-3-5-haiku-latest'
+        ];
+      } else if (provider === 'openai') {
+        modelSuggestions = [
+          'gpt-4-turbo',
+          'gpt-4-vision-preview',
+          'gpt-4-32k',
+          'gpt-4',
+          'gpt-3.5-turbo'
+        ];
+      }
+      
+      // Allow custom input or selection from list
+      const selectedModel = await vscode.window.showQuickPick(
+        ['Custom...', ...modelSuggestions],
+        {
+          placeHolder: `Select or enter a model for ${provider} (current: ${currentModel || 'default'})`,
+          title: 'Configure Chat Markdown Model',
+          ignoreFocusOut: true
+        }
+      );
+      
+      if (!selectedModel) {
+        return; // User cancelled
+      }
+      
+      let modelName = selectedModel;
+      
+      // If custom option selected, prompt for model name
+      if (selectedModel === 'Custom...') {
+        modelName = await vscode.window.showInputBox({
+          prompt: `Enter model name for ${provider}:`,
+          value: currentModel || '',
+          ignoreFocusOut: true
+        }) || '';
+        
+        if (!modelName) {
+          return; // User cancelled
+        }
+      }
+      
+      // Save model setting
+      await setModelName(modelName);
+      vscode.window.showInformationMessage(`${provider} model set to: ${modelName}`);
+    }),
+    
+    vscode.commands.registerCommand('filechat.configureBaseUrl', async () => {
+      // This command only makes sense for OpenAI provider
+      const provider = getProvider();
+      if (provider !== 'openai') {
+        vscode.window.showInformationMessage('Base URL is only used with OpenAI provider. Please switch provider to OpenAI first.');
+        return;
+      }
+      
+      const currentBaseUrl = getBaseUrl() || '';
+      
+      // Provide some examples of compatible APIs
+      const baseUrlSuggestions = [
+        { label: 'Default OpenAI API', detail: 'https://api.openai.com/v1' },
+        { label: 'Azure OpenAI API', detail: 'https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME' },
+        { label: 'Google Gemini API', detail: 'https://generativelanguage.googleapis.com/v1beta/openai' },
+        { label: 'Custom...', detail: 'Enter a custom base URL' }
+      ];
+      
+      const selectedOption = await vscode.window.showQuickPick(baseUrlSuggestions, {
+        placeHolder: 'Select or enter base URL for OpenAI-compatible API',
+        title: 'Configure OpenAI-Compatible Base URL',
+        ignoreFocusOut: true
+      });
+      
+      if (!selectedOption) {
+        return; // User cancelled
+      }
+      
+      let baseUrl = selectedOption.detail;
+      
+      // If custom option selected, prompt for base URL
+      if (selectedOption.label === 'Custom...') {
+        baseUrl = await vscode.window.showInputBox({
+          prompt: 'Enter base URL for OpenAI-compatible API:',
+          value: currentBaseUrl,
+          ignoreFocusOut: true
+        }) || '';
+        
+        if (!baseUrl) {
+          return; // User cancelled
+        }
+      }
+      
+      // If user selected default OpenAI API, clear the setting
+      if (selectedOption.label === 'Default OpenAI API') {
+        await setBaseUrl('');
+        vscode.window.showInformationMessage('Using default OpenAI API URL');
+      } else {
+        // Save base URL setting
+        await setBaseUrl(baseUrl);
+        vscode.window.showInformationMessage(`OpenAI-compatible base URL set to: ${baseUrl}`);
       }
     })
   );

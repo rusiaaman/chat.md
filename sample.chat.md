@@ -83,3 +83,28 @@ The format for each attachment remains the same:
 3. For images, use the "[image content]" placeholder
 
 You can mix text, code files, and images in any order within your message, and the assistant will process all of them together when generating a response.
+
+#%% user
+Is there a simpler way to attach files using Markdown-style links?
+
+#%% assistant
+Yes! There's a simpler way to attach files using Markdown-style links with the `#file` tag. Here's how it works:
+
+```
+#%% user
+Here's my code file:
+
+[#file](src/main.js)
+
+And here's an image:
+
+[#file](assets/diagram.png)
+```
+
+Benefits of using this format:
+1. It's more concise than the "Attached file at" syntax
+2. It uses familiar Markdown link syntax
+3. It works with both relative and absolute paths
+4. It supports the same file types (text and images)
+
+The extension will automatically detect these links and convert them to the appropriate file attachments when sending them to the AI. Both formats are supported, so you can use whichever you prefer.

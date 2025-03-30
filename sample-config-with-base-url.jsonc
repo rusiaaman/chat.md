@@ -1,0 +1,24 @@
+{
+  // Chat Markdown configuration examples with base_url
+  
+  // AI provider: must be 'openai' to use base_url
+  "filechat.provider": "openai",
+  
+  // Base URL for OpenAI-compatible APIs
+  // Examples:
+  
+  // 1. Default OpenAI API (leave empty or don't set):
+  // "filechat.base_url": "",
+  
+  // 2. Azure OpenAI API:
+  "filechat.base_url": "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME",
+  
+  // 3. Google Gemini API (with OpenAI compatibility layer):
+  // "filechat.base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  
+  // Model name (specific to the API you're using)
+  "filechat.model_name": "gpt-3.5-turbo",
+  
+  // Your API key (store securely)
+  "filechat.apiKey": "your-api-key-here"
+}
