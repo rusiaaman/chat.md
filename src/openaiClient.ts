@@ -156,23 +156,82 @@ export class OpenAIClient {
               const jsonData = event.substring(dataStart);
               
               if (jsonData.trim()) {
+                try {
+                  const data = JSON.parse(jsonData);
+                  
+                  // OpenAI's format has choices with delta that contains content
+                  if (data.choices && data.choices.length > 0) {
+                    const delta = data.choices[0].delta;
+                    
+                    if (delta && delta.content) {
+                      eventCount++;
+                      log(`Received token event ${eventCount}: "${delta.content}"`);
+                      yield [delta.content];
+                    }
+                  }
+                } catch (jsonParseError) {
+                  log(`JSON parsing error: ${jsonParseError}`);
+                  log(`Corrupted JSON data: ${jsonData}`);
+                  
+                  // Attempt to salvage content from corrupted JSON
+                  // Look for content patterns in the corrupted JSON
+                  const contentMatch = /"content"\s*:\s*"([^"\\]*(\\.[^"\\]*)*)"/g.exec(jsonData);
+                  if (contentMatch && contentMatch[1]) {
+                    const recoveredContent = contentMatch[1]
+                      .replace(/\\"/g, '"')
+                      .replace(/\\\\/g, '\\')
+                      .replace(/\\n/g, '\n')
+                      .replace(/\\t/g, '\t')
+                      .replace(/\\r/g, '\r');
+                    
+                    log(`Recovered content from corrupted JSON: "${recoveredContent}"`);
+                    eventCount++;
+                    yield [recoveredContent];
+                  } else {
+                    log(`Could not recover content from corrupted JSON`);
+                  }
+                }
+              }
+            } catch (e) {
+              log(`Error processing event: ${e}`);
+              log(`Raw event data: ${event}`);
+            }
+          }
+        }
+      }
+      
+      // Process any remaining buffer content at the end of the stream
+      if (buffer.trim()) {
+        log(`Processing remaining buffer at end of stream: "${buffer}"`);
+        
+        // Handle case where final chunk doesn't end with \n\n
+        if (buffer.startsWith('data: ')) {
+          try {
+            // Extract the data part (after 'data: ')
+            const dataStart = buffer.indexOf('data: ') + 6;
+            const jsonData = buffer.substring(dataStart);
+            
+            if (jsonData.trim() && jsonData !== '[DONE]') {
+              try {
                 const data = JSON.parse(jsonData);
                 
-                // OpenAI's format has choices with delta that contains content
+                // Process the final chunk similar to the main loop
                 if (data.choices && data.choices.length > 0) {
                   const delta = data.choices[0].delta;
                   
                   if (delta && delta.content) {
                     eventCount++;
-                    log(`Received token event ${eventCount}: "${delta.content}"`);
+                    log(`Received final token event ${eventCount}: "${delta.content}"`);
                     yield [delta.content];
                   }
                 }
+              } catch (e) {
+                log(`Error parsing final event data: ${e}`);
+                log(`Raw final event data: ${buffer}`);
               }
-            } catch (e) {
-              log(`Error parsing event data: ${e}`);
-              log(`Raw event data: ${event}`);
             }
+          } catch (e) {
+            log(`Error processing remaining buffer: ${e}`);
           }
         }
       }
