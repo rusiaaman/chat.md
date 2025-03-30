@@ -2,7 +2,7 @@ import { log } from '../extension';
 import * as vscode from 'vscode';
 import { mcpClientManager } from '../mcpClientManager';
 
-export async function executeToolCall(toolName: string, params: Record<string, any>, document?: vscode.TextDocument): Promise<string> {
+export async function executeToolCall(toolName: string, params: Record<string, string>, document?: vscode.TextDocument): Promise<string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
   
   // Execute through MCP
@@ -24,7 +24,7 @@ export function formatToolResult(result: string): string {
   return `<tool_result>\n${result}\n</tool_result>`;
 }
 
-export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, any> } | null {
+export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string> } | null {
   try {
     // Simple XML parser for tool calls
     const nameMatch = /<tool_name>(.*?)<\/tool_name>/s.exec(toolCallXml);
@@ -33,7 +33,7 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     }
     
     const toolName = nameMatch[1].trim();
-    const params: Record<string, any> = {};
+    const params: Record<string, string> = {};
     
     // Extract parameters
     const paramRegex = /<param\s+name=(.*?)>([\s\S]*?)<\/param>/sg;
@@ -43,35 +43,16 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
       const paramName = paramMatch[1].trim().replace(/["']/g, '');
       const paramValue = paramMatch[2].trim();
       
-      // Try to parse as JSON if it looks like JSON
-      try {
-        if (paramValue.trim().startsWith('{') || paramValue.trim().startsWith('[')) {
-          params[paramName] = JSON.parse(paramValue);
-          continue;
-        }
-      } catch {}
-      
-      // Try to parse as number
-      const numValue = Number(paramValue);
-      if (!isNaN(numValue) && paramValue.trim() !== '') {
-        params[paramName] = numValue;
-        continue;
-      }
-      
-      // Handle boolean values
-      if (paramValue.toLowerCase() === 'true') {
-        params[paramName] = true;
-        continue;
-      }
-      if (paramValue.toLowerCase() === 'false') {
-        params[paramName] = false;
-        continue;
-      }
-      
-      // Default to string
+      // Store all parameter values as strings, even JSON objects or arrays
       params[paramName] = paramValue;
+      
+      // Log the parameter type for debugging
+      if (paramValue.trim().startsWith('{') || paramValue.trim().startsWith('[')) {
+        log(`Parameter "${paramName}" appears to be JSON, storing as string: ${paramValue.substring(0, 50)}${paramValue.length > 50 ? '...' : ''}`);
+      }
     }
     
+    log(`Parsed tool call with parameters: ${JSON.stringify(Object.keys(params))}`);
     return { name: toolName, params };
   } catch (error) {
     log(`Error parsing tool call: ${error}`);

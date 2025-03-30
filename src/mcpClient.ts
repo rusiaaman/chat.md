@@ -97,7 +97,7 @@ export class McpClientManager {
   }
   
   // Execute a tool through the appropriate MCP client
-  public async executeToolCall(name: string, params: Record<string, any>): Promise<string> {
+  public async executeToolCall(name: string, params: Record<string, string>): Promise<string> {
     const tool = this.tools.get(name);
     if (!tool) {
       return `Error: Tool "${name}" not found`;
@@ -115,9 +115,37 @@ export class McpClientManager {
       }
       
       try {
+        log(`Executing tool "${name}" with string parameters: ${JSON.stringify(params)}`);
+        
+        // Process parameters according to the tool's schema
+        const processedParams: Record<string, any> = {};
+        const toolSchema = tool.inputSchema?.properties || {};
+        
+        // Process each parameter based on its declared type in the schema
+        for (const [paramName, paramValue] of Object.entries(params)) {
+          const paramSchema = toolSchema[paramName];
+          
+          // For parameters that are declared as objects or arrays in the schema,
+          // we might need to parse the JSON string to match the expected type
+          if (paramSchema && (paramSchema.type === 'object' || paramSchema.type === 'array')) {
+            try {
+              // Log that we're parsing the JSON string
+              log(`Parameter "${paramName}" has type ${paramSchema.type} in schema, attempting to parse JSON`);
+              processedParams[paramName] = JSON.parse(paramValue);
+            } catch (e) {
+              // If parsing fails, keep as string
+              log(`Failed to parse JSON for parameter "${paramName}", keeping as string: ${e}`);
+              processedParams[paramName] = paramValue;
+            }
+          } else {
+            // Keep as string for all other types
+            processedParams[paramName] = paramValue;
+          }
+        }
+        
         const result = await client.callTool({
           name,
-          arguments: params
+          arguments: processedParams
         });
         
         // Convert result to string format
