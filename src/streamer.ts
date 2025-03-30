@@ -5,7 +5,8 @@ import { AnthropicClient } from './anthropicClient';
 import { OpenAIClient } from './openaiClient';
 import { findAssistantBlocks, findAllAssistantBlocks } from './parser';
 import { log } from './extension';
-import { getProvider } from './config';
+import { getProvider, generateToolCallingSystemPrompt } from './config';
+import { mcpClientManager } from './mcpClientManager';
 
 /**
  * Service for streaming LLM responses
@@ -45,12 +46,20 @@ export class StreamingService {
     try {
       log(`Starting to stream response for ${messages.length} messages`);
       
+      // Get all available tools from MCP client
+      const mcpTools = mcpClientManager.getAllTools();
+      
+      // Generate system prompt with MCP tools
+      const systemPrompt = generateToolCallingSystemPrompt(mcpTools);
+      
+      log(`Generated system prompt with ${mcpTools.length} MCP tools`);
+      
       // Start streaming completion based on provider, passing document for file path resolution
       let stream;
       if (this.provider === 'anthropic' && this.anthropicClient) {
-        stream = await this.anthropicClient.streamCompletion(messages, this.document);
+        stream = await this.anthropicClient.streamCompletion(messages, this.document, systemPrompt);
       } else if (this.provider === 'openai' && this.openaiClient) {
-        stream = await this.openaiClient.streamCompletion(messages, this.document);
+        stream = await this.openaiClient.streamCompletion(messages, this.document, systemPrompt);
       } else {
         throw new Error(`Provider ${this.provider} not properly configured`);
       }

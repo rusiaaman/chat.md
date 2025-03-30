@@ -3,16 +3,30 @@ import * as path from 'path';
 import { log } from '../extension';
 import { resolveFilePath } from '../utils/fileUtils';
 import * as vscode from 'vscode';
+import { mcpClientManager } from '../mcpClientManager';
 
 export async function executeToolCall(toolName: string, params: Record<string, any>, document?: vscode.TextDocument): Promise<string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
   
-  // Only support "readFile" tool for now
+  // Try executing through MCP first
+  try {
+    const result = await mcpClientManager.executeToolCall(toolName, params);
+    if (result && !result.startsWith('Error: Tool') && !result.startsWith('Error: No server')) {
+      // If we got a successful result from MCP, return it
+      return result;
+    }
+    // Otherwise, fall through to built-in tools
+    log(`MCP tool execution failed or not found, trying built-in tools`);
+  } catch (mcpError) {
+    log(`MCP tool execution error: ${mcpError}, falling back to built-in tools`);
+  }
+  
+  // Fall back to built-in tools for backward compatibility
   if (toolName.toLowerCase() === 'readfile') {
     return await executeReadFileTool(params, document);
   }
   
-  return `Error: Tool "${toolName}" not supported. Only "readFile" is available.`;
+  return `Error: Tool "${toolName}" not supported. Check your configuration or use 'readFile'.`;
 }
 
 async function executeReadFileTool(params: Record<string, any>, document?: vscode.TextDocument): Promise<string> {
@@ -57,6 +71,33 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     while ((paramMatch = paramRegex.exec(toolCallXml)) !== null) {
       const paramName = paramMatch[1].trim().replace(/["']/g, '');
       const paramValue = paramMatch[2].trim();
+      
+      // Try to parse as JSON if it looks like JSON
+      try {
+        if (paramValue.trim().startsWith('{') || paramValue.trim().startsWith('[')) {
+          params[paramName] = JSON.parse(paramValue);
+          continue;
+        }
+      } catch {}
+      
+      // Try to parse as number
+      const numValue = Number(paramValue);
+      if (!isNaN(numValue) && paramValue.trim() !== '') {
+        params[paramName] = numValue;
+        continue;
+      }
+      
+      // Handle boolean values
+      if (paramValue.toLowerCase() === 'true') {
+        params[paramName] = true;
+        continue;
+      }
+      if (paramValue.toLowerCase() === 'false') {
+        params[paramName] = false;
+        continue;
+      }
+      
+      // Default to string
       params[paramName] = paramValue;
     }
     

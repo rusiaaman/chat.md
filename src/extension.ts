@@ -13,12 +13,16 @@ import {
   getBaseUrl,
   setBaseUrl
 } from './config';
+import { McpClientManager, McpServerConfig } from './mcpClient';
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
 
 // Output channel for logging
 export const outputChannel = vscode.window.createOutputChannel('FileChat');
+
+// Create MCP client manager
+export const mcpClientManager = new McpClientManager();
 
 // Helper function for logging
 export function log(message: string): void {
@@ -30,8 +34,27 @@ export function log(message: string): void {
 /**
  * Activate the extension
  */
+/**
+ * Initialize MCP clients from configuration
+ */
+async function initializeMcpClients(): Promise<void> {
+  try {
+    const mcpServers = vscode.workspace.getConfiguration().get('filechat.mcpServers') as Record<string, McpServerConfig> || {};
+    log(`Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`);
+    
+    await mcpClientManager.initializeClients(mcpServers);
+    log('MCP clients initialized successfully');
+  } catch (error) {
+    log(`Error initializing MCP clients: ${error}`);
+    vscode.window.showErrorMessage(`Failed to initialize MCP servers: ${error}`);
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   log('FileChat extension is now active');
+  
+  // Initialize MCP clients
+  void initializeMcpClients();
   
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: '**/*.chat.md' };
@@ -61,6 +84,11 @@ export function activate(context: vscode.ExtensionContext) {
   
   // Register commands
   context.subscriptions.push(
+    vscode.commands.registerCommand('filechat.refreshMcpTools', async () => {
+      await initializeMcpClients();
+      vscode.window.showInformationMessage('MCP tools refreshed successfully');
+    }),
+    
     vscode.commands.registerCommand('filechat.newChat', async () => {
       // Create a new chat file
       const document = await vscode.workspace.openTextDocument({
@@ -131,6 +159,31 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(
           apiKey ? `${selectedProvider} API key configured successfully` : `${selectedProvider} API key cleared`
         );
+        
+        // Listen for configuration changes
+        context.subscriptions.push(
+          vscode.workspace.onDidChangeConfiguration(e => {
+            if (e.affectsConfiguration('filechat.mcpServers')) {
+              initializeMcpClients();
+            }
+          })
+        );
+      }
+      
+      /**
+       * Initialize MCP clients from configuration
+       */
+      async function initializeMcpClients(): Promise<void> {
+        try {
+          const mcpServers = vscode.workspace.getConfiguration().get('filechat.mcpServers') as Record<string, McpServerConfig> || {};
+          log(`Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`);
+          
+          await mcpClientManager.initializeClients(mcpServers);
+          log('MCP clients initialized successfully');
+        } catch (error) {
+          log(`Error initializing MCP clients: ${error}`);
+          vscode.window.showErrorMessage(`Failed to initialize MCP servers: ${error}`);
+        }
       }
     }),
     

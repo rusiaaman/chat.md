@@ -6,7 +6,7 @@ import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
 import { log } from './extension';
-import { getModelName, getBaseUrl, TOOL_CALLING_SYSTEM_PROMPT } from './config';
+import { getModelName, getBaseUrl, generateToolCallingSystemPrompt } from './config';
 
 /**
  * Client for communicating with the OpenAI API
@@ -44,13 +44,15 @@ export class OpenAIClient {
    */
   public async *streamCompletion(
     messages: readonly MessageParam[],
-    document?: vscode.TextDocument
+    document?: vscode.TextDocument,
+    systemPrompt?: string
   ): AsyncGenerator<string[], void, unknown> {
     log(`Starting OpenAI API request with ${messages.length} messages`);
     
     try {
       // First prepare messages with system prompt
-      const systemMessage = { role: 'system', content: TOOL_CALLING_SYSTEM_PROMPT };
+      const systemPromptToUse = systemPrompt || generateToolCallingSystemPrompt();
+      const systemMessage = { role: 'system', content: systemPromptToUse };
       
       // Format regular messages
       const formattedMessages = this.formatMessages(messages, document);
@@ -67,7 +69,7 @@ export class OpenAIClient {
         max_tokens: 4000
       };
       
-      log(`Using hardcoded system prompt for tool calling (${TOOL_CALLING_SYSTEM_PROMPT.length} chars)`);
+      log(`Using system prompt for tool calling (${systemPromptToUse.length} chars)`);
       
       log(`Using OpenAI model: ${requestBody.model}`);
       

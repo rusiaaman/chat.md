@@ -36,6 +36,10 @@
       {
         "command": "filechat.configureBaseUrl",
         "title": "Configure OpenAI-Compatible Base URL"
+      },
+      {
+        "command": "filechat.refreshMcpTools",
+        "title": "Refresh MCP Tools"
       }
     ],
     "configuration": {
@@ -43,7 +47,10 @@
       "properties": {
         "filechat.provider": {
           "type": "string",
-          "enum": ["anthropic", "openai"],
+          "enum": [
+            "anthropic",
+            "openai"
+          ],
           "default": "anthropic",
           "description": "AI provider to use (anthropic or openai)",
           "scope": "application"
@@ -67,6 +74,36 @@
           "type": "string",
           "description": "Anthropic API Key (legacy setting, use filechat.apiKey instead)",
           "scope": "application"
+        },
+        "filechat.mcpServers": {
+          "type": "object",
+          "description": "MCP server configurations for tool integration",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "Command to start the MCP server"
+              },
+              "args": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Arguments for the MCP server command"
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Environment variables for the MCP server"
+              }
+            },
+            "required": ["command", "args"]
+          },
+          "default": {},
+          "scope": "application"
         }
       }
     }
@@ -89,5 +126,8 @@
     "glob": "^7.1.6",
     "typescript": "^4.0.2",
     "vscode-test": "^1.4.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.8.0"
   }
 }

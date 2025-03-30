@@ -1,23 +1,36 @@
 import * as vscode from 'vscode';
+import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 /**
- * Default system prompt for tool calling
- * Used when making API requests to LLMs
+ * Generate system prompt for tool calling, including MCP tools
+ * @param mcpTools Array of MCP tools to include in the prompt
+ * @returns The system prompt string
  */
-export const TOOL_CALLING_SYSTEM_PROMPT = `
+export function generateToolCallingSystemPrompt(mcpTools: Tool[] = []): string {
+  const defaultTools = `
+1. readFile - Reads the content of a file
+   Parameters:
+   - path: The path to the file to read (required)`;
+
+  const mcpToolsDescription = mcpTools.map((tool, index) => `
+${index + 2}. ${tool.name} - ${tool.description || ''}
+   Input Schema: 
+   \`\`\`json
+   ${JSON.stringify(tool.inputSchema, null, 2)}
+   \`\`\`
+`).join('');
+
+  return `
 This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following format to call a tool:
 
 <tool_call>
-<tool_name>readFile</tool_name>
-<param name="path">
-/path/to/file.txt
+<tool_name>toolName</tool_name>
+<param name="paramName">
+paramValue
 </param>
 </tool_call>
 
-Available tools:
-1. readFile - Reads the content of a file
-   Parameters:
-   - path: The path to the file to read (required)
+Available tools:${defaultTools}${mcpToolsDescription}
    
 After calling a tool, wait for the result which will be provided in the following format:
 
@@ -31,6 +44,12 @@ Tool usage guidelines:
 - Use the exact XML format shown above
 - Make sure to use correct parameter names
 `;
+}
+
+/**
+ * Default system prompt for backward compatibility
+ */
+export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt();
 
 /**
  * Gets the configured provider (anthropic or openai)
