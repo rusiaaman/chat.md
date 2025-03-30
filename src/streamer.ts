@@ -99,22 +99,63 @@ export class StreamingService {
           
           // Check if adding these tokens would complete a tool call
           const currentTokens = [...streamer.tokens, ...tokens].join('');
-          const toolCallCompleted = this.checkForCompletedToolCall(currentTokens);
+          const toolCallResult = this.checkForCompletedToolCall(currentTokens);
           
-          if (toolCallCompleted) {
-            log('Detected completed tool call, stopping streaming after updating document');
+          // Check if we have a completed tool call
+          if (toolCallResult && typeof toolCallResult !== 'boolean') {
+            log('Detected completed tool call, will truncate at position ' + toolCallResult.endIndex);
             
             try {
-              // Update the document with current tokens
-              await this.updateDocumentWithTokens(streamer, tokens);
+              // Get the end index of the completed tool call
+              const { endIndex } = toolCallResult;
+              
+              // Truncate existing tokens if needed
+              if (streamer.tokens.join('').length > endIndex) {
+                log('Truncating existing tokens to remove content after tool call');
+                const joinedTokens = streamer.tokens.join('');
+                streamer.tokens = [joinedTokens.substring(0, endIndex)];
+              }
+              
+              // Calculate how much of the new tokens we should keep
+              const existingLength = streamer.tokens.join('').length;
+              const keepLength = Math.max(0, endIndex - existingLength);
+              
+              // Create a new array of tokens that only includes content up to the </tool_call> tag
+              const truncatedNewTokens: string[] = [];
+              let currentLength = 0;
+              
+              for (const token of tokens) {
+                if (currentLength >= keepLength) {
+                  break; // Stop adding tokens if we've reached the end of the tool call
+                }
+                
+                if (currentLength + token.length <= keepLength) {
+                  // Can include the full token
+                  truncatedNewTokens.push(token);
+                  currentLength += token.length;
+                } else {
+                  // Need to truncate this token
+                  const partialToken = token.substring(0, keepLength - currentLength);
+                  if (partialToken) {
+                    truncatedNewTokens.push(partialToken);
+                  }
+                  break;
+                }
+              }
+              
+              log(`Truncated tokens from ${tokens.length} to ${truncatedNewTokens.length} to exclude content after </tool_call>`);
+              
+              // Update the document with truncated tokens
+              if (truncatedNewTokens.length > 0) {
+                await this.updateDocumentWithTokens(streamer, truncatedNewTokens);
+              }
               
               // Add tool_execute block after the last token
               const text = this.document.getText();
               const blockStart = this.findBlockStartPosition(text, streamer);
               
               if (blockStart !== -1) {
-                const tokensWithNewTokens = [...streamer.tokens, ...tokens].join('');
-                const insertPosition = this.document.positionAt(blockStart + tokensWithNewTokens.length);
+                const insertPosition = this.document.positionAt(blockStart + streamer.tokens.join('').length);
                 
                 const edit = new vscode.WorkspaceEdit();
                 edit.insert(this.document.uri, insertPosition, '\n\n#%% tool_execute\n');
@@ -187,8 +228,11 @@ export class StreamingService {
   
   /**
    * Check if text contains a complete tool call
+   * Returns:
+   * - false if no complete tool call is found
+   * - { isComplete: true, endIndex: number } if a complete tool call is found
    */
-  private checkForCompletedToolCall(text: string): boolean {
+  private checkForCompletedToolCall(text: string): boolean | { isComplete: true, endIndex: number } {
     // Simple regex to match completed tool calls
     const toolCallMatch = /<tool_call>[\s\S]*?<\/tool_call>/s.exec(text);
     
@@ -207,7 +251,8 @@ export class StreamingService {
       // If no more opening tags or next tag is after significant text, this is a complete call
       if (nextOpeningTagIndex === -1) {
         log('No additional tool calls found after this one');
-        return true;
+        // Return the end index of the tool call for truncation
+        return { isComplete: true, endIndex: matchEndIndex };
       }
       
       // Check if there's meaningful content between the end of this tag and the next opening tag
@@ -219,7 +264,8 @@ export class StreamingService {
       }
       
       log('Found completed tool call followed by significant content');
-      return true;
+      // Return the end index of the tool call for truncation
+      return { isComplete: true, endIndex: matchEndIndex };
     }
     
     return false;
