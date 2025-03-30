@@ -123,11 +123,11 @@ export class McpClientManager {
         
         // Process each parameter based on its declared type in the schema
         for (const [paramName, paramValue] of Object.entries(params)) {
-          const paramSchema = toolSchema[paramName];
+          const paramSchema = toolSchema[paramName] as { type?: string } | undefined;
           
           // For parameters that are declared as objects or arrays in the schema,
           // we might need to parse the JSON string to match the expected type
-          if (paramSchema && (paramSchema.type === 'object' || paramSchema.type === 'array')) {
+          if (paramSchema?.type && (paramSchema.type === 'object' || paramSchema.type === 'array')) {
             try {
               // Log that we're parsing the JSON string
               log(`Parameter "${paramName}" has type ${paramSchema.type} in schema, attempting to parse JSON`);
