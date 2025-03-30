@@ -335,7 +335,7 @@ export class StreamingService {
       log(`STREAMER RESULT: Edit applied: ${applied}`);
       
       if (applied) {
-        // Auto-scroll to keep the newly inserted content visible
+        // Auto-scroll to keep the newly inserted content visible and ensure it's always in view
         try {
           // Find the editor for this document
           const editor = vscode.window.visibleTextEditors.find(
@@ -352,11 +352,15 @@ export class StreamingService {
             // Create a range that includes the newly added content
             const range = new vscode.Range(insertPosition, endPosition);
             
-            // Reveal the range in the editor, scrolling to it if needed
+            // Reveal the range in the editor, ensuring it's always visible
             editor.revealRange(
               range,
-              vscode.TextEditorRevealType.Default
+              vscode.TextEditorRevealType.InCenterIfOutsideViewport
             );
+            
+            // Move cursor to the end for better user experience
+            editor.selection = new vscode.Selection(endPosition, endPosition);
+            
             log(`Auto-scrolled editor to show latest content`);
           }
         } catch (scrollError) {

@@ -240,7 +240,7 @@ export class DocumentListener {
     } else {
       log('Successfully inserted tool result and new assistant block');
       
-      // Auto-scroll to keep the newly inserted content visible
+      // Auto-scroll to keep the newly inserted content visible and ensure we're scrolled to the bottom
       try {
         // Find the editor for this document
         const editor = vscode.window.visibleTextEditors.find(
@@ -248,23 +248,19 @@ export class DocumentListener {
         );
         
         if (editor) {
-          // Calculate the new position after the inserted content
-          // This will be where the empty assistant block is
-          const insertedLines = `\n${result}\n\n#%% assistant\n`.split('\n').length - 1;
-          const endPosition = new vscode.Position(
-            position.line + insertedLines,
-            0
-          );
+          // Get the position of the very end of the document to ensure we scroll all the way to the bottom
+          const docEnd = this.document.lineAt(this.document.lineCount - 1).range.end;
           
-          // Create a range that includes the newly added content
-          const range = new vscode.Range(position, endPosition);
-          
-          // Reveal the range in the editor, scrolling to it if needed
+          // Reveal the end of the document in the editor, always ensuring it's visible
           editor.revealRange(
-            range,
-            vscode.TextEditorRevealType.Default
+            new vscode.Range(docEnd, docEnd),
+            vscode.TextEditorRevealType.InCenterIfOutsideViewport
           );
-          log(`Auto-scrolled editor to show tool result and new assistant block`);
+          
+          // Move cursor to the end of the document for better user experience
+          editor.selection = new vscode.Selection(docEnd, docEnd);
+          
+          log(`Auto-scrolled editor to the end of the document to show tool result`);
         }
       } catch (scrollError) {
         log(`Auto-scroll error (non-critical): ${scrollError}`);
