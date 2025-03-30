@@ -239,6 +239,37 @@ export class DocumentListener {
       log('Failed to insert tool result into document');
     } else {
       log('Successfully inserted tool result and new assistant block');
+      
+      // Auto-scroll to keep the newly inserted content visible
+      try {
+        // Find the editor for this document
+        const editor = vscode.window.visibleTextEditors.find(
+          e => e.document.uri.toString() === this.document.uri.toString()
+        );
+        
+        if (editor) {
+          // Calculate the new position after the inserted content
+          // This will be where the empty assistant block is
+          const insertedLines = `\n${result}\n\n#%% assistant\n`.split('\n').length - 1;
+          const endPosition = new vscode.Position(
+            position.line + insertedLines,
+            0
+          );
+          
+          // Create a range that includes the newly added content
+          const range = new vscode.Range(position, endPosition);
+          
+          // Reveal the range in the editor, scrolling to it if needed
+          editor.revealRange(
+            range,
+            vscode.TextEditorRevealType.Default
+          );
+          log(`Auto-scrolled editor to show tool result and new assistant block`);
+        }
+      } catch (scrollError) {
+        log(`Auto-scroll error (non-critical): ${scrollError}`);
+        // Continue even if auto-scroll fails
+      }
     }
   }
   

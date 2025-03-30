@@ -334,7 +334,36 @@ export class StreamingService {
       const applied = await vscode.workspace.applyEdit(edit);
       log(`STREAMER RESULT: Edit applied: ${applied}`);
       
-      if (!applied) {
+      if (applied) {
+        // Auto-scroll to keep the newly inserted content visible
+        try {
+          // Find the editor for this document
+          const editor = vscode.window.visibleTextEditors.find(
+            e => e.document.uri.toString() === this.document.uri.toString()
+          );
+          
+          if (editor) {
+            // Calculate position after the inserted tokens
+            const endPosition = new vscode.Position(
+              insertPosition.line + newTokens.join('').split('\n').length - 1,
+              insertPosition.character + newTokens.join('').split('\n').pop()!.length
+            );
+            
+            // Create a range that includes the newly added content
+            const range = new vscode.Range(insertPosition, endPosition);
+            
+            // Reveal the range in the editor, scrolling to it if needed
+            editor.revealRange(
+              range,
+              vscode.TextEditorRevealType.Default
+            );
+            log(`Auto-scrolled editor to show latest content`);
+          }
+        } catch (scrollError) {
+          log(`Auto-scroll error (non-critical): ${scrollError}`);
+          // Continue even if auto-scroll fails
+        }
+      } else {
         log(`STREAMER ERROR: Failed to apply edit, details:`);
         log(`- Document URI: ${this.document.uri.toString()}`);
         log(`- Insert position: Line ${insertPosition.line}, Character ${insertPosition.character}`);

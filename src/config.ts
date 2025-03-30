@@ -25,7 +25,7 @@ you don't have access to external tools at the moment and suggest they check the
   }
 
   return `
-This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following format to call a tool:
+This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool:
 
 <tool_call>
 <tool_name>toolName</tool_name>
@@ -45,8 +45,11 @@ The content or result of the tool execution will appear here.
 Tool usage guidelines:
 - Only use tools when necessary to fulfill the user's request
 - Always wait for tool results before continuing
-- Use the exact XML format shown above
+- Use the exact format shown above - it's a simplified XML-like format, not strict XML
+- You don't need to worry about CDATA tags or XML escaping
 - Make sure to use correct parameter names
+- For scalar parameters (string, number, boolean), write values directly without quotes
+- For object/array type parameters, use properly encoded JSON format
 `;
 }
 
