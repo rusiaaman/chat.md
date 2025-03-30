@@ -7,18 +7,22 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
  * @returns The system prompt string
  */
 export function generateToolCallingSystemPrompt(mcpTools: Tool[] = []): string {
-  const defaultTools = `
-1. readFile - Reads the content of a file
-   Parameters:
-   - path: The path to the file to read (required)`;
-
   const mcpToolsDescription = mcpTools.map((tool, index) => `
-${index + 2}. ${tool.name} - ${tool.description || ''}
+${index + 1}. ${tool.name} - ${tool.description || ''}
    Input Schema: 
    \`\`\`json
    ${JSON.stringify(tool.inputSchema, null, 2)}
    \`\`\`
 `).join('');
+
+  // Return a different message if no tools are available
+  if (mcpTools.length === 0) {
+    return `
+You are an AI assistant helping the user with their tasks. Currently, no external tools are available.
+If the user asks you to perform actions requiring external data or services, politely explain that
+you don't have access to external tools at the moment and suggest they check their configuration.
+`;
+  }
 
   return `
 This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following format to call a tool:
@@ -30,7 +34,7 @@ paramValue
 </param>
 </tool_call>
 
-Available tools:${defaultTools}${mcpToolsDescription}
+Available tools:${mcpToolsDescription}
    
 After calling a tool, wait for the result which will be provided in the following format:
 

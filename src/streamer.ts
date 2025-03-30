@@ -53,6 +53,7 @@ export class StreamingService {
       const systemPrompt = generateToolCallingSystemPrompt(mcpTools);
       
       log(`Generated system prompt with ${mcpTools.length} MCP tools`);
+      log(`FULL SYSTEM PROMPT:\n${systemPrompt}`);
       
       // Start streaming completion based on provider, passing document for file path resolution
       let stream;

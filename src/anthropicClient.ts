@@ -42,6 +42,7 @@ export class AnthropicClient {
       };
       
       log(`Using system prompt for tool calling (${systemPromptToUse.length} chars)`);
+      log(`ANTHROPIC CLIENT - FULL SYSTEM PROMPT:\n${systemPromptToUse}`);
       
       log(`Using Anthropic model: ${requestBody.model}`);
       

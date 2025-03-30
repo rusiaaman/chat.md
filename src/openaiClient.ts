@@ -70,6 +70,7 @@ export class OpenAIClient {
       };
       
       log(`Using system prompt for tool calling (${systemPromptToUse.length} chars)`);
+      log(`OPENAI CLIENT - FULL SYSTEM PROMPT:\n${systemPromptToUse}`);
       
       log(`Using OpenAI model: ${requestBody.model}`);
       

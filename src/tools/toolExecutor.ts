@@ -1,51 +1,22 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import { log } from '../extension';
-import { resolveFilePath } from '../utils/fileUtils';
 import * as vscode from 'vscode';
 import { mcpClientManager } from '../mcpClientManager';
 
 export async function executeToolCall(toolName: string, params: Record<string, any>, document?: vscode.TextDocument): Promise<string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
   
-  // Try executing through MCP first
+  // Execute through MCP
   try {
     const result = await mcpClientManager.executeToolCall(toolName, params);
     if (result && !result.startsWith('Error: Tool') && !result.startsWith('Error: No server')) {
       // If we got a successful result from MCP, return it
       return result;
     }
-    // Otherwise, fall through to built-in tools
-    log(`MCP tool execution failed or not found, trying built-in tools`);
+    // Otherwise, return the error from MCP
+    return result;
   } catch (mcpError) {
-    log(`MCP tool execution error: ${mcpError}, falling back to built-in tools`);
-  }
-  
-  // Fall back to built-in tools for backward compatibility
-  if (toolName.toLowerCase() === 'readfile') {
-    return await executeReadFileTool(params, document);
-  }
-  
-  return `Error: Tool "${toolName}" not supported. Check your configuration or use 'readFile'.`;
-}
-
-async function executeReadFileTool(params: Record<string, any>, document?: vscode.TextDocument): Promise<string> {
-  const filePath = params.path;
-  
-  if (!filePath) {
-    return 'Error: No file path provided';
-  }
-  
-  try {
-    // Handle relative paths if a document is provided
-    const resolvedPath = document 
-      ? resolveFilePath(filePath, document)
-      : path.resolve(filePath);
-      
-    const content = fs.readFileSync(resolvedPath, 'utf8');
-    return content;
-  } catch (error) {
-    return `Error reading file: ${error}`;
+    log(`MCP tool execution error: ${mcpError}`);
+    return `Error executing tool ${toolName}: ${mcpError}`;
   }
 }
 
