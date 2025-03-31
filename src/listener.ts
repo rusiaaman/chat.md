@@ -334,8 +334,8 @@ export class DocumentListener {
     log(`Calculated insertion range: Start(${startPos.line},${startPos.character}), End(${endPos.line},${endPos.character})`);
 
     // Create an edit that replaces the empty content with the result and adds a new assistant block after
-    // Ensure proper newlines around the content
-    let textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
+    // Ensure proper newlines around the content and wrap result in fences
+    let textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
     // If the block wasn't just the marker but had whitespace, adjust insertion
     const existingContent = text.substring(insertOffset, actualEndOffset);
     if (existingContent.trim() !== '') {
