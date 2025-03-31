@@ -8,8 +8,10 @@ tsconfig.json
 .npmignore
 *.vsix
 node_modules/**
+out/**
 test/**
 *.chat.md
 CLAUDE.md
 setup.sh
 test-tool-calling.js
+esbuild.js
