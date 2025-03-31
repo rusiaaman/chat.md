@@ -127,7 +127,7 @@ export class DocumentListener {
       
       // Find the previous assistant block with a tool call
       const textBeforeToolExecute = text.substring(0, toolExecutePosition);
-      const assistantBlockRegex = /#%% assistant\s+([\s\S]*?)(?=#%%|$)/g;
+      const assistantBlockRegex = /#%% assistant\s+([\s\S]*?)(?=\n#%%|$)/g;
       
       // Find the last match
       let assistantBlockMatch;

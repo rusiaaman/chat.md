@@ -230,7 +230,7 @@ export function hasEmptyToolExecuteBlock(text: string): boolean {
   // More precise approach: find all tool_execute blocks and check if any are empty
   // Look for blocks that are either at the end of the document or followed by another block
   const blockMatches = [];
-  const regex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+  const regex = /#%% tool_execute\s*([\s\S]*?)(?=\n#%%|$)/gm;
   let match;
   
   while ((match = regex.exec(text)) !== null) {
