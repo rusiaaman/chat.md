@@ -147,7 +147,13 @@ export class StreamingService {
               
               // Update the document with truncated tokens
               if (truncatedNewTokens.length > 0) {
-                await this.updateDocumentWithTokens(streamer, truncatedNewTokens);
+                // Only proceed with tool_execute if token update is successful
+                const updateSuccess = await this.updateDocumentWithTokens(streamer, truncatedNewTokens);
+                if (!updateSuccess) {
+                  log('Token update failed when handling completed tool call, canceling further processing');
+                  streamer.isActive = false;
+                  break;
+                }
               }
               
               // Add tool_execute block after the last token
@@ -194,10 +200,17 @@ export class StreamingService {
           } else {
             // Normal token processing
             try {
-              await this.updateDocumentWithTokens(streamer, tokens);
+              const updateSuccess = await this.updateDocumentWithTokens(streamer, tokens);
+              if (!updateSuccess) {
+                log('Token update failed, canceling streaming entirely');
+                streamer.isActive = false;
+                break;
+              }
             } catch (error) {
               log(`Error updating document with tokens: ${error}`);
-              // Continue streaming even if one update fails
+              // Cancel the streamer on any error
+              streamer.isActive = false;
+              break;
             }
           }
         } else {
@@ -396,10 +409,10 @@ export class StreamingService {
   private async updateDocumentWithTokens(
     streamer: StreamerState,
     newTokens: string[]
-  ): Promise<void> {
-    if (newTokens.length === 0) {
+  ): Promise<boolean> {
+      if (newTokens.length === 0) {
       log('No tokens to update');
-      return;
+      return true; // Consider empty tokens a successful update
     }
     
     log(`STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens: "${newTokens.join('')}"`);
@@ -449,7 +462,7 @@ export class StreamingService {
         if (!foundEmptyBlock) {
           log(`No empty assistant blocks found, canceling streaming for first event`);
           streamer.isActive = false;
-          return;
+          return false;
         }
       } else {
         // For subsequent streaming events, use the last assistant block only
@@ -472,7 +485,7 @@ export class StreamingService {
       if (targetAssistantIdx === -1 || blockStart === -1) {
         log('No suitable assistant block found in document, stopping streamer');
         streamer.isActive = false;
-        return;
+        return false;
       }
       log(`Document text at block start (20 chars): "${text.substring(blockStart, blockStart+20)}"`);
       
@@ -496,7 +509,7 @@ export class StreamingService {
         log(`STREAMER CANCELED: Stopping streamer due to token mismatch in target assistant block`);
         
         streamer.isActive = false;
-        return;
+        return false;
       }
       
       // Calculate the insert position at the end of our existing tokens
@@ -555,19 +568,22 @@ export class StreamingService {
         log(`- Document read-only: ${this.document.isUntitled ? 'No' : 'Unknown'}`);
       }
       
-      // If edit failed, we log the error but don't try alternative approaches
-      // This follows the idempotent design in the original docs
+      // If edit failed, we log the error and immediately abort
       if (!applied) {
-        log('WorkspaceEdit failed, streamer will continue to try with next tokens');
+        log('WorkspaceEdit failed, stopping streamer entirely');
+        streamer.isActive = false;
+        return false;
       }
       
       // Update tokens history
       streamer.tokens.push(...newTokens);
       log(`Updated token history, now have ${streamer.tokens.length} tokens total`);
+      return true; // Update successful
     } catch (error) {
       log(`Error updating document: ${error}`);
       console.error('Error updating document:', error);
       streamer.isActive = false;
+      return false; // Update failed due to error
     } finally {
       this.lock.release();
     }
