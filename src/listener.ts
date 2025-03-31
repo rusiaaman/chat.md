@@ -4,8 +4,10 @@ import { Lock } from './utils/lock';
 import { StreamingService } from './streamer';
 import { StreamerState } from './types';
 import { getApiKey, getAnthropicApiKey, getProvider } from './config';
+import * as path from 'path';
 import { log } from './extension';
 import { executeToolCall, formatToolResult, parseToolCall } from './tools/toolExecutor';
+import { ensureDirectoryExists, writeFile } from './utils/fileUtils';
 
 /**
  * Listens for document changes and manages streaming LLM responses
@@ -183,27 +185,81 @@ export class DocumentListener {
       log(`Executing tool: ${parsedToolCall.name} with params: ${JSON.stringify(parsedToolCall.params)}`);
       
       // Execute the tool
-      const result = await executeToolCall(parsedToolCall.name, parsedToolCall.params, this.document);
+      const rawResult = await executeToolCall(parsedToolCall.name, parsedToolCall.params, this.document);
       
-      // Format and insert the result
-      const formattedResult = formatToolResult(result);
-      await this.insertToolResult(formattedResult);
+      // Insert the raw result (insertToolResult will handle formatting/linking)
+      await this.insertToolResult(rawResult);
     } catch (error) {
       log(`Error executing tool: ${error}`);
-      const errorResult = formatToolResult(`Error executing tool: ${error}`);
-      await this.insertToolResult(errorResult);
+      // Format and insert the error message directly
+      const formattedError = formatToolResult(`Error executing tool: ${error}`);
+      await this.insertToolResult(formattedError, true); // Pass flag indicating this is already formatted
     } finally {
       this.lock.release();
     }
   }
   
   /**
-   * Insert tool result into the document and add a new assistant block
+   * Insert tool result (or error) into the document and add a new assistant block.
+   * If the result is large, it saves it to a file and inserts a link.
+   * @param rawResult The raw string content returned by the tool, or a pre-formatted error message.
+   * @param isPreformattedError Indicates if rawResult is already formatted (e.g., an error message).
    */
-  private async insertToolResult(result: string): Promise<void> {
+  private async insertToolResult(rawResult: string, isPreformattedError = false): Promise<void> {
     const text = this.document.getText();
-    
-    // Find all tool_execute blocks and check which ones are empty
+    let contentToInsert = '';
+    const lineCountThreshold = 30;
+
+    if (isPreformattedError) {
+      // If it's a preformatted error, use it directly
+      contentToInsert = rawResult;
+      log('Inserting preformatted error message.');
+    } else {
+      // Process the raw tool result
+      const lines = rawResult.split('\n');
+      log(`Tool result has ${lines.length} lines.`);
+
+      if (lines.length > lineCountThreshold) {
+        log(`Result exceeds ${lineCountThreshold} lines, saving to file.`);
+        try {
+          const docDir = path.dirname(this.document.uri.fsPath);
+          const assetsDir = path.join(docDir, 'cmdassets');
+          ensureDirectoryExists(assetsDir);
+
+          const timestamp = new Date().toISOString()
+            .replace(/:/g, '')
+            .replace(/-/g, '')
+            .replace('T', '-')
+            .replace(/\..+Z/, '');
+          const randomString = Math.random().toString(36).substring(2, 8);
+          const filename = `tool-result-${timestamp}-${randomString}.txt`;
+          const relativeFilePath = path.join('cmdassets', filename);
+          const fullFilePath = path.join(assetsDir, filename);
+
+          writeFile(fullFilePath, rawResult);
+          log(`Saved tool result to: ${fullFilePath}`);
+
+          const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, '/')})`; // Ensure forward slashes for Markdown
+          contentToInsert = formatToolResult(markdownLink); // Wrap the link in result tags
+          log(`Inserting Markdown link: ${markdownLink}`);
+
+        } catch (fileError) {
+          log(`Error saving tool result to file: ${fileError}`);
+          // Fallback: insert truncated result with error message
+          const truncatedResult = lines.slice(0, lineCountThreshold).join('\n');
+          contentToInsert = formatToolResult(
+            `${truncatedResult}\n...\n[Error: Failed to save full result to file - ${fileError}]`
+          );
+          log('Inserting truncated result with error message due to file save failure.');
+        }
+      } else {
+        // Result is small enough, insert directly
+        contentToInsert = formatToolResult(rawResult);
+        log('Inserting full tool result directly.');
+      }
+    }
+
+    // Find the insertion point (within the last empty tool_execute block)
     const blockRegex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
     const emptyBlocks = [];
     let match;
@@ -223,16 +279,35 @@ export class DocumentListener {
       log('No empty tool_execute blocks found for inserting result');
       return;
     }
-    
+
     // Use the LAST empty block
     const lastEmptyBlock = emptyBlocks[emptyBlocks.length - 1];
-    log(`Inserting tool result at position ${lastEmptyBlock.position + lastEmptyBlock.blockLength}`);
-    
-    const position = this.document.positionAt(lastEmptyBlock.position + lastEmptyBlock.blockLength);
-    
-    // Create an edit that adds the tool result followed by a new assistant block
+    const insertOffset = lastEmptyBlock.position + '#%% tool_execute'.length; // Position after the marker line
+    log(`Targeting insert offset ${insertOffset} within the empty tool_execute block at ${lastEmptyBlock.position}`);
+
+    // We need to replace the empty content within the block, not insert after it.
+    const startPos = this.document.positionAt(insertOffset);
+    // Find the end of the empty block content (before the next #%% or EOF)
+    const endOffset = text.indexOf('%%#', insertOffset); // Look for the start of the next marker reversed
+    const actualEndOffset = endOffset !== -1 ? text.substring(0, endOffset).lastIndexOf('#') : text.length; // Find the actual start of the next marker or EOF
+    const endPos = this.document.positionAt(actualEndOffset);
+
+    log(`Calculated insertion range: Start(${startPos.line},${startPos.character}), End(${endPos.line},${endPos.character})`);
+
+    // Create an edit that replaces the empty content with the result and adds a new assistant block after
+    // Ensure proper newlines around the content
+    let textToInsert = `\n${contentToInsert.trim()}\n\n#%% assistant\n`;
+    // If the block wasn't just the marker but had whitespace, adjust insertion
+    const existingContent = text.substring(insertOffset, actualEndOffset);
+    if (existingContent.trim() !== '') {
+       log(`Warning: Overwriting non-empty whitespace in tool_execute block: "${existingContent}"`);
+    }
+
     const edit = new vscode.WorkspaceEdit();
-    edit.insert(this.document.uri, position, `\n${result}\n\n#%% assistant\n`);
+    // Replace the content between the tool_execute marker and the next block/EOF
+    edit.replace(this.document.uri, new vscode.Range(startPos, endPos), textToInsert);
+
+    log(`Applying edit to insert: "${textToInsert.substring(0,100)}..."`);
     
     const applied = await vscode.workspace.applyEdit(edit);
     if (!applied) {
@@ -260,7 +335,7 @@ export class DocumentListener {
           // Move cursor to the end of the document for better user experience
           editor.selection = new vscode.Selection(docEnd, docEnd);
           
-          log(`Auto-scrolled editor to the end of the document to show tool result`);
+          log(`Auto-scrolled editor to the end of the document to show inserted content`);
         }
       } catch (scrollError) {
         log(`Auto-scroll error (non-critical): ${scrollError}`);

@@ -68,3 +68,32 @@ export function isImageFile(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
   return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
 }
+
+/**
+ * Ensure a directory exists, creating it if necessary
+ */
+export function ensureDirectoryExists(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+    } catch (error) {
+      console.error(`Error creating directory ${dirPath}:`, error);
+      throw error; // Re-throw the error to indicate failure
+    }
+  } else if (!fs.statSync(dirPath).isDirectory()) {
+    throw new Error(`Path exists but is not a directory: ${dirPath}`);
+  }
+}
+
+/**
+ * Write text content to a file
+ * Throws error on failure
+ */
+export function writeFile(filePath: string, content: string): void {
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (error) {
+    console.error(`Error writing file ${filePath}:`, error);
+    throw error; // Re-throw the error
+  }
+}
