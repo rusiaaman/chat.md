@@ -1,0 +1,126 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+      // Check for API key based on provider
+      const provider = getProvider();
+      let apiKey = getApiKey();
+      
+      // For backward compatibility, try the legacy anthropic key if we're using Anthropic
+      if (!apiKey && provider === 'anthropic') {
+        apiKey = getAnthropicApiKey();
+      }
+      
+      if (!apiKey) {
+        const message = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API key not configured. Please use the "Configure Chat Markdown API Key" command.`;
+        log(message);
+        vscode.window.showErrorMessage(message);
+        return;
+      }
+
+      const text = this.document.getText();
+      const messages = parseDocument(text, this.document);
+      
+      log(`Parsed ${messages.length} messages from document`);
+      
+      if (messages.length === 0) {
+        log('No messages to process, not starting streaming');
+        return;
+      }
+
+      const messageIndex = messages.length - 1;
+      
+      // Create new streamer state
+      const streamer: StreamerState = {
+        messageIndex,
+        tokens: [],
+        isActive: true
+      };log(`Created new streamer for message index ${messageIndex}`);
+
+      // Create streaming service and start streaming
+      const streamingService = new StreamingService(apiKey, this.document);
+      
+      try {
+        // IMPORTANT: We keep the lock during the entire streaming process
+        await streamingService.streamResponse(messages, streamer);
+      } catch (err) {
+        log(`Streaming error: ${err}`);
+      } finally {
+        streamer.isActive = false;
+        this.currentStreamer = null;
+      }
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```  
+  /**
+   * Start streaming response from LLM
+   */
+  private async startStreaming(): Promise<void> {
+    // First try to get the lock
+    await this.lock.acquire();
+
+    try {
+
+      // Check for API key based on provider
+      const provider = getProvider();
+      let apiKey = getApiKey();
+      
+      // For backward compatibility, try the legacy anthropic key if we're using Anthropic
+      if (!apiKey && provider === 'anthropic') {
+        apiKey = getAnthropicApiKey();
+      }
+      
+      if (!apiKey) {
+        const message = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API key not configured. Please use the "Configure Chat Markdown API Key" command.`;
+        log(message);
+        vscode.window.showErrorMessage(message);
+        return;
+      }
+
+      const text = this.document.getText();
+      const messages = parseDocument(text, this.document);
+      
+      log(`Parsed ${messages.length} messages from document`);
+      
+      if (messages.length === 0) {
+        log('No messages to process, not starting streaming');
+        return;
+      }
+
+      const messageIndex = messages.length - 1;
+      
+      // Create new streamer state
+      const streamer: StreamerState = {
+        messageIndex,
+        tokens: [],
+        isActive: true
+      };
+      
+      this.currentStreamer = streamer;
+      log(`Created new streamer for message index ${messageIndex}`);
+
+      // Create streaming service and start streaming
+      const streamingService = new StreamingService(apiKey, this.document);
+      
+      try {
+        // IMPORTANT: We keep the lock during the entire streaming process
+        await streamingService.streamResponse(messages, streamer);
+      } catch (err) {
+        log(`Streaming error: ${err}`);
+      } finally {
+        streamer.isActive = false;
+        this.currentStreamer = null;
+      }
+    } finally {
+      this.lock.release();
+    }
+  }
+}
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.

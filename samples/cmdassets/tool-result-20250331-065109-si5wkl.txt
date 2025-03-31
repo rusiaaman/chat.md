@@ -1,0 +1,50 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+export interface StreamerState {
+  messageIndex: number;
+  tokens: string[];
+  isActive: boolean;
+  filePath?: string; // Path to file if response is offloaded
+}
+
+export interface MessageParam {
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```
+/**
+ * Text content in a message
+ */
+export interface TextContent {
+  type: 'text';
+  value: string;
+}
+
+/**
+ * Image content in a message
+ */
+export interface ImageContent {
+  type: 'image';
+  path: string;
+}
+
+/**
+ * Union type for different types of content
+ */
+export type Content = TextContent | ImageContent;
+
+/**
+ * Roles in a chat conversation
+ */
+export type Role = 'user' | 'assistant';
+
+/**
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.

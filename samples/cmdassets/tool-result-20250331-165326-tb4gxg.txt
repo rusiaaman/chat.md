@@ -1,0 +1,30 @@
+Edited successfully. However, following warnings were generated while matching search blocks.
+Warning: matching without considering indentation (leading spaces).
+---
+Warning: tree-sitter reported syntax errors, please re-read the file and fix if there are any errors.
+Syntax errors:
+Line 126, Column 58: Syntax error: unexpected ERROR in object
+
+Here's relevant snippet from the file where the syntax errors occured:
+```
+   "keybindings": [
+     {
+       "command": "filechat.insertNextBlock",
+       "key": "shift+enter",
+       "when": "editorTextFocus && editorLangId == markdown"
+     }
+   ]
+  },
+  "scripts": {
+    "vscode:prepublish": "node ./esbuild.js --production",
+  },
+  "scripts": {
+    "vscode:prepublish": "node ./esbuild.js --production",
+    "esbuild-base": "node ./esbuild.js",
+    "esbuild": "npm run esbuild-base -- --sourcemap",
+    "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+    "compile": "npm run esbuild",
+    "watch": "npm run esbuild-watch",
+    "pretest": "npm run esbuild && npm run lint",
+    "lint": "eslint src --ext ts",
+```

@@ -1,0 +1,103 @@
+
+/Users/arusia/repos/filechat/src/utils/fileUtils.ts
+```
+import * as path from 'path';
+import * as fs from 'fs';
+import * as vscode from 'vscode';
+
+/**
+ * Resolves file paths that may be relative to the current document
+ */
+export function resolveFilePath(filePath: string, document: vscode.TextDocument): string {
+  // If path starts with ~ replace with home dir
+  if (filePath.startsWith('~')) {
+    return filePath.replace(/^~/, process.env.HOME || '');
+  }
+  
+  // If it's an absolute path, return as is
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
+  
+  // Try to resolve relative to the document
+  const documentDir = path.dirname(document.uri.fsPath);
+  const resolvedPath = path.resolve(documentDir, filePath);
+  
+  return resolvedPath;
+}
+
+/**
+ * Check if a file exists and is accessible
+ */
+export function fileExists(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read file as a buffer, handling errors gracefully
+ * Returns undefined if file can't be read
+ */
+export function readFileAsBuffer(filePath: string): Buffer | undefined {
+  try {
+    return fs.readFileSync(filePath);
+  } catch (error) {
+    console.error(`Error reading file ${filePath}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * Read text file content as string
+ * Returns undefined if file can't be read
+ */
+export function readFileAsText(filePath: string): string | undefined {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    console.error(`Error reading file ${filePath}:`, error);
+    return undefined;
+  }
+}
+
+/**
+ * Check if a file is an image based on extension
+ */
+export function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+}
+
+/**
+ * Ensure a directory exists, creating it if necessary
+ */
+export function ensureDirectoryExists(dirPath: string): void {
+  if (!fs.existsSync(dirPath)) {
+    try {
+      fs.mkdirSync(dirPath, { recursive: true });
+    } catch (error) {
+      console.error(`Error creating directory ${dirPath}:`, error);
+      throw error; // Re-throw the error to indicate failure
+    }
+  } else if (!fs.statSync(dirPath).isDirectory()) {
+    throw new Error(`Path exists but is not a directory: ${dirPath}`);
+  }
+}
+
+/**
+ * Write text content to a file
+ * Throws error on failure
+ */
+export function writeFile(filePath: string, content: string): void {
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (error) {
+    console.error(`Error writing file ${filePath}:`, error);
+    throw error; // Re-throw the error
+  }
+}
+```

@@ -1,0 +1,31 @@
+Edited successfully. However, following warnings were generated while matching search blocks.
+Warning: matching without considering indentation (leading spaces).
+---
+Warning: tree-sitter reported syntax errors, please re-read the file and fix if there are any errors.
+Syntax errors:
+Line 253, Column 1: Syntax error: unexpected ERROR in program
+Note: Ignore if 'tagged template literals' are used, they may raise false positive errors in tree-sitter.
+
+Here's relevant snippet from the file where the syntax errors occured:
+```
+            content: [{ type: 'text', value: content }] // Always text after inlining
+        });
+    } else {
+         log(`Warning: Skipping unrecognized role block: "${role}"`);
+    }
+  } // End main loop
+
+
+  return Object.freeze(messages);
+}
+
+
+/**
+ * Parses user content to extract text and file references
+ * (Ensure document is passed if resolving relative paths)
+ */
+function parseUserContent(text: string, document?: vscode.TextDocument): Content[] { // Added optional document
+  const content: Content[] = [];
+
+  // Original format: "Attached file at /path/to/file"
+```

@@ -1,0 +1,40 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+// Helper function to write content to a file asynchronously
+export async function writeFile(filePath: string, content: string): Promise<void> {
+  try {
+    await fs.writeFile(filePath, content, 'utf-8');
+    log(`Successfully wrote content to ${filePath}`);
+  } catch (error) {
+    log(`Error writing to file ${filePath}: ${error}`);
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```      throw error; // Re-throw the error to indicate failure
+    }
+  } else if (!fs.statSync(dirPath).isDirectory()) {
+    throw new Error(`Path exists but is not a directory: ${dirPath}`);
+  }
+}
+
+/**
+ * Write text content to a file
+ * Throws error on failure
+ */
+export function writeFile(filePath: string, content: string): void {
+  try {
+    fs.writeFileSync(filePath, content, 'utf8');
+  } catch (error) {
+    console.error(`Error writing file ${filePath}:`, error);
+    throw error; // Re-throw the error
+  }
+}
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.

@@ -1,0 +1,66 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+  } catch (error) {
+    log(`Error checking if path is directory: ${error}`);
+    return false; // Assume it's not a directory if error occurs
+  }
+}
+
+// Helper function to check if a file exists
+export function fileExists(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.F_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```    return filePath.replace(/^~/, process.env.HOME || '');
+  }
+  
+  // If it's an absolute path, return as is
+  if (path.isAbsolute(filePath)) {
+    return filePath;
+  }
+  
+  // Try to resolve relative to the document
+  const documentDir = path.dirname(document.uri.fsPath);
+  const resolvedPath = path.resolve(documentDir, filePath);
+  
+  return resolvedPath;
+}
+
+/**
+ * Check if a file exists and is accessible
+ */
+export function fileExists(filePath: string): boolean {
+  try {
+    fs.accessSync(filePath, fs.constants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Read file as a buffer, handling errors gracefully
+ * Returns undefined if file can't be read
+ */
+export function readFileAsBuffer(filePath: string): Buffer | undefined {
+  try {
+    return fs.readFileSync(filePath);
+  } catch (error) {
+    console.error(`Error reading file ${filePath}:`, error);
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.

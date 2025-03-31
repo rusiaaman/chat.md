@@ -1,0 +1,80 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+            log(`Auto-scroll error (non-critical): ${scrollError}`);
+            // Continue even if auto-scroll fails
+          }
+        }
+      } else {
+        log(`STREAMER ERROR: Failed to apply edit, details:`);
+        log(`- Document URI: ${this.document.uri.toString()}`);
+        log(`- Insert position: Line ${insertPosition.line}, Character ${insertPosition.character}`);
+        log(`- Document version: ${this.document.version}`);
+        log(`- Document read-only: ${this.document.isUntitled ? 'No' : 'Unknown'}`);
+      }
+      
+      // If edit failed, we log the error but don't try alternative approaches
+      // This follows the idempotent design in the original docs
+      if (!applied) {
+        log('WorkspaceEdit failed, streamer will continue to try with next tokens');
+      }
+      
+      // Update tokens history
+      streamer.tokens.push(...newTokens);
+      log(`Updated token history, now have ${streamer.tokens.length} tokens total`);
+    } catch (error) {
+      log(`Error updating document: ${error}`);
+      console.error('Error updating document:', error);
+      streamer.isActive = false;
+    } finally {
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```            editor.revealRange(
+              range,
+              vscode.TextEditorRevealType.InCenterIfOutsideViewport
+            );
+            
+            // Move cursor to the end for better user experience
+            editor.selection = new vscode.Selection(endPosition, endPosition);
+            
+            log(`Auto-scrolled editor to show latest content`);
+          }
+        } catch (scrollError) {
+          log(`Auto-scroll error (non-critical): ${scrollError}`);
+          // Continue even if auto-scroll fails
+        }
+      } else {
+        log(`STREAMER ERROR: Failed to apply edit, details:`);
+        log(`- Document URI: ${this.document.uri.toString()}`);
+        log(`- Insert position: Line ${insertPosition.line}, Character ${insertPosition.character}`);
+        log(`- Document version: ${this.document.version}`);
+        log(`- Document read-only: ${this.document.isUntitled ? 'No' : 'Unknown'}`);
+      }
+      
+      // If edit failed, we log the error but don't try alternative approaches
+      // This follows the idempotent design in the original docs
+      if (!applied) {
+        log('WorkspaceEdit failed, streamer will continue to try with next tokens');
+      }
+      
+      // Update tokens history
+      streamer.tokens.push(...newTokens);
+      log(`Updated token history, now have ${streamer.tokens.length} tokens total`);
+    } catch (error) {
+      log(`Error updating document: ${error}`);
+      console.error('Error updating document:', error);
+      streamer.isActive = false;
+    } finally {
+      this.lock.release();
+    }
+  }
+}
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.

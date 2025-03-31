@@ -1,0 +1,52 @@
+GOT EXCEPTION while calling tool. Error: 
+
+Got error while processing the following search block:
+---
+```
+       if (streamer.filePath) {
+         log(`Streamer has filePath: ${streamer.filePath}, checking file content`);
+         try {
+-            const absoluteFilePath = resolveFilePath(streamer.filePath, this.document);
++            // Add non-null assertion '!' as TS might not be narrowing type correctly inside the 'if'
++            const absoluteFilePath = resolveFilePath(streamer.filePath!, this.document);
+             if (fileExists(absoluteFilePath)) {
+               const fileContent = readFileAsText(absoluteFilePath);
+               if (fileContent.endsWith(tokensSoFar)) {
+```
+---
+Error:
+Couldn't find match. Here's the latest snippet from the file which might be relevant for you to consider:
+```
+      if (!streamer.filePath && linkMatch) {
+        streamer.filePath = linkMatch[1]; // Store relative path
+        log(`Detected existing link in document, storing path: ${streamer.filePath}`);
+      }
+
+      // --- Idempotency Check & Determine Action ---
+      let action: 'AppendToFile' | 'SaveToFile' | 'AppendToEditor' | 'Error' = 'Error';
+      let errorMessage = '';
+
+      if (streamer.filePath) {
+        log(`Streamer has filePath: ${streamer.filePath}, checking file content`);
+        try {
+            const absoluteFilePath = resolveFilePath(streamer.filePath, this.document);
+            if (fileExists(absoluteFilePath)) {
+              const fileContent = readFileAsText(absoluteFilePath);
+              if (fileContent.endsWith(tokensSoFar)) {
+                action = 'AppendToFile';
+              } else {
+                errorMessage = `File content mismatch for ${streamer.filePath}`;
+                log(`STREAMER ERROR: ${errorMessage}`);
+                log(`Expected endsWith: "${tokensSoFar.slice(-50)}"`);
+                log(`Actual file endsWith: "${fileContent.slice(-50)}"`);
+              }
+            } else {
+              errorMessage = `File not found: ${streamer.filePath}`;
+            }
+        } catch (fileError) {
+            errorMessage = `Error reading file ${streamer.filePath}: ${fileError}`;
+```
+---
+                                  
+---
+Retry immediately with same "percentage_to_change" using search replace blocks fixing above error.
