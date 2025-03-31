@@ -218,12 +218,36 @@ export class StreamingService {
     const assistantMarkers = findAllAssistantBlocks(text);
     
     if (assistantMarkers.length === 0) {
+      log('No assistant blocks found in document');
       return -1;
     }
     
-    // Get the last assistant block
-    const lastMarker = assistantMarkers[assistantMarkers.length - 1];
-    return lastMarker.contentStart;
+    const isFirstStreamingEvent = streamer.tokens.length === 0;
+    
+    if (isFirstStreamingEvent) {
+      // For first streaming event, find first empty assistant block
+      for (let i = 0; i < assistantMarkers.length; i++) {
+        const marker = assistantMarkers[i];
+        const nextMarkerStart = i < assistantMarkers.length - 1 ? 
+          assistantMarkers[i + 1].markerStart : text.length;
+        
+        // Check if this block is empty
+        const content = text.substring(marker.contentStart, nextMarkerStart).trim();
+        
+        if (content.length === 0) {
+          log(`First streaming event: using first empty assistant block at position ${marker.contentStart}`);
+          return marker.contentStart;
+        }
+      }
+      
+      log('No empty assistant blocks found for first streaming event');
+      return -1;
+    } else {
+      // For subsequent streaming events, use the last assistant block
+      const lastMarker = assistantMarkers[assistantMarkers.length - 1];
+      log(`Subsequent streaming event: using last assistant block at position ${lastMarker.contentStart}`);
+      return lastMarker.contentStart;
+    }
   }
   
   /**
@@ -286,11 +310,13 @@ export class StreamingService {
     try {
       const text = this.document.getText();
       const tokensSoFar = streamer.tokens.join('');
+      const isFirstStreamingEvent = streamer.tokens.length === 0;
       
       log(`Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join('')}"`);
+      log(`Is first streaming event: ${isFirstStreamingEvent}`);
       
-      // Find the last non-empty assistant block for streaming
-      let lastAssistantIdx = -1;
+      // Find appropriate assistant block for streaming
+      let targetAssistantIdx = -1;
       let blockStart = -1;
       let isEmptyBlock = true;
       
@@ -298,46 +324,54 @@ export class StreamingService {
       const assistantMarkers = findAllAssistantBlocks(text);
       log(`Found ${assistantMarkers.length} assistant blocks in document`);
       
-      // Check blocks from last to first to find the last non-empty one
-      for (let i = assistantMarkers.length - 1; i >= 0; i--) {
-        const marker = assistantMarkers[i];
-        // Check if there's any content after the content start position
-        const nextMarkerStart = i < assistantMarkers.length - 1 ? 
-          assistantMarkers[i + 1].markerStart : text.length;
+      if (isFirstStreamingEvent) {
+        // For the first streaming event, find the first empty assistant block
+        log(`First streaming event: looking for empty assistant blocks`);
+        let foundEmptyBlock = false;
         
-        // Extract the content between this marker and the next one (or end of document)
-        const content = text.substring(marker.contentStart, nextMarkerStart).trim();
-        
-        // If this is the very last block, always use it (might be empty on purpose)
-        if (i === assistantMarkers.length - 1) {
-          lastAssistantIdx = marker.markerStart;
-          blockStart = marker.contentStart;
-          isEmptyBlock = content.length === 0;
-          log(`Using last assistant block at position ${lastAssistantIdx}, block starts at ${blockStart}`);
-          log(`Last block is ${isEmptyBlock ? 'empty' : 'non-empty'}`);
+        for (let i = 0; i < assistantMarkers.length; i++) {
+          const marker = assistantMarkers[i];
+          const nextMarkerStart = i < assistantMarkers.length - 1 ? 
+            assistantMarkers[i + 1].markerStart : text.length;
           
-          // Check if we're just starting or only have whitespace
-          const currentTokens = streamer.tokens.join('').trim();
-          const isStarting = streamer.tokens.length === 0 || currentTokens.length === 0;
-          log(`Tokens so far: ${isStarting ? 'none or whitespace only' : 'has content'}`);
+          // Check if this block is empty
+          const content = text.substring(marker.contentStart, nextMarkerStart).trim();
           
-          // If the last block is non-empty or if we're just starting, use it
-          if (!isEmptyBlock || isStarting) {
-            break;
+          if (content.length === 0) {
+            // Found an empty block
+            targetAssistantIdx = marker.markerStart;
+            blockStart = marker.contentStart;
+            isEmptyBlock = true;
+            foundEmptyBlock = true;
+            log(`Found empty assistant block at position ${targetAssistantIdx}, will use it for first streaming event`);
+            break; // Use the first empty block we find
           }
         }
         
-        // If we're here and looking at a previous block, only use it if it's non-empty
-        if (content.length > 0) {
-          lastAssistantIdx = marker.markerStart;
+        if (!foundEmptyBlock) {
+          log(`No empty assistant blocks found, canceling streaming for first event`);
+          streamer.isActive = false;
+          return;
+        }
+      } else {
+        // For subsequent streaming events, use the last assistant block only
+        if (assistantMarkers.length > 0) {
+          const i = assistantMarkers.length - 1;
+          const marker = assistantMarkers[i];
+          
+          // Check content of the last block
+          const nextMarkerStart = text.length;
+          const content = text.substring(marker.contentStart, nextMarkerStart).trim();
+          
+          targetAssistantIdx = marker.markerStart;
           blockStart = marker.contentStart;
-          isEmptyBlock = false;
-          log(`Found previous non-empty assistant block at position ${lastAssistantIdx}, block starts at ${blockStart}`);
-          break;
+          isEmptyBlock = content.length === 0;
+          log(`Subsequent streaming event: using last assistant block at position ${targetAssistantIdx}`);
+          log(`Last block is ${isEmptyBlock ? 'empty' : 'non-empty'}`);
         }
       }
       
-      if (lastAssistantIdx === -1 || blockStart === -1) {
+      if (targetAssistantIdx === -1 || blockStart === -1) {
         log('No suitable assistant block found in document, stopping streamer');
         streamer.isActive = false;
         return;
@@ -354,17 +388,14 @@ export class StreamingService {
         
         // Additional troubleshooting logs
         log(`STREAMER ERROR DETAILS:`);
-        log(`- Last assistant block position: ${lastAssistantIdx}`);
+        log(`- Target assistant block position: ${targetAssistantIdx}`);
         log(`- Block start position: ${blockStart}`);
         log(`- Document length: ${text.length}`);
         log(`- tokensSoFar length: ${tokensSoFar.length}`);
         log(`- Last 3 token chunks: ${JSON.stringify(streamer.tokens.slice(-3).map(t => t.substring(0, 10) + (t.length > 10 ? '...' : '')))}`);
         
-        // Check if textAfterBlock contains tokensSoFar anywhere (not just at start)
-        const indexInText = textAfterBlock.indexOf(tokensSoFar);
-        if (indexInText > 0) {
-          log(`STREAMER NOTE: Found tokens at offset ${indexInText} instead of at beginning`);
-        }
+        // Do not attempt to find tokens elsewhere - simply stop the streamer
+        log(`STREAMER CANCELED: Stopping streamer due to token mismatch in target assistant block`);
         
         streamer.isActive = false;
         return;

@@ -91,17 +91,28 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
   // Original format: "Attached file at /path/to/file"
   const fileAttachmentRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
   
-  // New format: Markdown-style links like [#file](test.py)
-  const markdownLinkRegex = /\[#file\]\(([^)]+)\)/g;
+  // New format: Markdown-style links like [anything](test.py)
+  const markdownLinkRegex = /\[([^\]]*)\]\(([^)]+)\)/g;
   
-  // Process any direct Markdown-style links first
+  // Collection of file attachments to add at the top
+  const topAttachments: string[] = [];
+  
+  // Process markdown-style links and collect attachments for top
   if (document) {
-    const mdMatches: {index: number, path: string, isImage: boolean, content?: string}[] = [];
     let mdMatch;
     
-    // First pass - collect all matches and resolve paths
+    // First pass - collect all matches and create attachments
     while ((mdMatch = markdownLinkRegex.exec(text)) !== null) {
-      const filePath = mdMatch[1];
+      const altText = mdMatch[1];
+      const filePath = mdMatch[2];
+      
+      // Skip links that are explicitly marked to not be treated as files
+      // by checking if the alt text contains "nofile" or "no-file"
+      if (altText.toLowerCase().includes('nofile') || 
+          altText.toLowerCase().includes('no-file')) {
+        continue;
+      }
+      
       const resolvedPath = resolveFilePath(filePath, document);
       const isImage = isImageFile(filePath);
       
@@ -111,31 +122,27 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
         fileContent = readFileAsText(resolvedPath);
       }
       
-      mdMatches.push({
-        index: mdMatch.index,
-        path: filePath,
-        isImage,
-        content: fileContent
-      });
+      // Create attachment format but don't replace the link
+      const attachment = isImage 
+        ? `Attached file at ${filePath}\n[image content]\n\n`
+        : `Attached file at ${filePath}\n\`\`\`\n${fileContent || 'Unable to read file content'}\n\`\`\`\n\n`;
+      
+      topAttachments.push(attachment);
+      
+      log(`Added attachment for: ${filePath} (${isImage ? 'image' : 'text'})`);
     }
-    
-    // Sort matches in reverse order to avoid index shifts during replacement
-    mdMatches.sort((a, b) => b.index - a.index);
-    
-    // Replace each match with the formatted content
-    for (const match of mdMatches) {
-      const replacement = match.isImage 
-        ? `Attached file at ${match.path}\n[image content]`
-        : `Attached file at ${match.path}\n\`\`\`\n${match.content || 'Unable to read file content'}\n\`\`\``;
-        
-      text = text.substring(0, match.index) + replacement + text.substring(match.index + `[#file](${match.path})`.length);
-    }
+  }
+  
+  // Add all attachments at the top of the text
+  if (topAttachments.length > 0) {
+    text = topAttachments.join('') + text;
+    log(`Added ${topAttachments.length} attachments at the top of the message`);
   }
   
   let lastIndex = 0;
   let match;
   
-  // Process original format first
+  // Process the original "Attached file at" format (which now includes the ones we added at the top)
   while ((match = fileAttachmentRegex.exec(text)) !== null) {
     // Add text before the attachment
     const beforeText = text.substring(lastIndex, match.index).trim();
@@ -155,45 +162,6 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
     lastIndex = match.index + match[0].length;
   }
   
-  // Reset for processing Markdown-style links
-  text = text.substring(0, lastIndex) + text.substring(lastIndex).replace(markdownLinkRegex, (match, filePath) => {
-    log(`Found Markdown-style file link: ${filePath}`);
-    
-    // Determine if it's an image file based on extension
-    if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.jpeg') || 
-        filePath.endsWith('.gif') || filePath.endsWith('.webp')) {
-      // Convert to the format specified in CLAUDE.md for images
-      return `\nAttached file at ${filePath}\n[image content]`;
-    } else {
-      // For text files, placeholder - actual content will be loaded when resolving paths
-      return `\nAttached file at ${filePath}\n\`\`\`\nFile content will be loaded\n\`\`\``;
-    }
-  });
-  
-  // Process the updated text with any converted Markdown links
-  lastIndex = 0;
-  const updatedFileRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
-  
-  while ((match = updatedFileRegex.exec(text)) !== null) {
-    // Skip matches that were already processed in the first pass
-    if (match.index < lastIndex) continue;
-    
-    const beforeText = text.substring(lastIndex, match.index).trim();
-    if (beforeText) {
-      content.push({ type: 'text', value: beforeText });
-    }
-    
-    const path = match[1];
-    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || 
-        path.endsWith('.gif') || path.endsWith('.webp')) {
-      content.push({ type: 'image', path });
-    } else {
-      // For non-image files, extract content from code block
-      content.push({ type: 'text', value: match[2] || '' });
-    }
-    
-    lastIndex = match.index + match[0].length;
-  }
   
   // Add remaining text
   const remainingText = text.substring(lastIndex).trim();
