@@ -48,4 +48,10 @@ export interface StreamerState {
   messageIndex: number;
   tokens: string[];
   isActive: boolean;
+  
+  /**
+   * Function to cancel the stream. This can be called externally
+   * by components holding a reference to the streamer.
+   */
+  cancel?: () => void;
 }

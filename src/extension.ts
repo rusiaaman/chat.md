@@ -1,7 +1,5 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import * as vscode from 'vscode';
-import * as path from 'path';
 import { DocumentListener } from './listener';
 import {
   getAnthropicApiKey,
@@ -17,9 +15,14 @@ import {
 } from './config';
 import { getBlockInfoAtPosition } from './parser'; // Import the new function
 import { McpClientManager, McpServerConfig } from './mcpClient';
+import { StatusManager } from './utils/statusManager';
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
+
+// Map to keep track of document listener instances
+// This allows access to listener methods like getActiveStreamer()
+const documentListenerInstances = new Map<string, DocumentListener>();
 
 // Output channel for logging
 export const outputChannel = vscode.window.createOutputChannel('FileChat');
@@ -27,11 +30,32 @@ export const outputChannel = vscode.window.createOutputChannel('FileChat');
 // Create MCP client manager
 export const mcpClientManager = new McpClientManager();
 
+// Status manager for handling status bar items
+export const statusManager = StatusManager.getInstance();
+
 // Helper function for logging
 export function log(message: string): void {
   outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
   // Make sure the output channel is visible
   outputChannel.show(true);
+}
+
+/**
+ * Updates the streaming status bar based on active document and streaming state
+ */
+export function updateStreamingStatusBar(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor && activeEditor.document.fileName.endsWith('.chat.md')) {
+    const streamer = getActiveStreamerForDocument(activeEditor.document);
+    if (streamer && streamer.isActive) {
+      statusManager.showStreamingStatus();
+    } else {
+      statusManager.hideStreamingStatus();
+    }
+  } else {
+    // Still show idle status even when not in a chat document
+    statusManager.hideStreamingStatus();
+  }
 }
 
 /**
@@ -59,6 +83,9 @@ export function activate(context: vscode.ExtensionContext) {
   // Initialize MCP clients
   void initializeMcpClients();
   
+  // Register status manager
+  statusManager.register(context);
+  
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: '**/*.chat.md' };
   
@@ -66,6 +93,16 @@ export function activate(context: vscode.ExtensionContext) {
   for (const document of vscode.workspace.textDocuments) {
     setupDocumentListener(document, context);
   }
+  
+  // Register events for updating the status bar
+  context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      updateStreamingStatusBar();
+    })
+  );
+  
+  // Update status bar initially
+  updateStreamingStatusBar();
   
   // Listen for newly opened documents
   context.subscriptions.push(
@@ -81,12 +118,25 @@ export function activate(context: vscode.ExtensionContext) {
       if (documentListeners.has(key)) {
         documentListeners.get(key)!.dispose();
         documentListeners.delete(key);
+        documentListenerInstances.delete(key);
       }
     })
   );
   
   // Register commands
   context.subscriptions.push(
+    vscode.commands.registerCommand('filechat.cancelStreaming', () => {
+      const activeEditor = vscode.window.activeTextEditor;
+      if (activeEditor && activeEditor.document.fileName.endsWith('.chat.md')) {
+        const streamer = getActiveStreamerForDocument(activeEditor.document);
+        if (streamer && streamer.isActive && streamer.cancel) {
+          streamer.cancel();
+          vscode.window.showInformationMessage('FileChat streaming cancelled');
+          updateStreamingStatusBar();
+        }
+      }
+    }),
+    
     vscode.commands.registerCommand('filechat.refreshMcpTools', async () => {
       await initializeMcpClients();
       vscode.window.showInformationMessage('MCP tools refreshed successfully');
@@ -367,11 +417,26 @@ function setupDocumentListener(document: vscode.TextDocument, context: vscode.Ex
       const listener = new DocumentListener(document);
       const disposable = listener.startListening();
       documentListeners.set(key, disposable);
+      documentListenerInstances.set(key, listener);
       
       // Add to context for cleanup
       context.subscriptions.push(disposable);
     }
   }
+}
+
+/**
+ * Gets the active streamer for a document if it exists
+ * @param document The document to get the streamer for
+ * @returns The active streamer state if one exists, undefined otherwise
+ */
+export function getActiveStreamerForDocument(document: vscode.TextDocument): import('./types').StreamerState | undefined {
+  const key = document.uri.toString();
+  const listener = documentListenerInstances.get(key);
+  if (listener) {
+    return listener.getActiveStreamer();
+  }
+  return undefined;
 }
 
 /**
@@ -383,4 +448,8 @@ export function deactivate() {
     disposable.dispose();
   });
   documentListeners.clear();
+  documentListenerInstances.clear();
+  
+  // Dispose of status manager
+  statusManager.dispose();
 }

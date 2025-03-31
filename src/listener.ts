@@ -38,11 +38,29 @@ export class DocumentListener {
       dispose: () => {
         this.disposables.forEach(d => d.dispose());
         this.streamers.forEach(streamer => {
-          streamer.isActive = false;
+          if (streamer.cancel) {
+            streamer.cancel();
+          } else {
+            streamer.isActive = false;
+          }
         });
         this.streamers.clear();
       }
     };
+  }
+  
+  /**
+   * Get the active streamer for the current document
+   * @returns The active streamer if one exists, undefined otherwise
+   */
+  public getActiveStreamer(): StreamerState | undefined {
+    // Find the first active streamer
+    for (const [_, streamer] of this.streamers.entries()) {
+      if (streamer.isActive) {
+        return streamer;
+      }
+    }
+    return undefined;
   }
   
   /**
@@ -154,13 +172,15 @@ export class DocumentListener {
       // Support both fenced and non-fenced tool calls
       
       // Match for properly fenced tool calls (with opening and closing fences)
-      const properlyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/sg;
+      // Allow for any annotation after the triple backticks
+      const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/sg;
       
       // Match for partially fenced tool calls (with opening fence but missing closing fence)
-      const partiallyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/sg;
+      // Allow for any annotation after the triple backticks
+      const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/sg;
       
       // Match for non-fenced tool calls
-      const nonFencedToolCallRegex = /<tool_call>\n([\s\S]*?)\n<\/tool_call>/sg; 
+      const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/sg;
       
       // Find all matches for all patterns
       let properlyFencedMatch;
@@ -424,18 +444,19 @@ export class DocumentListener {
         return;
       }
       
-      // Create new streamer state
+      // Create streaming service first so we can reference it in the cancel method
+      const streamingService = new StreamingService(apiKey, this.document, this.lock);
+      
+      // Create new streamer state with cancellation capability
       const streamer: StreamerState = {
         messageIndex,
         tokens: [],
-        isActive: true
+        isActive: true,
+        cancel: () => streamingService.cancelStreaming(streamer)
       };
       
       this.streamers.set(messageIndex, streamer);
-      log(`Created new streamer for message index ${messageIndex}`);
-      
-      // Start streaming in background
-      const streamingService = new StreamingService(apiKey, this.document, this.lock);
+      log(`Created new streamer for message index ${messageIndex} with cancellation capability`);
       
       // Start streaming without awaiting to allow it to run in the background
       streamingService.streamResponse(messages, streamer).catch(err => {

@@ -4,7 +4,7 @@ import { Lock } from './utils/lock';
 import { AnthropicClient } from './anthropicClient';
 import { OpenAIClient } from './openaiClient';
 import { findAssistantBlocks, findAllAssistantBlocks } from './parser';
-import { log } from './extension';
+import { log, statusManager } from './extension';
 import { getProvider, generateToolCallingSystemPrompt } from './config';
 import { mcpClientManager } from './mcpClientManager';
 
@@ -34,6 +34,19 @@ export class StreamingService {
       this.anthropicClient = new AnthropicClient(apiKey);
     }
   }
+
+  /**
+   * Cancels an active streaming response
+   * This can be called by external components holding a reference to the streamer
+   */
+  public cancelStreaming(streamer: StreamerState): void {
+    if (streamer && streamer.isActive) {
+      log('Explicitly cancelling active streamer');
+      streamer.isActive = false;
+      // Hide streaming status
+      statusManager.hideStreamingStatus();
+    }
+  }
   
   /**
    * Stream LLM response for given messages
@@ -45,6 +58,8 @@ export class StreamingService {
   ): Promise<void> {
     try {
       log(`Starting to stream response for ${messages.length} messages`);
+      // Show streaming status in status bar
+      statusManager.showStreamingStatus();
       
       // Get all available tools from MCP client
       const mcpTools = mcpClientManager.getAllTools();
@@ -166,7 +181,8 @@ export class StreamingService {
                 
                 // Check for unbalanced fence blocks
                 // Look for opening ``` before <tool_call> but no matching closing ```
-                const openingFenceMatch = /```(?:tool_call|xml)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s.exec(currentText);
+                // Allow for any annotation after the triple backticks
+                const openingFenceMatch = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s.exec(currentText);
                 
                 let textToInsert = '';
                 
@@ -227,6 +243,8 @@ export class StreamingService {
     } finally {
       log('Streaming finished, marking streamer as inactive');
       streamer.isActive = false;
+      // Hide streaming status when done
+      statusManager.hideStreamingStatus();
     }
   }
   
@@ -289,14 +307,16 @@ export class StreamingService {
     // 2. Non-fenced tool call: <tool_call>...\n</tool_call>
     
     // First try to match properly fenced tool calls (with opening and closing fences)
-    const properlyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/s;
+    // Allow for any annotation after the triple backticks like ```tool_code or ```xml
+    const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/s;
     const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
     
     // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
-    const partiallyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+    // Allow for any annotation after the triple backticks
+    const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
     const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
     
-    // Then try to match non-fenced tool calls
+    // Then try to match non-fenced tool calls - make pattern consistent with listener.ts
     const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
     const nonFencedMatch = nonFencedToolCallRegex.exec(text);
     
@@ -364,7 +384,8 @@ export class StreamingService {
       
       // Check if there's another opening tag after this complete tag
       // Look for both fenced and non-fenced opening patterns
-      const nextOpeningFencedRegex = /```(?:xml)?\s*\n\s*<tool_call>/g;
+      // Allow for any annotation after the triple backticks
+      const nextOpeningFencedRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>/g;
       const nextOpeningNonFencedRegex = /\n\s*<tool_call>/g;
       
       nextOpeningFencedRegex.lastIndex = matchEndIndex;
