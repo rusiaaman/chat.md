@@ -36,11 +36,12 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     const params: Record<string, string> = {};
     
     // Extract parameters with more precise formatting
-    const paramRegex = /<param\s+name=(.*?)>\n([\s\S]*?)\n<\/param>/sg;
+    // Updated regex to require quotes around parameter names and be flexible with whitespace
+    const paramRegex = /<param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/param>/sg;
     let paramMatch;
     
     while ((paramMatch = paramRegex.exec(toolCallXml)) !== null) {
-      const paramName = paramMatch[1].trim().replace(/["']/g, '');
+      const paramName = paramMatch[1].trim(); // No need to replace quotes, they're already handled in the regex
       const paramValue = paramMatch[2].trim();
       
       // Store all parameter values as strings, even JSON objects or arrays

@@ -29,10 +29,13 @@ This AI assistant can use tools to perform actions when needed to complete the u
 
 <tool_call>
 <tool_name>toolName</tool_name>
-<param name="paramName">
-paramValue
-</param>
+<param name="paramName">paramValue</param>
 </tool_call>
+
+IMPORTANT FORMATTING REQUIREMENTS:
+1. Always use double quotes around parameter names: name="paramName"
+2. Parameter values can be inline (no newlines required)
+3. Parameter names must exactly match those in the tool's schema
 
 Available tools:${mcpToolsDescription}
    
@@ -47,7 +50,7 @@ Tool usage guidelines:
 - Always wait for tool results before continuing
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML
 - You don't need to worry about CDATA tags or XML escaping
-- Make sure to use correct parameter names
+- Make sure to use correct parameter names with quotes (name="paramName")
 - For scalar parameters (string, number, boolean), write values directly without quotes
 - For object/array type parameters, use properly encoded JSON format
 `;
