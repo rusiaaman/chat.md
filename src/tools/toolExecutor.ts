@@ -26,9 +26,36 @@ export function formatToolResult(result: string): string {
 
 export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string> } | null {
   try {
+    // First, check if the tool call has a proper opening and closing fence
+    const properFenceMatch = /```(?:xml|tool_call)?\s*\n([\s\S]*?)\n\s*```/s.exec(toolCallXml);
+    
+    // If not, check if it has just an opening fence (partially fenced)
+    const partialFenceMatch = !properFenceMatch ? /```(?:xml|tool_call)?\s*\n([\s\S]*?)$/s.exec(toolCallXml) : null;
+    
+    // Extract the actual XML content based on the fence status
+    const xmlContent = properFenceMatch ? properFenceMatch[1] : 
+                      partialFenceMatch ? partialFenceMatch[1] : 
+                      toolCallXml;
+                      
+    log(`Tool call format: ${properFenceMatch ? 'properly fenced' : partialFenceMatch ? 'partially fenced' : 'not fenced'}`);
+    
+    // Focus on the part between <tool_call> and </tool_call> tags
+    const toolCallContentMatch = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(xmlContent);
+    
+    // If we can't find the tool_call tags, try on the original string as a fallback
+    const toolCallContent = toolCallContentMatch 
+      ? toolCallContentMatch[1] 
+      : (/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(toolCallXml)?.[1] || '');
+    
+    if (!toolCallContent) {
+      log('Could not extract tool call content');
+      return null;
+    }
+    
     // Simple XML parser for tool calls - allow indentation with more flexible whitespace
-    const nameMatch = /\s*<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallXml);
+    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallContent);
     if (!nameMatch) {
+      log('Could not find tool_name tag');
       return null;
     }
     
@@ -40,7 +67,7 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     const paramRegex = /<param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/param>/sg;
     let paramMatch;
     
-    while ((paramMatch = paramRegex.exec(toolCallXml)) !== null) {
+    while ((paramMatch = paramRegex.exec(toolCallContent)) !== null) {
       const paramName = paramMatch[1].trim(); // No need to replace quotes, they're already handled in the regex
       const paramValue = paramMatch[2].trim();
       

@@ -25,17 +25,20 @@ you don't have access to external tools at the moment and suggest they check the
   }
 
   return `
-This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool:
+This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool, preferably inside a code fence block:
 
+\`\`\`
 <tool_call>
 <tool_name>toolName</tool_name>
 <param name="paramName">paramValue</param>
 </tool_call>
+\`\`\`
 
 IMPORTANT FORMATTING REQUIREMENTS:
 1. Always use double quotes around parameter names: name="paramName"
 2. Parameter values can be inline (no newlines required)
 3. Parameter names must exactly match those in the tool's schema
+4. Preferably place the tool call within code fence blocks, though the parser will accept tool calls without fences as well
 
 Available tools:${mcpToolsDescription}
    

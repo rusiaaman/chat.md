@@ -151,17 +151,56 @@ export class DocumentListener {
       log(`Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? '...' : ''}"`);
       
       // Look for tool call XML - find the LAST match instead of first
-      const toolCallRegex = /<tool_call>\n([\s\S]*?)\n<\/tool_call>/sg; // Ensure newlines around content
+      // Support both fenced and non-fenced tool calls
       
-      // Find all matches and use the last one
-      let toolCallMatch;
-      let lastToolCallMatch = null;
-      while ((toolCallMatch = toolCallRegex.exec(assistantResponse)) !== null) {
-        lastToolCallMatch = toolCallMatch;
+      // Match for properly fenced tool calls (with opening and closing fences)
+      const properlyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/sg;
+      
+      // Match for partially fenced tool calls (with opening fence but missing closing fence)
+      const partiallyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/sg;
+      
+      // Match for non-fenced tool calls
+      const nonFencedToolCallRegex = /<tool_call>\n([\s\S]*?)\n<\/tool_call>/sg; 
+      
+      // Find all matches for all patterns
+      let properlyFencedMatch;
+      let lastProperlyFencedMatch = null;
+      let partiallyFencedMatch;
+      let lastPartiallyFencedMatch = null;
+      let nonFencedMatch;
+      let lastNonFencedMatch = null;
+      
+      // Find all properly fenced matches
+      while ((properlyFencedMatch = properlyFencedToolCallRegex.exec(assistantResponse)) !== null) {
+        lastProperlyFencedMatch = properlyFencedMatch;
       }
       
-      // Use the last match
-      toolCallMatch = lastToolCallMatch;
+      // Find all partially fenced matches
+      while ((partiallyFencedMatch = partiallyFencedToolCallRegex.exec(assistantResponse)) !== null) {
+        lastPartiallyFencedMatch = partiallyFencedMatch;
+      }
+      
+      // Find all non-fenced matches
+      while ((nonFencedMatch = nonFencedToolCallRegex.exec(assistantResponse)) !== null) {
+        lastNonFencedMatch = nonFencedMatch;
+      }
+      
+      // Determine which match to use (last one found, prioritizing in order: properly fenced, partially fenced, non-fenced)
+      let toolCallMatch = null;
+      
+      // Find the last position of any match
+      const positions = [];
+      if (lastProperlyFencedMatch) positions.push({ type: 'properly-fenced', match: lastProperlyFencedMatch, index: lastProperlyFencedMatch.index });
+      if (lastPartiallyFencedMatch) positions.push({ type: 'partially-fenced', match: lastPartiallyFencedMatch, index: lastPartiallyFencedMatch.index });
+      if (lastNonFencedMatch) positions.push({ type: 'non-fenced', match: lastNonFencedMatch, index: lastNonFencedMatch.index });
+      
+      // Sort by position in descending order (last in the text first)
+      positions.sort((a, b) => b.index - a.index);
+      
+      if (positions.length > 0) {
+        toolCallMatch = positions[0].match;
+        log(`Using last ${positions[0].type} tool call at position ${positions[0].index}`);
+      }
       
       if (!toolCallMatch) {
         log('No tool call found in assistant response');

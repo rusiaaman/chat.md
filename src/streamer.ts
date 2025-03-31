@@ -155,16 +155,30 @@ export class StreamingService {
               const blockStart = this.findBlockStartPosition(text, streamer);
               
               if (blockStart !== -1) {
-                const insertPosition = this.document.positionAt(blockStart + streamer.tokens.join('').length);
+                const currentText = streamer.tokens.join('');
+                const insertPosition = this.document.positionAt(blockStart + currentText.length);
+                
+                // Check for unbalanced fence blocks
+                // Look for opening ``` before <tool_call> but no matching closing ```
+                const openingFenceMatch = /```(?:tool_call|xml)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s.exec(currentText);
+                
+                let textToInsert = '';
+                
+                if (openingFenceMatch) {
+                  log('Detected unbalanced fence block - adding closing fence before tool_execute block');
+                  textToInsert = '\n```\n\n# %% tool_execute\n';
+                } else {
+                  textToInsert = '\n\n# %% tool_execute\n';
+                }
                 
                 const edit = new vscode.WorkspaceEdit();
-                edit.insert(this.document.uri, insertPosition, '\n\n# %% tool_execute\n');
+                edit.insert(this.document.uri, insertPosition, textToInsert);
                 const applied = await vscode.workspace.applyEdit(edit);
                 
                 if (applied) {
-                  log('Successfully inserted tool_execute block');
+                  log(`Successfully inserted ${openingFenceMatch ? 'closing fence and ' : ''}tool_execute block`);
                 } else {
-                  log('Failed to insert tool_execute block');
+                  log(`Failed to insert ${openingFenceMatch ? 'closing fence and ' : ''}tool_execute block`);
                 }
               } else {
                 log('Could not find position to insert tool_execute block');
@@ -257,26 +271,106 @@ export class StreamingService {
    * - { isComplete: true, endIndex: number } if a complete tool call is found
    */
   private checkForCompletedToolCall(text: string): boolean | { isComplete: true, endIndex: number } {
-    // Improved regex to match completed tool calls with newlines and allowing indentation
-    const toolCallMatch = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s.exec(text);
+    // Match both fenced and non-fenced tool calls
+    // 1. Fenced tool call: ```\n<tool_call>...\n</tool_call>\n```
+    // 2. Non-fenced tool call: <tool_call>...\n</tool_call>
+    
+    // First try to match properly fenced tool calls (with opening and closing fences)
+    const properlyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/s;
+    const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
+    
+    // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
+    const partiallyFencedToolCallRegex = /```(?:xml|tool_call)?\s*\n\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+    const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
+    
+    // Then try to match non-fenced tool calls
+    const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
+    const nonFencedMatch = nonFencedToolCallRegex.exec(text);
+    
+    // Determine which match to use if any
+    let toolCallMatch = null;
+    let matchType = 'none';
+    
+    if (properlyFencedMatch && partiallyFencedMatch && nonFencedMatch) {
+      // If all three exist, use the one that appears first in the text
+      if (properlyFencedMatch.index <= partiallyFencedMatch.index && properlyFencedMatch.index <= nonFencedMatch.index) {
+        toolCallMatch = properlyFencedMatch;
+        matchType = 'properly-fenced';
+      } else if (partiallyFencedMatch.index <= properlyFencedMatch.index && partiallyFencedMatch.index <= nonFencedMatch.index) {
+        toolCallMatch = partiallyFencedMatch;
+        matchType = 'partially-fenced';
+      } else {
+        toolCallMatch = nonFencedMatch;
+        matchType = 'non-fenced';
+      }
+    } else if (properlyFencedMatch && partiallyFencedMatch) {
+      // If both fenced types exist, use the one that appears first
+      if (properlyFencedMatch.index <= partiallyFencedMatch.index) {
+        toolCallMatch = properlyFencedMatch;
+        matchType = 'properly-fenced';
+      } else {
+        toolCallMatch = partiallyFencedMatch;
+        matchType = 'partially-fenced';
+      }
+    } else if (properlyFencedMatch && nonFencedMatch) {
+      // If properly fenced and non-fenced exist, use the one that appears first
+      if (properlyFencedMatch.index <= nonFencedMatch.index) {
+        toolCallMatch = properlyFencedMatch;
+        matchType = 'properly-fenced';
+      } else {
+        toolCallMatch = nonFencedMatch;
+        matchType = 'non-fenced';
+      }
+    } else if (partiallyFencedMatch && nonFencedMatch) {
+      // If partially fenced and non-fenced exist, use the one that appears first
+      if (partiallyFencedMatch.index <= nonFencedMatch.index) {
+        toolCallMatch = partiallyFencedMatch;
+        matchType = 'partially-fenced';
+      } else {
+        toolCallMatch = nonFencedMatch;
+        matchType = 'non-fenced';
+      }
+    } else if (properlyFencedMatch) {
+      toolCallMatch = properlyFencedMatch;
+      matchType = 'properly-fenced';
+    } else if (partiallyFencedMatch) {
+      toolCallMatch = partiallyFencedMatch;
+      matchType = 'partially-fenced';
+    } else if (nonFencedMatch) {
+      toolCallMatch = nonFencedMatch;
+      matchType = 'non-fenced';
+    }
     
     if (toolCallMatch) {
-      // Make sure this is a complete tool call by checking if there's
-      // a proper closing tag with no text after it that would be part of the same call
+      // Make sure this is a complete tool call
       const fullMatch = toolCallMatch[0];
       const matchEndIndex = toolCallMatch.index + fullMatch.length;
       
-      // Check if there's another opening tag after this complete tag
-      // Use regex to find opening tags that might be indented
-      const nextOpeningTagRegex = /\n\s*<tool_call>/g;
-      nextOpeningTagRegex.lastIndex = matchEndIndex; // Start searching from the end of current match
-      const nextOpeningTagMatch = nextOpeningTagRegex.exec(text);
-      const nextOpeningTagIndex = nextOpeningTagMatch ? nextOpeningTagMatch.index : -1;
-      
       // Log the completed tool call
-      log(`Found completed tool call: "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? '...' : ''}"`);
+      log(`Found completed tool call (${matchType}): "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? '...' : ''}"`);
       
-      // If no more opening tags or next tag is after significant text, this is a complete call
+      // Check if there's another opening tag after this complete tag
+      // Look for both fenced and non-fenced opening patterns
+      const nextOpeningFencedRegex = /```(?:xml)?\s*\n\s*<tool_call>/g;
+      const nextOpeningNonFencedRegex = /\n\s*<tool_call>/g;
+      
+      nextOpeningFencedRegex.lastIndex = matchEndIndex;
+      nextOpeningNonFencedRegex.lastIndex = matchEndIndex;
+      
+      const nextFencedMatch = nextOpeningFencedRegex.exec(text);
+      const nextNonFencedMatch = nextOpeningNonFencedRegex.exec(text);
+      
+      let nextOpeningTagIndex = -1;
+      
+      if (nextFencedMatch && nextNonFencedMatch) {
+        nextOpeningTagIndex = Math.min(nextFencedMatch.index, nextNonFencedMatch.index);
+      } else if (nextFencedMatch) {
+        nextOpeningTagIndex = nextFencedMatch.index;
+      } else if (nextNonFencedMatch) {
+        nextOpeningTagIndex = nextNonFencedMatch.index;
+      }
+      
+      // If no more opening tags, this is a complete call
       if (nextOpeningTagIndex === -1) {
         log('No additional tool calls found after this one');
         // Return the end index of the tool call for truncation
