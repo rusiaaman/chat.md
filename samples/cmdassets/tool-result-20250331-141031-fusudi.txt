@@ -1,0 +1,41 @@
+ HTTP  3/31/2025 7:40:10 PM ::1 GET /
+ HTTP  3/31/2025 7:40:10 PM ::1 Returned 200 in 17 ms
+ HTTP  3/31/2025 7:40:10 PM ::1 GET /assets/index-C6G_3qQV.css
+ HTTP  3/31/2025 7:40:10 PM ::1 GET /assets/index-DWwGU3Ux.js
+ HTTP  3/31/2025 7:40:10 PM ::1 Returned 200 in 7 ms
+ HTTP  3/31/2025 7:40:10 PM ::1 Returned 200 in 8 ms
+ HTTP  3/31/2025 7:40:10 PM ::1 GET /vite.svg
+ HTTP  3/31/2025 7:40:10 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 1 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /assets/index-DWwGU3Ux.js
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /assets/index-C6G_3qQV.css
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /vite.svg
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /assets/index-DWwGU3Ux.js
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /assets/index-C6G_3qQV.css
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 4 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 3 ms
+ HTTP  3/31/2025 7:40:11 PM ::1 GET /vite.svg
+ HTTP  3/31/2025 7:40:11 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:12 PM ::1 GET /assets/index-C6G_3qQV.css
+ HTTP  3/31/2025 7:40:12 PM ::1 Returned 304 in 1 ms
+ HTTP  3/31/2025 7:40:16 PM ::1 GET /
+ HTTP  3/31/2025 7:40:16 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:16 PM ::1 GET /assets/index-C6G_3qQV.css
+ HTTP  3/31/2025 7:40:16 PM ::1 GET /assets/index-DWwGU3Ux.js
+ HTTP  3/31/2025 7:40:16 PM ::1 Returned 200 in 4 ms
+ HTTP  3/31/2025 7:40:16 PM ::1 Returned 200 in 2 ms
+ HTTP  3/31/2025 7:40:16 PM ::1 GET /vite.svg
+ HTTP  3/31/2025 7:40:16 PM ::1 Returned 200 in 1 ms
+^C
+ INFO  Gracefully shutting down. Please wait...
+
+---
+
+status = process exited
+cwd = /private/tmp/geminiexps/reactViteApp

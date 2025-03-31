@@ -1,0 +1,39 @@
+Title: Installing Tailwind CSS with Vite
+Description: Learn Tailwind the way that best matches your learning style · Learn how to get Tailwind set up in your project
+URL: https://tailwindcss.com/docs
+
+Title: Install React 19 with Tailwind CSS v4 Using Vite In Just Two Steps
+Description: Install <strong>React</strong> 19 <strong>with</strong> <strong>Tailwindcss</strong>. Step by Step Guide to Install <strong>Tailwindcss</strong> in Reactjs. <strong>Tailwindcss</strong> not installing in Reactjs project
+URL: https://medium.com/@osamajavaid/setting-up-react-19-with-tailwind-css-v4-using-vite-in-just-two-steps-3748f55b06fd
+
+Title: Install Tailwind CSS with React Router - Tailwind CSS
+Description: 01 · Start by creating a new React Router project if you don’t have one set up already. The most common approach is to use Create React Router. Terminal · npx create-react-router@latest my-project · cd my-project · 02 · <strong>Install @tailwindcss/vite and its peer dependencies via npm</strong>.
+URL: https://tailwindcss.com/docs/installation/framework-guides/react-router
+
+Title: Tailwind CSS 4.0 is finally here - The NEW way to install with ...
+Description: Enjoy the videos and music you love, upload original content, and share it all with friends, family, and the world on YouTube.
+URL: https://www.youtube.com/watch?v=sHnG8tIYMB4
+
+Title: How to Setup React and Tailwind CSS with Vite in a Project
+Description: Tailwind CSS is a popular CSS framework, and <strong>React</strong> is one of the most popular JavaScript libraries. And Tailwind CSS and <strong>React</strong> are a great combo to use if you&#x27;re building a frontend project. In this article, you will learn how to <strong>setup</strong> your coding en...
+URL: https://www.freecodecamp.org/news/how-to-install-tailwindcss-in-react/
+
+Title: Installing React.js with Vite and Tailwind CSS - MERN Blog
+Description: We cannot provide a description for this page right now
+URL: https://blog.100jsprojects.com/post/installing-react-js-with-vite-and-tailwind-css--a-quick-and-efficient-guide
+
+Title: Install Tailwind CSS with Vite - Tailwind CSS
+Description: <strong>v4</strong>.0 Beta Documentation → · Preview the next Tailwind CSS
+URL: https://v3.tailwindcss.com/docs/guides/vite
+
+Title: Tailwind CSS Vite React Guide | Restackio
+Description: Learn how to integrate Tailwind CSS <strong>with</strong> <strong>Vite</strong> <strong>and</strong> <strong>React</strong> for efficient and streamlined development. | Restackio
+URL: https://www.restack.io/p/vite-answer-tailwind-css-vite-react
+
+Title: Installation of tailwind 4.0 + vite (react + javascript or typescript) | by Nikola Popovic | Feb, 2025 | Medium
+Description: in cmd, navigate to the folder where you want to start the project and enter the command
+URL: https://medium.com/@npguapo/installation-of-tailwind-vite-react-javascript-or-typescript-ec1abdfa56b2
+
+Title: Tailwind CSS v4 with React + Vite: Styles not applied on first load in dev mode · tailwindlabs/tailwindcss · Discussion #16399
+Description: First of all, <strong>in your vite.config file, in the plugins array remove the tailwindcss() because tailwind v4 integrates automatically when the tailwindcss package is installed</strong>. Also, try changing the import statement so that it comes from tailwind itself. ... ` import { defineConfig } from &#x27;vite&#x27;; ...
+URL: https://github.com/tailwindlabs/tailwindcss/discussions/16399
