@@ -83,6 +83,33 @@ export function parseDocument(text: string, document?: vscode.TextDocument): rea
 }
 
 /**
+ * Determines the type of the block the cursor is currently in.
+ * Iterates backwards from the cursor position to find the most recent block marker.
+ */
+export function getBlockInfoAtPosition(
+  document: vscode.TextDocument,
+  position: vscode.Position
+): { type: 'user' | 'assistant' | 'tool_execute' | null, blockStartPosition: vscode.Position | null } {
+  const blockMarkerRegex = /^# %% (user|assistant|tool_execute)\s*$/i;
+
+  for (let lineNum = position.line; lineNum >= 0; lineNum--) {
+    const line = document.lineAt(lineNum);
+    const match = line.text.match(blockMarkerRegex);
+
+    if (match) {
+      const blockType = match[1].toLowerCase() as 'user' | 'assistant' | 'tool_execute';
+      const blockStartPosition = new vscode.Position(lineNum, 0);
+      log(`Found block marker '${match[0]}' at line ${lineNum} for position ${position.line}`);
+      return { type: blockType, blockStartPosition };
+    }
+  }
+
+  // If no marker was found before the cursor position
+  log(`No block marker found before line ${position.line}`);
+  return { type: null, blockStartPosition: null };
+}
+
+/**
  * Parses user content to extract text and file references
  */
 function parseUserContent(text: string, document?: vscode.TextDocument): Content[] {

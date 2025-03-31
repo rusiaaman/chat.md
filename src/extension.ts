@@ -1,8 +1,10 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as vscode from 'vscode';
+import * as path from 'path';
 import { DocumentListener } from './listener';
-import { 
-  getAnthropicApiKey, 
+import {
+  getAnthropicApiKey,
   setAnthropicApiKey, 
   getApiKey, 
   setApiKey, 
@@ -13,6 +15,7 @@ import {
   getBaseUrl,
   setBaseUrl
 } from './config';
+import { getBlockInfoAtPosition } from './parser'; // Import the new function
 import { McpClientManager, McpServerConfig } from './mcpClient';
 
 // Map to keep track of active document listeners
@@ -298,8 +301,49 @@ export function activate(context: vscode.ExtensionContext) {
         await setBaseUrl(baseUrl);
         vscode.window.showInformationMessage(`OpenAI-compatible base URL set to: ${baseUrl}`);
       }
-    })
-  );
+    }),
+
+   // Register command for Shift+Enter handling
+   vscode.commands.registerTextEditorCommand('filechat.insertNextBlock', (textEditor, edit) => {
+     const document = textEditor.document;
+     // Handle multiple selections, though primary focus is the active cursor
+     textEditor.selections.forEach(selection => {
+       const position = selection.active;
+       log(`Shift+Enter pressed at Line: ${position.line}, Character: ${position.character}`);
+
+       const blockInfo = getBlockInfoAtPosition(document, position);
+       log(`Current block type: ${blockInfo.type || 'none'}`);
+
+       let textToInsert = "";
+
+       switch (blockInfo.type) {
+         case 'user':
+           textToInsert = "\n# %% assistant\n";
+           break;
+         case 'assistant':
+           textToInsert = "\n# %% user\n";
+           break;
+         case 'tool_execute':
+           textToInsert = "\n# %% assistant\n"; // As per requirement
+           break;
+         default: // No block found before cursor, or error
+           textToInsert = "\n# %% user\n"; // As per requirement
+           break;
+       }
+
+       log(`Inserting text: "${textToInsert.replace(/\n/g, '\\n')}"`);
+       // Insert the text at the current cursor position
+       edit.insert(position, textToInsert);
+     });
+
+     // Optional: Ensure the cursor moves to the end of the inserted text
+     // This happens automatically with simple inserts usually, but can be forced if needed.
+     // Example (might need adjustment based on exact behavior):
+     // const newPosition = textEditor.document.positionAt(textEditor.document.offsetAt(position) + textToInsert.length);
+     // textEditor.selection = new vscode.Selection(newPosition, newPosition);
+     // textEditor.revealRange(new vscode.Range(newPosition, newPosition));
+   })
+ );
 }
 
 /**
