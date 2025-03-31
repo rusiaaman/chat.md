@@ -6,7 +6,7 @@ Chat Markdown is a Visual Studio Code extension that enables you to interact wit
 
 ### 🗣️ Interactive Chat Interface
 - Use `.chat.md` files with a simple format to structure conversations
-- Sections start with `#%% user` or `#%% assistant` to define roles
+- Sections start with `# %% user` or `# %% assistant` to define roles
 - Supports streaming responses from the AI model
 - Auto-scrolls to keep new content visible
 
@@ -38,13 +38,13 @@ Chat Markdown is a Visual Studio Code extension that enables you to interact wit
    - Or create a file with the `.chat.md` extension
 4. Start your conversation:
    ```
-   #%% user
+   # %% user
    Hello, can you help me with a coding question?
 
-   #%% assistant
+   # %% assistant
    
    ```
-5. When you add an empty `#%% assistant` line, the AI will automatically start generating a response
+5. When you add an empty `# %% assistant` line, the AI will automatically start generating a response
 
 ## Configuration
 
@@ -61,20 +61,20 @@ Access these settings through VS Code's settings UI or settings.json:
 Each `.chat.md` file consists of alternating user and assistant blocks:
 
 ```
-#%% user
+# %% user
 Your question or prompt goes here.
 You can include multiple paragraphs.
 
 [#file](path/to/file.js)
 
-#%% assistant
+# %% assistant
 The AI response appears here.
 It can include code blocks, explanations, etc.
 
-#%% user
+# %% user
 Your follow-up question...
 
-#%% assistant
+# %% assistant
 
 ```
 

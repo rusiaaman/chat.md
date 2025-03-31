@@ -26,8 +26,8 @@ export function formatToolResult(result: string): string {
 
 export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string> } | null {
   try {
-    // Simple XML parser for tool calls
-    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallXml);
+    // Simple XML parser for tool calls - allow indentation with more flexible whitespace
+    const nameMatch = /\s*<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallXml);
     if (!nameMatch) {
       return null;
     }

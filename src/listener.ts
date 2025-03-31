@@ -99,7 +99,7 @@ export class DocumentListener {
       const text = this.document.getText();
       
       // Find all tool_execute blocks and check which ones are empty
-      const blockRegex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+      const blockRegex = /# %% tool_execute\s*([\s\S]*?)(?=# %%|$)/gm;
       const emptyBlocks = [];
       let match;
       
@@ -129,7 +129,7 @@ export class DocumentListener {
       
       // Find the previous assistant block with a tool call
       const textBeforeToolExecute = text.substring(0, toolExecutePosition);
-      const assistantBlockRegex = /#%% assistant\s+([\s\S]*?)(?=\n#%%|$)/g;
+      const assistantBlockRegex = /# %% assistant\s+([\s\S]*?)(?=\n# %%|$)/g;
       
       // Find the last match
       let assistantBlockMatch;
@@ -260,7 +260,7 @@ export class DocumentListener {
     }
 
     // Find the insertion point (within the last empty tool_execute block)
-    const blockRegex = /#%% tool_execute\s*([\s\S]*?)(?=#%%|$)/gm;
+    const blockRegex = /# %% tool_execute\s*([\s\S]*?)(?=# %%|$)/gm;
     const emptyBlocks = [];
     let match;
     
@@ -282,12 +282,12 @@ export class DocumentListener {
 
     // Use the LAST empty block
     const lastEmptyBlock = emptyBlocks[emptyBlocks.length - 1];
-    const insertOffset = lastEmptyBlock.position + '#%% tool_execute'.length; // Position after the marker line
+    const insertOffset = lastEmptyBlock.position + '# %% tool_execute'.length; // Position after the marker line
     log(`Targeting insert offset ${insertOffset} within the empty tool_execute block at ${lastEmptyBlock.position}`);
 
     // We need to replace the empty content within the block, not insert after it.
     const startPos = this.document.positionAt(insertOffset);
-    // Find the end of the empty block content (before the next #%% or EOF)
+    // Find the end of the empty block content (before the next # %% or EOF)
     const endOffset = text.indexOf('%%#', insertOffset); // Look for the start of the next marker reversed
     const actualEndOffset = endOffset !== -1 ? text.substring(0, endOffset).lastIndexOf('#') : text.length; // Find the actual start of the next marker or EOF
     const endPos = this.document.positionAt(actualEndOffset);
@@ -296,7 +296,7 @@ export class DocumentListener {
 
     // Create an edit that replaces the empty content with the result and adds a new assistant block after
     // Ensure proper newlines around the content
-    let textToInsert = `\n${contentToInsert.trim()}\n\n#%% assistant\n`;
+    let textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
     // If the block wasn't just the marker but had whitespace, adjust insertion
     const existingContent = text.substring(insertOffset, actualEndOffset);
     if (existingContent.trim() !== '') {

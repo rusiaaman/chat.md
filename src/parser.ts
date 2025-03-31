@@ -12,9 +12,9 @@ import * as vscode from 'vscode';
 export function parseDocument(text: string, document?: vscode.TextDocument): readonly MessageParam[] {
   const messages: MessageParam[] = [];
   
-  // Regex to split document on #%% markers - fixing the pattern to properly match all cases
+  // Regex to split document on # %% markers - fixing the pattern to properly match all cases
   // We need to keep the original pattern that works, not the modified one that's causing issues
-  const regex = /^#%% (user|assistant|tool_execute)\s*$/im;
+  const regex = /^# %% (user|assistant|tool_execute)\s*$/im;
   const blocks = text.split(regex);
   
   // Debug logging
@@ -187,8 +187,8 @@ export function hasEmptyAssistantBlock(text: string): boolean {
   log(`Checking for empty assistant block in: "${displayText.replace(/\n/g, '\\n')}"`);
   
   // Check if the document ends with a pattern that should trigger streaming
-  // Specifically, we want "#%% assistant" followed by a newline and optional whitespace at the end
-  const lastAssistantIndex = text.lastIndexOf('#%% assistant');
+  // Specifically, we want "# %% assistant" followed by a newline and optional whitespace at the end
+  const lastAssistantIndex = text.lastIndexOf('# %% assistant');
   
   // If no assistant block found or it's not near the end, return false
   if (lastAssistantIndex === -1 || lastAssistantIndex < text.length - 30) {
@@ -196,12 +196,12 @@ export function hasEmptyAssistantBlock(text: string): boolean {
     return false;
   }
   
-  // Check if there's a newline after "#%% assistant"
-  const textAfterMarker = text.substring(lastAssistantIndex + 13); // Length of '#%% assistant'
+  // Check if there's a newline after "# %% assistant"
+  const textAfterMarker = text.substring(lastAssistantIndex + 14); // Length of '# %% assistant'
   
   // First, check for at least one newline
   if (!textAfterMarker.includes('\n')) {
-    log('No newline after "#%% assistant", not triggering streaming');
+    log('No newline after "# %% assistant", not triggering streaming');
     return false;
   }
   
@@ -213,7 +213,7 @@ export function hasEmptyAssistantBlock(text: string): boolean {
     return false;
   }
   
-  // If we got here, we have "#%% assistant" followed by a newline and only whitespace after that
+  // If we got here, we have "# %% assistant" followed by a newline and only whitespace after that
   log('Found empty assistant block with newline, triggering streaming');
   return true;
 }
@@ -230,7 +230,7 @@ export function hasEmptyToolExecuteBlock(text: string): boolean {
   // More precise approach: find all tool_execute blocks and check if any are empty
   // Look for blocks that are either at the end of the document or followed by another block
   const blockMatches = [];
-  const regex = /#%% tool_execute\s*([\s\S]*?)(?=\n#%%|$)/gm;
+  const regex = /# %% tool_execute\s*([\s\S]*?)(?=\n# %%|$)/gm;
   let match;
   
   while ((match = regex.exec(text)) !== null) {
@@ -258,7 +258,7 @@ export function hasEmptyToolExecuteBlock(text: string): boolean {
  */
 export function findAssistantBlocks(text: string): {start: number, end: number}[] {
   const blocks: {start: number, end: number}[] = [];
-  const regex = /^#%% assistant\s*$/im;
+  const regex = /^# %% assistant\s*$/im;
   
   let match;
   const lines = text.split('\n');
@@ -285,7 +285,7 @@ export function findAllAssistantBlocks(text: string): {markerStart: number, cont
   let lineOffset = 0;
   
   for (let i = 0; i < lines.length; i++) {
-    if (/^#%% assistant\s*$/i.test(lines[i])) {
+    if (/^# %% assistant\s*$/i.test(lines[i])) {
       // Found an assistant block
       const markerStart = lineOffset;
       

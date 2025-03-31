@@ -92,7 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('filechat.newChat', async () => {
       // Create a new chat file
       const document = await vscode.workspace.openTextDocument({
-        content: '#%% user\n',
+        content: '# %% user\n',
         language: 'markdown'
       });
       

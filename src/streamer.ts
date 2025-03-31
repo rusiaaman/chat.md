@@ -158,7 +158,7 @@ export class StreamingService {
                 const insertPosition = this.document.positionAt(blockStart + streamer.tokens.join('').length);
                 
                 const edit = new vscode.WorkspaceEdit();
-                edit.insert(this.document.uri, insertPosition, '\n\n#%% tool_execute\n');
+                edit.insert(this.document.uri, insertPosition, '\n\n# %% tool_execute\n');
                 const applied = await vscode.workspace.applyEdit(edit);
                 
                 if (applied) {
@@ -257,8 +257,8 @@ export class StreamingService {
    * - { isComplete: true, endIndex: number } if a complete tool call is found
    */
   private checkForCompletedToolCall(text: string): boolean | { isComplete: true, endIndex: number } {
-    // More precise regex to match completed tool calls with newlines
-    const toolCallMatch = /<tool_call>\n[\s\S]*?\n<\/tool_call>/s.exec(text);
+    // Improved regex to match completed tool calls with newlines and allowing indentation
+    const toolCallMatch = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s.exec(text);
     
     if (toolCallMatch) {
       // Make sure this is a complete tool call by checking if there's
@@ -267,7 +267,11 @@ export class StreamingService {
       const matchEndIndex = toolCallMatch.index + fullMatch.length;
       
       // Check if there's another opening tag after this complete tag
-      const nextOpeningTagIndex = text.indexOf('<tool_call>', matchEndIndex);
+      // Use regex to find opening tags that might be indented
+      const nextOpeningTagRegex = /\n\s*<tool_call>/g;
+      nextOpeningTagRegex.lastIndex = matchEndIndex; // Start searching from the end of current match
+      const nextOpeningTagMatch = nextOpeningTagRegex.exec(text);
+      const nextOpeningTagIndex = nextOpeningTagMatch ? nextOpeningTagMatch.index : -1;
       
       // Log the completed tool call
       log(`Found completed tool call: "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? '...' : ''}"`);

@@ -22,12 +22,12 @@ A "streamer" is a thread that's streaming from LLM a set of tokens at a time.
 
 # .chat.md parsing
 
-#%% user
+# %% user
 Hi
-#%% assistant
+# %% assistant
 hello
 
-#%% line is treated as describing a role and starting a text block.
+# %% line is treated as describing a role and starting a text block.
 
 In user block a md like relative url is resolved for text or image file.
 
@@ -49,7 +49,7 @@ Both relative and absolute paths are supported in either format. Home directory 
 
 # When to trigger streaming
 
-If the file ends with an empty assistant block #%% assistant\s* without case match the streaming starts
+If the file ends with an empty assistant block # %% assistant\s* without case match the streaming starts
 
 # How to stream idempotentically
 
