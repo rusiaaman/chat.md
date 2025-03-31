@@ -257,8 +257,8 @@ export class StreamingService {
    * - { isComplete: true, endIndex: number } if a complete tool call is found
    */
   private checkForCompletedToolCall(text: string): boolean | { isComplete: true, endIndex: number } {
-    // Simple regex to match completed tool calls
-    const toolCallMatch = /<tool_call>[\s\S]*?<\/tool_call>/s.exec(text);
+    // More precise regex to match completed tool calls with newlines
+    const toolCallMatch = /<tool_call>\n[\s\S]*?\n<\/tool_call>/s.exec(text);
     
     if (toolCallMatch) {
       // Make sure this is a complete tool call by checking if there's

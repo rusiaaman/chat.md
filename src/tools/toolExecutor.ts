@@ -27,7 +27,7 @@ export function formatToolResult(result: string): string {
 export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string> } | null {
   try {
     // Simple XML parser for tool calls
-    const nameMatch = /<tool_name>(.*?)<\/tool_name>/s.exec(toolCallXml);
+    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallXml);
     if (!nameMatch) {
       return null;
     }
@@ -35,8 +35,8 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     const toolName = nameMatch[1].trim();
     const params: Record<string, string> = {};
     
-    // Extract parameters
-    const paramRegex = /<param\s+name=(.*?)>([\s\S]*?)<\/param>/sg;
+    // Extract parameters with more precise formatting
+    const paramRegex = /<param\s+name=(.*?)>\n([\s\S]*?)\n<\/param>/sg;
     let paramMatch;
     
     while ((paramMatch = paramRegex.exec(toolCallXml)) !== null) {

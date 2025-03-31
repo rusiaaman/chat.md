@@ -151,7 +151,7 @@ export class DocumentListener {
       log(`Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? '...' : ''}"`);
       
       // Look for tool call XML - find the LAST match instead of first
-      const toolCallRegex = /<tool_call>([\s\S]*?)<\/tool_call>/sg; // Added 'g' flag to find all matches
+      const toolCallRegex = /<tool_call>\n([\s\S]*?)\n<\/tool_call>/sg; // Ensure newlines around content
       
       // Find all matches and use the last one
       let toolCallMatch;
