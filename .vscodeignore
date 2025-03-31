@@ -1,0 +1,15 @@
+.vscode/**
+.vscode-test/**
+src/**
+.gitignore
+tsconfig.json
+**/*.map
+**/*.ts
+.npmignore
+*.vsix
+node_modules/**
+test/**
+*.chat.md
+CLAUDE.md
+setup.sh
+test-tool-calling.js
