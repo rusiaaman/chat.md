@@ -53,9 +53,11 @@ export function parseDocument(text: string, document?: vscode.TextDocument): rea
     if (role === 'tool_execute') {
       // Tool execute blocks are treated as user messages
       if (content) {
+        // Process tool_execute blocks that contain tool results
+        const processedContent = processToolResultContent(content, document);
         messages.push({
           role: 'user',
-          content: [{ type: 'text', value: content }]
+          content: [{ type: 'text', value: processedContent }]
         });
       }
       // Skip this block in normal processing
@@ -300,6 +302,70 @@ export function findAssistantBlocks(text: string): {start: number, end: number}[
   }
   
   return blocks;
+}
+
+/**
+ * Process tool result content - replacing markdown links with file content when appropriate
+ * Specifically for <tool_result> blocks containing a single markdown link
+ */
+function processToolResultContent(content: string, document?: vscode.TextDocument): string {
+  if (!document) {
+    return content; // Can't resolve paths without document context
+  }
+
+  // Check if this is a tool result block
+  const toolResultMatch = content.match(/<tool_result>([\s\S]*?)<\/tool_result>/);
+  if (!toolResultMatch) {
+    return content; // Not a tool result block
+  }
+
+  const toolResultContent = toolResultMatch[1].trim();
+  
+  // Look for a markdown link as the ONLY content inside the tool result tags
+  // First strip code fences if present
+  const withoutCodeFences = toolResultContent.replace(/^```[\s\S]*?```$/g, (match) => {
+    // Extract content from within code fences
+    const fenceMatch = match.match(/```(?:.*?)?\n([\s\S]*?)\n```/);
+    return fenceMatch ? fenceMatch[1].trim() : match;
+  });
+  
+  // Check if we have a single markdown link
+  const linkOnlyContent = withoutCodeFences.trim();
+  const linkMatch = linkOnlyContent.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+  
+  if (!linkMatch) {
+    return content; // Not a single markdown link or other content exists
+  }
+  
+  const linkText = linkMatch[1];
+  const linkTarget = linkMatch[2];
+  
+  // Only process "Tool Result" links which are our auto-generated ones
+  if (linkText !== 'Tool Result') {
+    return content;
+  }
+  
+  log(`Found a tool result with single markdown link to: ${linkTarget}`);
+  
+  // Resolve the path and read the file
+  const resolvedPath = resolveFilePath(linkTarget, document);
+  
+  if (!fileExists(resolvedPath)) {
+    log(`File not found: ${resolvedPath}`);
+    return content;
+  }
+  
+  const fileContent = readFileAsText(resolvedPath);
+  if (!fileContent) {
+    log(`Could not read file: ${resolvedPath}`);
+    return content;
+  }
+  
+  log(`Successfully loaded content from tool result file: ${linkTarget}`);
+  
+  // Replace the markdown link with the actual content
+  return content.replace(/<tool_result>[\s\S]*?<\/tool_result>/, 
+                        `<tool_result>\n${fileContent}\n</tool_result>`);
 }
 
 /**
