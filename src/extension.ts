@@ -36,8 +36,7 @@ export const statusManager = StatusManager.getInstance();
 // Helper function for logging
 export function log(message: string): void {
   outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
-  // Make sure the output channel is visible
-  outputChannel.show(true);
+  // Logging happens without showing the output channel automatically
 }
 
 /**
