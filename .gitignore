@@ -3,3 +3,4 @@ node_modules
 dist
 *.vsix
 .DS_Store
+.cmd_history
