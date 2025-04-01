@@ -373,33 +373,7 @@ export class DocumentListener {
       log('Failed to insert tool result into document');
     } else {
       log('Successfully inserted tool result and new assistant block');
-      
-      // Auto-scroll to keep the newly inserted content visible and ensure we're scrolled to the bottom
-      try {
-        // Find the editor for this document
-        const editor = vscode.window.visibleTextEditors.find(
-          e => e.document.uri.toString() === this.document.uri.toString()
-        );
-        
-        if (editor) {
-          // Get the position of the very end of the document to ensure we scroll all the way to the bottom
-          const docEnd = this.document.lineAt(this.document.lineCount - 1).range.end;
-          
-          // Reveal the end of the document in the editor, always ensuring it's visible
-          editor.revealRange(
-            new vscode.Range(docEnd, docEnd),
-            vscode.TextEditorRevealType.InCenterIfOutsideViewport
-          );
-          
-          // Move cursor to the end of the document for better user experience
-          editor.selection = new vscode.Selection(docEnd, docEnd);
-          
-          log(`Auto-scrolled editor to the end of the document to show inserted content`);
-        }
-      } catch (scrollError) {
-        log(`Auto-scroll error (non-critical): ${scrollError}`);
-        // Continue even if auto-scroll fails
-      }
+      // Auto-scrolling disabled - users can scroll manually if needed
     }
   }
   
