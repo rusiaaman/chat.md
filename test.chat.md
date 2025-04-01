@@ -1,4 +1,4 @@
-#%% user
+# %% user
 Testing file attachment with Markdown-style link:
 
 [#file](src/parser.ts)
@@ -11,4 +11,4 @@ Home directory test:
 Absolute path test:
 [#file](/Users/arusia/repos/filechat/CLAUDE.md)
 
-#%% assistant
+# %% assistant

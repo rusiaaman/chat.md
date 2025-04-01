@@ -7,7 +7,7 @@ import { getApiKey, getAnthropicApiKey, getProvider } from './config';
 import * as path from 'path';
 import { log } from './extension';
 import { executeToolCall, formatToolResult, parseToolCall } from './tools/toolExecutor';
-import { ensureDirectoryExists, writeFile } from './utils/fileUtils';
+import { ensureDirectoryExists, writeFile, saveChatHistory } from './utils/fileUtils';
 
 /**
  * Listens for document changes and manages streaming LLM responses
@@ -411,6 +411,10 @@ export class DocumentListener {
       
       log(`Parsed ${messages.length} messages from document`);
       
+      // Save chat history for debugging
+      const historyFilePath = saveChatHistory(this.document, messages, 'before_llm_call');
+      log(`Saved chat history to: ${historyFilePath}`);
+      
       if (messages.length === 0) {
         log('No messages to process, not starting streaming');
         return;
@@ -432,6 +436,7 @@ export class DocumentListener {
         messageIndex,
         tokens: [],
         isActive: true,
+        historyFilePath,  // Store the history file path in the streamer state
         cancel: () => streamingService.cancelStreaming(streamer)
       };
       

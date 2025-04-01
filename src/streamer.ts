@@ -7,6 +7,7 @@ import { findAssistantBlocks, findAllAssistantBlocks } from './parser';
 import { log, statusManager } from './extension';
 import { getProvider, generateToolCallingSystemPrompt } from './config';
 import { mcpClientManager } from './mcpClientManager';
+import { appendToChatHistory } from './utils/fileUtils';
 
 /**
  * Service for streaming LLM responses
@@ -111,6 +112,11 @@ export class StreamingService {
         if (tokens.length > 0) {
           tokenCount += tokens.length;
           log(`Received ${tokens.length} tokens: "${tokens.join('')}"`);
+          
+          // Log received tokens to the chat history file if available
+          if (streamer.historyFilePath) {
+            appendToChatHistory(streamer.historyFilePath, tokens.join(''));
+          }
           
           // Check if adding these tokens would complete a tool call
           const currentTokens = [...streamer.tokens, ...tokens].join('');

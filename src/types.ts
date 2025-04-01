@@ -50,6 +50,12 @@ export interface StreamerState {
   isActive: boolean;
   
   /**
+   * Path to the history file where chat context is saved
+   * Used for debugging purposes
+   */
+  historyFilePath?: string;
+  
+  /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.
    */

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as fs from 'fs';
 import * as vscode from 'vscode';
+import { MessageParam } from '../types';
 
 /**
  * Resolves file paths that may be relative to the current document
@@ -95,5 +96,92 @@ export function writeFile(filePath: string, content: string): void {
   } catch (error) {
     console.error(`Error writing file ${filePath}:`, error);
     throw error; // Re-throw the error
+  }
+}
+
+/**
+ * Save chat history to a file for debugging purposes
+ * @param document The document containing the chat
+ * @param messages The messages to be sent to the LLM
+ * @param action The action being performed (e.g., "before_llm_call")
+ * @param additionalContent Optional additional content to append to the file
+ */
+export function saveChatHistory(
+  document: vscode.TextDocument,
+  messages: readonly MessageParam[],
+  action: string,
+  additionalContent?: string
+): string {
+  try {
+    // Create .cmd_history directory relative to the chat document
+    const docDir = path.dirname(document.uri.fsPath);
+    const historyDir = path.join(docDir, '.cmd_history');
+    ensureDirectoryExists(historyDir);
+
+    // Create a timestamp-based filename
+    const timestamp = new Date().toISOString()
+      .replace(/:/g, '-')
+      .replace(/\..+Z/, '');
+    const filename = `history_${timestamp}_${action}.md`;
+    const filePath = path.join(historyDir, filename);
+
+    // Format messages into a readable markdown format
+    let content = `# Chat History Debug Log\n\n`;
+    content += `- **Timestamp:** ${new Date().toISOString()}\n`;
+    content += `- **Action:** ${action}\n`;
+    content += `- **Document:** ${document.fileName}\n\n`;
+    
+    content += `## Messages\n\n`;
+    messages.forEach((msg, index) => {
+      content += `### ${index + 1}. ${msg.role.toUpperCase()}\n\n`;
+      
+      msg.content.forEach(item => {
+        if (item.type === 'text') {
+          content += `\`\`\`\n${item.value}\n\`\`\`\n\n`;
+        } else if (item.type === 'image') {
+          content += `[Image: ${item.path}]\n\n`;
+        }
+      });
+    });
+
+    // Add additional content if provided
+    if (additionalContent) {
+      content += `## Additional Content\n\n\`\`\`\n${additionalContent}\n\`\`\`\n`;
+    }
+
+    // Write to file
+    writeFile(filePath, content);
+    
+    return filePath;
+  } catch (error) {
+    console.error('Error saving chat history:', error);
+    // Don't throw - we want this to be non-blocking
+    return '';
+  }
+}
+
+/**
+ * Append content to an existing chat history file
+ * @param historyFilePath Path to the history file
+ * @param content Content to append
+ */
+export function appendToChatHistory(historyFilePath: string, content: string): void {
+  try {
+    if (!historyFilePath || !fileExists(historyFilePath)) {
+      return;
+    }
+    
+    // Read existing content
+    const existingContent = readFileAsText(historyFilePath) || '';
+    
+    // Append new content
+    const updatedContent = existingContent + 
+      `\n\n## Received Tokens (${new Date().toISOString()})\n\n\`\`\`\n${content}\n\`\`\`\n`;
+    
+    // Write back to file
+    writeFile(historyFilePath, updatedContent);
+  } catch (error) {
+    console.error('Error appending to chat history:', error);
+    // Don't throw - we want this to be non-blocking
   }
 }
