@@ -354,8 +354,14 @@ export class DocumentListener {
     log(`Calculated insertion range: Start(${startPos.line},${startPos.character}), End(${endPos.line},${endPos.character})`);
 
     // Create an edit that replaces the empty content with the result and adds a new assistant block after
-    // Ensure proper newlines around the content and wrap result in fences
-    let textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
+    // Determine whether to use code fences based on content type
+    let isMarkdownLink = rawResult.split('\n').length > lineCountThreshold && contentToInsert.includes('[Tool Result]');
+    
+    // If it's a markdown link to a file, don't wrap in code fences so it's clickable
+    // Otherwise, wrap in code fences for better display of code/text content
+    let textToInsert = isMarkdownLink
+      ? `\n${contentToInsert.trim()}\n\n# %% assistant\n`
+      : `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
     // If the block wasn't just the marker but had whitespace, adjust insertion
     const existingContent = text.substring(insertOffset, actualEndOffset);
     if (existingContent.trim() !== '') {
