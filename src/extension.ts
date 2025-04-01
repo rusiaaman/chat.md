@@ -353,7 +353,8 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
    // Register command for Shift+Enter handling
-   vscode.commands.registerTextEditorCommand('filechat.insertNextBlock', (textEditor, edit) => {
+   context.subscriptions.push(
+     vscode.commands.registerTextEditorCommand('filechat.insertNextBlock', (textEditor, edit) => {
      const document = textEditor.document;
      // Handle multiple selections, though primary focus is the active cursor
      textEditor.selections.forEach(selection => {
@@ -391,7 +392,7 @@ export function activate(context: vscode.ExtensionContext) {
      // const newPosition = textEditor.document.positionAt(textEditor.document.offsetAt(position) + textToInsert.length);
      // textEditor.selection = new vscode.Selection(newPosition, newPosition);
      // textEditor.revealRange(new vscode.Range(newPosition, newPosition));
-   })
+   }))
  );
 }
 
