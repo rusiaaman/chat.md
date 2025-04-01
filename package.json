@@ -26,16 +26,16 @@
         "title": "New Chat Markdown"
       },
       {
-        "command": "filechat.configureApi",
-        "title": "Configure Chat Markdown API Key"
+        "command": "filechat.addApiConfig",
+        "title": "Add or Edit API Configuration"
       },
       {
-        "command": "filechat.configureModel",
-        "title": "Configure Chat Markdown Model"
+        "command": "filechat.selectApiConfig",
+        "title": "Select API Configuration"
       },
       {
-        "command": "filechat.configureBaseUrl",
-        "title": "Configure OpenAI-Compatible Base URL"
+        "command": "filechat.removeApiConfig",
+        "title": "Remove API Configuration"
       },
       {
         "command": "filechat.refreshMcpTools",
@@ -49,34 +49,38 @@
     "configuration": {
       "title": "Chat Markdown",
       "properties": {
-        "filechat.provider": {
-          "type": "string",
-          "enum": [
-            "anthropic",
-            "openai"
-          ],
-          "default": "anthropic",
-          "description": "AI provider to use (anthropic or openai)",
+        "filechat.apiConfigs": {
+          "type": "object",
+          "description": "Dictionary of named API configurations",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["anthropic", "openai"],
+                "description": "Provider type"
+              },
+              "apiKey": {
+                "type": "string",
+                "description": "API Key for the selected provider"
+              },
+              "base_url": {
+                "type": "string",
+                "description": "Base URL for the API (optional, leave empty for default)"
+              },
+              "model_name": {
+                "type": "string",
+                "description": "Model name to use with the selected provider"
+              }
+            },
+            "required": ["type", "apiKey"]
+          },
+          "default": {},
           "scope": "application"
         },
-        "filechat.model_name": {
+        "filechat.selectedConfig": {
           "type": "string",
-          "description": "Model name to use with the selected provider (leave empty for default)",
-          "scope": "application"
-        },
-        "filechat.base_url": {
-          "type": "string",
-          "description": "Base URL for OpenAI-compatible APIs (only used when provider is 'openai')",
-          "scope": "application"
-        },
-        "filechat.apiKey": {
-          "type": "string",
-          "description": "API Key for the selected provider",
-          "scope": "application"
-        },
-        "filechat.anthropicApiKey": {
-          "type": "string",
-          "description": "Anthropic API Key (legacy setting, use filechat.apiKey instead)",
+          "description": "Name of the selected API configuration",
           "scope": "application"
         },
         "filechat.mcpServers": {

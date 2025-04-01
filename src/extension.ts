@@ -2,16 +2,17 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { DocumentListener } from './listener';
 import {
-  getAnthropicApiKey,
-  setAnthropicApiKey, 
-  getApiKey, 
-  setApiKey, 
-  getProvider, 
-  setProvider,
+  getApiKey,
+  getProvider,
   getModelName,
-  setModelName,
   getBaseUrl,
-  setBaseUrl
+  getApiConfigs,
+  getSelectedConfig,
+  getSelectedConfigName,
+  setSelectedConfig,
+  setApiConfig,
+  removeApiConfig,
+  ApiConfig
 } from './config';
 import { getBlockInfoAtPosition } from './parser'; // Import the new function
 import { McpClientManager, McpServerConfig } from './mcpClient';
@@ -84,6 +85,9 @@ export function activate(context: vscode.ExtensionContext) {
   
   // Register status manager
   statusManager.register(context);
+  
+  // Check if an API configuration is selected, prompt to configure if not
+  checkApiConfiguration();
   
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: '**/*.chat.md' };
@@ -168,16 +172,29 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
     
-    vscode.commands.registerCommand('filechat.configureApi', async () => {
-      // Get current provider and key
-      const currentProvider = getProvider();
-      const currentKey = getApiKey() || (currentProvider === 'anthropic' ? getAnthropicApiKey() : undefined);
+    vscode.commands.registerCommand('filechat.addApiConfig', async () => {
+      // Get a name for the configuration
+      const configName = await vscode.window.showInputBox({
+        placeHolder: 'Enter a name for this configuration',
+        prompt: 'Configuration name (e.g., "gemini-openai", "claude-pro")',
+        validateInput: value => {
+          return value && value.trim() !== '' ? null : 'Configuration name cannot be empty';
+        }
+      });
       
-      // First, let user select the provider
+      if (!configName) {
+        return; // User cancelled
+      }
+      
+      // Check if config already exists
+      const configs = getApiConfigs();
+      const existingConfig = configs[configName];
+      
+      // Get provider type
       const providerOptions = ['anthropic', 'openai'];
       const selectedProvider = await vscode.window.showQuickPick(providerOptions, {
         placeHolder: 'Select AI provider',
-        title: 'Configure Chat Markdown API',
+        title: 'Configure API Type',
         canPickMany: false,
         ignoreFocusOut: true
       });
@@ -186,67 +203,23 @@ export function activate(context: vscode.ExtensionContext) {
         return; // User cancelled
       }
       
-      // Save provider setting
-      await setProvider(selectedProvider);
-      
-      // Then get API key
-      const message = currentKey 
-        ? `Your ${selectedProvider} API key is configured. Enter a new key to update it.` 
-        : `Enter your ${selectedProvider} API key:`;
-      
+      // Get API key
       const apiKey = await vscode.window.showInputBox({
-        prompt: message,
+        prompt: `Enter your ${selectedProvider} API key:`,
         password: true,
-        value: currentKey
+        value: existingConfig?.apiKey || '',
+        validateInput: value => {
+          return value && value.trim() !== '' ? null : 'API key cannot be empty';
+        }
       });
       
-      if (apiKey !== undefined) {  // Undefined means user cancelled
-        await setApiKey(apiKey);
-        
-        // For backward compatibility, also set Anthropic key
-        if (selectedProvider === 'anthropic') {
-          await setAnthropicApiKey(apiKey);
-        }
-        
-        vscode.window.showInformationMessage(
-          apiKey ? `${selectedProvider} API key configured successfully` : `${selectedProvider} API key cleared`
-        );
-        
-        // Listen for configuration changes
-        context.subscriptions.push(
-          vscode.workspace.onDidChangeConfiguration(e => {
-            if (e.affectsConfiguration('filechat.mcpServers')) {
-              initializeMcpClients();
-            }
-          })
-        );
+      if (!apiKey) {
+        return; // User cancelled
       }
       
-      /**
-       * Initialize MCP clients from configuration
-       */
-      async function initializeMcpClients(): Promise<void> {
-        try {
-          const mcpServers = vscode.workspace.getConfiguration().get('filechat.mcpServers') as Record<string, McpServerConfig> || {};
-          log(`Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`);
-          
-          await mcpClientManager.initializeClients(mcpServers);
-          log('MCP clients initialized successfully');
-        } catch (error) {
-          log(`Error initializing MCP clients: ${error}`);
-          vscode.window.showErrorMessage(`Failed to initialize MCP servers: ${error}`);
-        }
-      }
-    }),
-    
-    vscode.commands.registerCommand('filechat.configureModel', async () => {
-      // Get current provider and model
-      const provider = getProvider();
-      const currentModel = getModelName();
-      
-      // Show different default suggestions based on provider
+      // Get model name (optional)
       let modelSuggestions: string[] = [];
-      if (provider === 'anthropic') {
+      if (selectedProvider === 'anthropic') {
         modelSuggestions = [
           'claude-3-opus-20240229',
           'claude-3-sonnet-20240229',
@@ -254,22 +227,22 @@ export function activate(context: vscode.ExtensionContext) {
           'claude-3-5-sonnet-20240620',
           'claude-3-5-haiku-latest'
         ];
-      } else if (provider === 'openai') {
+      } else if (selectedProvider === 'openai') {
         modelSuggestions = [
           'gpt-4-turbo',
           'gpt-4-vision-preview',
           'gpt-4-32k',
           'gpt-4',
-          'gpt-3.5-turbo'
+          'gpt-3.5-turbo',
+          'gemini-2.5-pro-exp-03-25'
         ];
       }
       
-      // Allow custom input or selection from list
       const selectedModel = await vscode.window.showQuickPick(
         ['Custom...', ...modelSuggestions],
         {
-          placeHolder: `Select or enter a model for ${provider} (current: ${currentModel || 'default'})`,
-          title: 'Configure Chat Markdown Model',
+          placeHolder: 'Select or enter a model name',
+          title: 'Configure Model',
           ignoreFocusOut: true
         }
       );
@@ -283,9 +256,8 @@ export function activate(context: vscode.ExtensionContext) {
       // If custom option selected, prompt for model name
       if (selectedModel === 'Custom...') {
         modelName = await vscode.window.showInputBox({
-          prompt: `Enter model name for ${provider}:`,
-          value: currentModel || '',
-          ignoreFocusOut: true
+          prompt: 'Enter custom model name:',
+          value: existingConfig?.model_name || '',
         }) || '';
         
         if (!modelName) {
@@ -293,62 +265,177 @@ export function activate(context: vscode.ExtensionContext) {
         }
       }
       
-      // Save model setting
-      await setModelName(modelName);
-      vscode.window.showInformationMessage(`${provider} model set to: ${modelName}`);
-    }),
-    
-    vscode.commands.registerCommand('filechat.configureBaseUrl', async () => {
-      // This command only makes sense for OpenAI provider
-      const provider = getProvider();
-      if (provider !== 'openai') {
-        vscode.window.showInformationMessage('Base URL is only used with OpenAI provider. Please switch provider to OpenAI first.');
-        return;
-      }
+      // Get base URL (only if OpenAI or custom option selected)
+      let baseUrl = '';
       
-      const currentBaseUrl = getBaseUrl() || '';
-      
-      // Provide some examples of compatible APIs
-      const baseUrlSuggestions = [
-        { label: 'Default OpenAI API', detail: 'https://api.openai.com/v1' },
-        { label: 'Azure OpenAI API', detail: 'https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME' },
-        { label: 'Google Gemini API', detail: 'https://generativelanguage.googleapis.com/v1beta/openai' },
-        { label: 'Custom...', detail: 'Enter a custom base URL' }
-      ];
-      
-      const selectedOption = await vscode.window.showQuickPick(baseUrlSuggestions, {
-        placeHolder: 'Select or enter base URL for OpenAI-compatible API',
-        title: 'Configure OpenAI-Compatible Base URL',
-        ignoreFocusOut: true
-      });
-      
-      if (!selectedOption) {
-        return; // User cancelled
-      }
-      
-      let baseUrl = selectedOption.detail;
-      
-      // If custom option selected, prompt for base URL
-      if (selectedOption.label === 'Custom...') {
-        baseUrl = await vscode.window.showInputBox({
-          prompt: 'Enter base URL for OpenAI-compatible API:',
-          value: currentBaseUrl,
-          ignoreFocusOut: true
-        }) || '';
+      if (selectedProvider === 'openai') {
+        const baseUrlSuggestions = [
+          { label: 'Default OpenAI API', detail: '' },
+          { label: 'Azure OpenAI API', detail: 'https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME' },
+          { label: 'Google Gemini API', detail: 'https://generativelanguage.googleapis.com/v1beta/openai/' },
+          { label: 'Custom...', detail: 'Enter a custom base URL' }
+        ];
         
-        if (!baseUrl) {
+        const selectedOption = await vscode.window.showQuickPick(baseUrlSuggestions, {
+          placeHolder: 'Select or enter base URL for OpenAI-compatible API',
+          title: 'Configure Base URL',
+          ignoreFocusOut: true
+        });
+        
+        if (!selectedOption) {
           return; // User cancelled
+        }
+        
+        if (selectedOption.label === 'Custom...') {
+          baseUrl = await vscode.window.showInputBox({
+            prompt: 'Enter base URL for OpenAI-compatible API:',
+            value: existingConfig?.base_url || '',
+          }) || '';
+          
+          if (baseUrl === undefined) {
+            return; // User cancelled
+          }
+        } else {
+          baseUrl = selectedOption.detail;
         }
       }
       
-      // If user selected default OpenAI API, clear the setting
-      if (selectedOption.label === 'Default OpenAI API') {
-        await setBaseUrl('');
-        vscode.window.showInformationMessage('Using default OpenAI API URL');
+      // Create and save the configuration
+      const config: ApiConfig = {
+        type: selectedProvider as 'anthropic' | 'openai',
+        apiKey,
+        model_name: modelName || undefined,
+        base_url: baseUrl || undefined
+      };
+      
+      await setApiConfig(configName, config);
+      
+      // Ask if user wants to make this the active configuration
+      const makeActive = await vscode.window.showQuickPick(
+        ['Yes', 'No'],
+        {
+          placeHolder: 'Make this the active configuration?',
+          title: 'Set Active Configuration',
+          ignoreFocusOut: true
+        }
+      );
+      
+      if (makeActive === 'Yes') {
+        await setSelectedConfig(configName);
+        vscode.window.showInformationMessage(`Configuration "${configName}" is now active`);
       } else {
-        // Save base URL setting
-        await setBaseUrl(baseUrl);
-        vscode.window.showInformationMessage(`OpenAI-compatible base URL set to: ${baseUrl}`);
+        vscode.window.showInformationMessage(`Configuration "${configName}" saved`);
+      }
+    }),
+    
+    vscode.commands.registerCommand('filechat.selectApiConfig', async () => {
+      const configs = getApiConfigs();
+      const configNames = Object.keys(configs);
+      
+      if (configNames.length === 0) {
+        const createNew = await vscode.window.showInformationMessage(
+          'No API configurations found. Would you like to create one now?',
+          'Yes', 'No'
+        );
+        
+        if (createNew === 'Yes') {
+          await vscode.commands.executeCommand('filechat.addApiConfig');
+        }
+        return;
+      }
+      
+      // Build items with description of each config
+      const configItems = configNames.map(name => {
+        const config = configs[name];
+        return {
+          label: name,
+          description: `${config.type} - ${config.model_name || 'default model'}`,
+          detail: config.base_url ? `Base URL: ${config.base_url}` : undefined
+        };
+      });
+      
+      const selectedItem = await vscode.window.showQuickPick(
+        configItems,
+        {
+          placeHolder: 'Select API configuration',
+          title: 'Select Active Configuration',
+          ignoreFocusOut: true
+        }
+      );
+      
+      if (!selectedItem) {
+        return; // User cancelled
+      }
+      
+      await setSelectedConfig(selectedItem.label);
+      vscode.window.showInformationMessage(`Configuration "${selectedItem.label}" is now active`);
+    }),
+    
+    vscode.commands.registerCommand('filechat.removeApiConfig', async () => {
+      const configs = getApiConfigs();
+      const configNames = Object.keys(configs);
+      
+      if (configNames.length === 0) {
+        vscode.window.showInformationMessage('No API configurations found.');
+        return;
+      }
+      
+      // Get the selected config name for highlighting
+      const selectedConfigName = getSelectedConfigName();
+      
+      // Build items with description of each config
+      const configItems = configNames.map(name => {
+        const config = configs[name];
+        const isSelected = name === selectedConfigName;
+        
+        return {
+          label: name,
+          description: `${config.type} - ${config.model_name || 'default model'}${isSelected ? ' (active)' : ''}`,
+          detail: config.base_url ? `Base URL: ${config.base_url}` : undefined
+        };
+      });
+      
+      const selectedItem = await vscode.window.showQuickPick(
+        configItems,
+        {
+          placeHolder: 'Select API configuration to remove',
+          title: 'Remove Configuration',
+          ignoreFocusOut: true
+        }
+      );
+      
+      if (!selectedItem) {
+        return; // User cancelled
+      }
+      
+      // Ask for confirmation
+      const confirm = await vscode.window.showWarningMessage(
+        `Are you sure you want to remove configuration "${selectedItem.label}"?`,
+        'Yes', 'No'
+      );
+      
+      if (confirm !== 'Yes') {
+        return;
+      }
+      
+      const removed = await removeApiConfig(selectedItem.label);
+      
+      if (removed) {
+        vscode.window.showInformationMessage(`Configuration "${selectedItem.label}" has been removed.`);
+        
+        // If it was the active config, suggest selecting another one
+        if (selectedItem.label === selectedConfigName && configNames.length > 1) {
+          const selectAnother = await vscode.window.showInformationMessage(
+            'The active configuration was removed. Would you like to select another one?',
+            'Yes', 'No'
+          );
+          
+          if (selectAnother === 'Yes') {
+            await vscode.commands.executeCommand('filechat.selectApiConfig');
+          }
+        }
+      } else {
+        vscode.window.showErrorMessage(`Failed to remove configuration "${selectedItem.label}".`);
       }
     }),
 
@@ -437,6 +524,43 @@ export function getActiveStreamerForDocument(document: vscode.TextDocument): imp
     return listener.getActiveStreamer();
   }
   return undefined;
+}
+
+/**
+ * Checks if an API configuration is selected and properly configured
+ * If not, prompts the user to configure one
+ */
+async function checkApiConfiguration(): Promise<void> {
+  try {
+    const selectedConfig = getSelectedConfig();
+    const apiConfigs = getApiConfigs();
+    const configCount = Object.keys(apiConfigs).length;
+    
+    // If we have configs but none selected, prompt to select one
+    if (configCount > 0 && !selectedConfig) {
+      const selectNow = await vscode.window.showInformationMessage(
+        `You have ${configCount} API configurations but none is selected. Would you like to select one now?`,
+        'Yes', 'Later'
+      );
+      
+      if (selectNow === 'Yes') {
+        await vscode.commands.executeCommand('filechat.selectApiConfig');
+      }
+    } 
+    // If we have no configs at all, prompt to create one
+    else if (configCount === 0) {
+      const createNow = await vscode.window.showInformationMessage(
+        'No API configurations found. Would you like to add one now?',
+        'Yes', 'Later'
+      );
+      
+      if (createNow === 'Yes') {
+        await vscode.commands.executeCommand('filechat.addApiConfig');
+      }
+    }
+  } catch (error) {
+    log(`Error checking API configuration: ${error}`);
+  }
 }
 
 /**

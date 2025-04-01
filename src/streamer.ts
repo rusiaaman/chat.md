@@ -5,7 +5,7 @@ import { AnthropicClient } from './anthropicClient';
 import { OpenAIClient } from './openaiClient';
 import { findAssistantBlocks, findAllAssistantBlocks } from './parser';
 import { log, statusManager } from './extension';
-import { getProvider, generateToolCallingSystemPrompt } from './config';
+import { generateToolCallingSystemPrompt } from './config';
 import { mcpClientManager } from './mcpClientManager';
 import { appendToChatHistory } from './utils/fileUtils';
 
@@ -22,17 +22,33 @@ export class StreamingService {
     private readonly document: vscode.TextDocument,
     private readonly lock: Lock
   ) {
-    this.provider = getProvider();
-    log(`Using LLM provider: ${this.provider}`);
-    
-    if (this.provider === 'anthropic') {
-      this.anthropicClient = new AnthropicClient(apiKey);
-    } else if (this.provider === 'openai') {
-      this.openaiClient = new OpenAIClient(apiKey);
-    } else {
-      log(`Unknown provider: ${this.provider}, falling back to Anthropic`);
-      this.provider = 'anthropic';
-      this.anthropicClient = new AnthropicClient(apiKey);
+    try {
+      // Import the config functions to ensure they're available
+      const { getProvider, getBaseUrl } = require('./config');
+      
+      this.provider = getProvider();
+      log(`Using LLM provider: ${this.provider}`);
+      
+      let baseUrl;
+      try {
+        baseUrl = getBaseUrl();
+      } catch (e) {
+        log(`Could not get base URL: ${e}, will use default`);
+        baseUrl = undefined;
+      }
+      
+      if (this.provider === 'anthropic') {
+        this.anthropicClient = new AnthropicClient(apiKey);
+      } else if (this.provider === 'openai') {
+        this.openaiClient = new OpenAIClient(apiKey, baseUrl);
+      } else {
+        log(`Unknown provider: ${this.provider}, falling back to Anthropic`);
+        this.provider = 'anthropic';
+        this.anthropicClient = new AnthropicClient(apiKey);
+      }
+    } catch (error) {
+      log(`Error initializing streaming service: ${error}`);
+      throw new Error(`Could not initialize streaming service: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -64,6 +80,9 @@ export class StreamingService {
       
       // Get all available tools from MCP client
       const mcpTools = mcpClientManager.getAllTools();
+      
+      // Import getModelName to make sure it's available
+      const { getModelName } = require('./config');
       
       // Generate system prompt with MCP tools
       const systemPrompt = generateToolCallingSystemPrompt(mcpTools);

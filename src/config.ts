@@ -2,6 +2,21 @@ import * as vscode from 'vscode';
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 /**
+ * API Configuration interface
+ */
+export interface ApiConfig {
+  type: 'anthropic' | 'openai';
+  apiKey: string;
+  model_name?: string;
+  base_url?: string;
+}
+
+/**
+ * Dictionary of API configurations
+ */
+export type ApiConfigs = Record<string, ApiConfig>;
+
+/**
  * Generate system prompt for tool calling, including MCP tools
  * @param mcpTools Array of MCP tools to include in the prompt
  * @returns The system prompt string
@@ -65,112 +80,127 @@ Tool usage guidelines:
 export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt();
 
 /**
- * Gets the configured provider (anthropic or openai)
- * Returns 'anthropic' as default if not configured
+ * Gets all API configurations
+ */
+export function getApiConfigs(): ApiConfigs {
+  return vscode.workspace.getConfiguration().get('filechat.apiConfigs') || {};
+}
+
+/**
+ * Gets the currently selected configuration name
+ */
+export function getSelectedConfigName(): string | undefined {
+  return vscode.workspace.getConfiguration().get('filechat.selectedConfig');
+}
+
+/**
+ * Gets the currently selected configuration
+ */
+export function getSelectedConfig(): ApiConfig | undefined {
+  const configName = getSelectedConfigName();
+  if (!configName) {
+    return undefined;
+  }
+  
+  const configs = getApiConfigs();
+  return configs[configName];
+}
+
+/**
+ * Sets the selected configuration
+ */
+export async function setSelectedConfig(configName: string): Promise<void> {
+  await vscode.workspace.getConfiguration().update(
+    'filechat.selectedConfig',
+    configName,
+    vscode.ConfigurationTarget.Global
+  );
+}
+
+/**
+ * Adds or updates an API configuration
+ */
+export async function setApiConfig(name: string, config: ApiConfig): Promise<void> {
+  const configs = getApiConfigs();
+  configs[name] = config;
+  
+  await vscode.workspace.getConfiguration().update(
+    'filechat.apiConfigs',
+    configs,
+    vscode.ConfigurationTarget.Global
+  );
+}
+
+/**
+ * Removes an API configuration
+ */
+export async function removeApiConfig(name: string): Promise<boolean> {
+  const configs = getApiConfigs();
+  if (configs[name]) {
+    delete configs[name];
+    
+    await vscode.workspace.getConfiguration().update(
+      'filechat.apiConfigs',
+      configs,
+      vscode.ConfigurationTarget.Global
+    );
+    
+    // If the removed config was selected, clear the selection
+    const selectedConfig = getSelectedConfigName();
+    if (selectedConfig === name) {
+      await setSelectedConfig('');
+    }
+    
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Gets the current provider type from the selected configuration
  */
 export function getProvider(): string {
-  return vscode.workspace.getConfiguration().get('filechat.provider') || 'anthropic';
+  const config = getSelectedConfig();
+  if (!config) {
+    throw new Error('No API configuration selected. Please select a configuration first.');
+  }
+  
+  return config.type;
 }
 
 /**
- * Gets the configured model name for the current provider
- * Returns undefined to use the default model for each provider
+ * Gets the API key from the selected configuration
+ */
+export function getApiKey(): string {
+  const config = getSelectedConfig();
+  if (!config) {
+    throw new Error('No API configuration selected. Please select a configuration first.');
+  }
+  
+  return config.apiKey;
+}
+
+/**
+ * Gets the model name from the selected configuration
  */
 export function getModelName(): string | undefined {
-  return vscode.workspace.getConfiguration().get('filechat.model_name');
+  const config = getSelectedConfig();
+  if (!config) {
+    throw new Error('No API configuration selected. Please select a configuration first.');
+  }
+  
+  return config.model_name;
 }
 
 /**
- * Gets the configured base URL for the OpenAI API
- * Returns undefined to use the default OpenAI base URL
- * This is only used when provider is 'openai'
+ * Gets the base URL from the selected configuration
+ * Returns undefined if the base_url is empty or not set
  */
 export function getBaseUrl(): string | undefined {
-  return vscode.workspace.getConfiguration().get('filechat.base_url');
-}
-
-/**
- * Sets the base URL in configuration
- */
-export async function setBaseUrl(baseUrl: string): Promise<void> {
-  await vscode.workspace.getConfiguration().update(
-    'filechat.base_url',
-    baseUrl,
-    vscode.ConfigurationTarget.Global
-  );
-}
-
-/**
- * Sets the model name in configuration
- */
-export async function setModelName(modelName: string): Promise<void> {
-  await vscode.workspace.getConfiguration().update(
-    'filechat.model_name',
-    modelName,
-    vscode.ConfigurationTarget.Global
-  );
-}
-
-/**
- * Sets the provider in configuration
- */
-export async function setProvider(provider: string): Promise<void> {
-  await vscode.workspace.getConfiguration().update(
-    'filechat.provider',
-    provider,
-    vscode.ConfigurationTarget.Global
-  );
-}
-
-/**
- * Gets the configured API key for the current provider
- * Returns undefined if not configured
- */
-export function getApiKey(): string | undefined {
-  return vscode.workspace.getConfiguration().get('filechat.apiKey');
-}
-
-/**
- * Sets the API key in configuration
- */
-export async function setApiKey(apiKey: string): Promise<void> {
-  await vscode.workspace.getConfiguration().update(
-    'filechat.apiKey',
-    apiKey,
-    vscode.ConfigurationTarget.Global
-  );
-}
-
-/**
- * Gets the configured Anthropic API key (legacy)
- * Returns undefined if not configured
- */
-export function getAnthropicApiKey(): string | undefined {
-  // Try the new unified API key first if provider is anthropic
-  if (getProvider() === 'anthropic') {
-    const apiKey = getApiKey();
-    if (apiKey) {
-      return apiKey;
-    }
+  const config = getSelectedConfig();
+  if (!config) {
+    throw new Error('No API configuration selected. Please select a configuration first.');
   }
   
-  // Fall back to legacy anthropic-specific key
-  return vscode.workspace.getConfiguration().get('filechat.anthropicApiKey');
-}
-
-/**
- * Sets the Anthropic API key (legacy)
- */
-export async function setAnthropicApiKey(apiKey: string): Promise<void> {
-  // If we're using anthropic as provider, set the unified key too
-  if (getProvider() === 'anthropic') {
-    await setApiKey(apiKey);
-  }
-  
-  // Also set the legacy key for backward compatibility
-  await vscode.workspace.getConfiguration().update(
-    'filechat.anthropicApiKey',
-    apiKey,
-    vscode.ConfigurationTarget.Global
-  );
+  return config.base_url && config.base_url.trim() !== '' ? config.base_url : undefined;
 }

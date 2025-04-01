@@ -14,13 +14,12 @@ import { getModelName, getBaseUrl, generateToolCallingSystemPrompt } from './con
 export class OpenAIClient {
   private readonly apiUrl: string;
   
-  constructor(private readonly apiKey: string) {
-    // Use custom base URL if provided, otherwise use OpenAI's default
-    const baseUrl = getBaseUrl();
-    if (baseUrl) {
+  constructor(private readonly apiKey: string, private readonly customBaseUrl?: string) {
+    // Use custom base URL if provided directly
+    if (this.customBaseUrl) {
       // Construct the full URL by joining the base URL with the chat completions endpoint
-      this.apiUrl = this.joinUrl(baseUrl, '/chat/completions');
-      log(`Using custom OpenAI base URL: ${baseUrl}`);
+      this.apiUrl = this.joinUrl(this.customBaseUrl, '/chat/completions');
+      log(`Using custom OpenAI base URL: ${this.customBaseUrl}`);
     } else {
       this.apiUrl = 'https://api.openai.com/v1/chat/completions';
       log('Using default OpenAI API URL');
@@ -60,7 +59,18 @@ export class OpenAIClient {
       // Add system message as the first message
       const allMessages = [systemMessage, ...formattedMessages];
       
-      const modelName = getModelName() || 'gpt-3.5-turbo';
+      // Try to get model name safely
+      let modelName;
+      try {
+        const { getModelName } = require('./config');
+        modelName = getModelName();
+      } catch (e) {
+        log(`Error getting model name: ${e}`);
+        modelName = null;
+      }
+      
+      // Use fallback if needed
+      modelName = modelName || 'gpt-3.5-turbo';
       
       const requestBody = {
         model: modelName,

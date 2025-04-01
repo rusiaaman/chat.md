@@ -390,17 +390,21 @@ export class DocumentListener {
     await this.lock.acquire();
     
     try {
-      // Check for API key based on provider
-      const provider = getProvider();
-      let apiKey = getApiKey();
-      
-      // For backward compatibility, try the legacy anthropic key if we're using Anthropic
-      if (!apiKey && provider === 'anthropic') {
-        apiKey = getAnthropicApiKey();
-      }
-      
-      if (!apiKey) {
-        const message = `${provider.charAt(0).toUpperCase() + provider.slice(1)} API key not configured. Please use the "Configure Chat Markdown API Key" command.`;
+      let apiKey;
+      try {
+        // Import config functions to ensure they're available
+        const { getApiKey, getProvider } = require('./config');
+        
+        // Get API key from the selected configuration
+        apiKey = getApiKey();
+        const provider = getProvider();
+        
+        if (!apiKey) {
+          throw new Error('API key not configured');
+        }
+      } catch (error) {
+        // Handle configuration errors gracefully
+        const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}. Please configure an API using the "Add or Edit API Configuration" command and select it.`;
         log(message);
         vscode.window.showErrorMessage(message);
         return;

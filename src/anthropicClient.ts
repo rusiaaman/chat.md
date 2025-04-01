@@ -5,7 +5,7 @@ import { MessageParam, Content } from './types';
 import { resolveFilePath, readFileAsBuffer } from './utils/fileUtils';
 import * as vscode from 'vscode';
 import { log } from './extension';
-import { getModelName, generateToolCallingSystemPrompt } from './config';
+import { generateToolCallingSystemPrompt } from './config';
 
 /**
  * Client for communicating with the Anthropic API
@@ -29,7 +29,18 @@ export class AnthropicClient {
     
     try {
       const formattedMessages = this.formatMessages(messages, document);
-      const modelName = getModelName() || 'claude-3-5-haiku-latest';
+      // Try to get model name safely
+      let modelName;
+      try {
+        const { getModelName } = require('./config');
+        modelName = getModelName();
+      } catch (e) {
+        log(`Error getting model name: ${e}`);
+        modelName = null;
+      }
+      
+      // Use fallback if needed
+      modelName = modelName || 'claude-3-5-haiku-latest';
       
       const systemPromptToUse = systemPrompt || generateToolCallingSystemPrompt();
       
