@@ -410,23 +410,8 @@ export class StreamingService {
         nextOpeningTagIndex = nextNonFencedMatch.index;
       }
       
-      // If no more opening tags, this is a complete call
-      if (nextOpeningTagIndex === -1) {
-        log('No additional tool calls found after this one');
-        // Return the end index of the tool call for truncation
-        return { isComplete: true, endIndex: matchEndIndex };
-      }
-      
-      // Check if there's meaningful content between the end of this tag and the next opening tag
-      const textBetween = text.substring(matchEndIndex, nextOpeningTagIndex).trim();
-      if (textBetween.length < 10) {
-        // If there's minimal content between tags, it might be part of the same logical call
-        log('Found multiple tool calls in sequence, waiting for all to complete');
-        return false;
-      }
-      
-      log('Found completed tool call followed by significant content');
-      // Return the end index of the tool call for truncation
+      // Always stop at the first complete tool call, regardless of subsequent content
+      log('Found completed tool call - stopping streaming immediately');
       return { isComplete: true, endIndex: matchEndIndex };
     }
     
