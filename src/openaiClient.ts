@@ -82,8 +82,19 @@ export class OpenAIClient {
         }
       };
       
-      log('Creating HTTPS request to OpenAI');
-      const req = https.request(this.apiUrl, requestOptions);
+      log(`Creating request to OpenAI API at ${this.apiUrl}`);
+      
+      // Parse URL to determine whether to use HTTP or HTTPS
+      const parsedUrl = new URL(this.apiUrl);
+      let req;
+      
+      if (parsedUrl.protocol === 'http:') {
+        log('Using HTTP protocol for request');
+        req = http.request(this.apiUrl, requestOptions);
+      } else {
+        log('Using HTTPS protocol for request');
+        req = https.request(this.apiUrl, requestOptions);
+      }
       
       req.on('error', (error) => {
         log(`OpenAI API request error: ${error}`);
