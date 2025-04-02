@@ -117,31 +117,16 @@ export function getBlockInfoAtPosition(
 function parseUserContent(text: string, document?: vscode.TextDocument): Content[] {
   const content: Content[] = [];
   
-  // Original format: "Attached file at /path/to/file"
-  const fileAttachmentRegex = /^Attached file at ([^\n]+)\n(?:```[^\n]*\n([\s\S]*?)```|\[image content\])/gm;
-  
-  // New format: Markdown-style links like [anything](test.py)
+  // Only use Markdown-style links for file attachments
   const markdownLinkRegex = /\[([^\]]*)\]\(([^)]+)\)/g;
+  const fileAttachments: Array<{path: string, isImage: boolean, content?: string}> = [];
   
-  // Collection of file attachments to add at the top
-  const topAttachments: string[] = [];
-  
-  // Process markdown-style links and collect attachments for top
+  // First pass - identify all file references in markdown links
   if (document) {
     let mdMatch;
-    
-    // First pass - collect all matches and create attachments
+    // Collect all file references from markdown links
     while ((mdMatch = markdownLinkRegex.exec(text)) !== null) {
-      const altText = mdMatch[1];
       const filePath = mdMatch[2];
-      
-      // Skip links that are explicitly marked to not be treated as files
-      // by checking if the alt text contains "nofile" or "no-file"
-      if (altText.toLowerCase().includes('nofile') || 
-          altText.toLowerCase().includes('no-file')) {
-        continue;
-      }
-      
       const resolvedPath = resolveFilePath(filePath, document);
       const isImage = isImageFile(filePath);
       
@@ -151,56 +136,47 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
         fileContent = readFileAsText(resolvedPath);
       }
       
-      // Create attachment format but don't replace the link
-      const attachment = isImage 
-        ? `Attached file at ${filePath}\n[image content]\n\n`
-        : `Attached file at ${filePath}\n\`\`\`\n${fileContent || 'Unable to read file content'}\n\`\`\`\n\n`;
+      // Store file information for processing
+      fileAttachments.push({
+        path: filePath,
+        isImage,
+        content: !isImage ? fileContent : undefined
+      });
       
-      topAttachments.push(attachment);
-      
-      log(`Added attachment for: ${filePath} (${isImage ? 'image' : 'text'})`);
+      log(`Added file reference: ${filePath} (${isImage ? 'image' : 'text'})`);
     }
   }
   
-  // Add all attachments at the top of the text
-  if (topAttachments.length > 0) {
-    text = topAttachments.join('') + text;
-    log(`Added ${topAttachments.length} attachments at the top of the message`);
-  }
-  
-  let lastIndex = 0;
-  let match;
-  
-  // Process the original "Attached file at" format (which now includes the ones we added at the top)
-  while ((match = fileAttachmentRegex.exec(text)) !== null) {
-    // Add text before the attachment
-    const beforeText = text.substring(lastIndex, match.index).trim();
-    if (beforeText) {
-      content.push({ type: 'text', value: beforeText });
-    }
-    
-    const path = match[1];
-    if (path.endsWith('.png') || path.endsWith('.jpg') || path.endsWith('.jpeg') || 
-        path.endsWith('.gif') || path.endsWith('.webp')) {
-      content.push({ type: 'image', path });
+  // Process each file attachment directly, rather than relying on regex matching of "Attached file at" text
+  for (const attachment of fileAttachments) {
+    if (attachment.isImage) {
+      // Add image file as an image content type
+      content.push({ type: 'image', path: attachment.path });
+      log(`Added image content: ${attachment.path}`);
     } else {
-      // For non-image files, extract content from code block
-      content.push({ type: 'text', value: match[2] || '' });
+      // Add text file as text content - with format matching exactly what's expected
+      if (attachment.content) {
+        // Add introduction text for the file - without any extra characters
+        content.push({ 
+          type: 'text', 
+          value: `Attached file at ${attachment.path}\n\`\`\`\n${attachment.content}\n\`\`\`` 
+        });
+        log(`Added text file content: ${attachment.path}`);
+      } else {
+        content.push({ 
+          type: 'text', 
+          value: `Attached file at ${attachment.path}\n\`\`\`\nUnable to read file content\n\`\`\`` 
+        });
+        log(`Added placeholder for unreadable file: ${attachment.path}`);
+      }
     }
-    
-    lastIndex = match.index + match[0].length;
   }
   
   
-  // Add remaining text
-  const remainingText = text.substring(lastIndex).trim();
-  if (remainingText) {
-    content.push({ type: 'text', value: remainingText });
-  }
-  
-  // If no content was extracted, use the full text
-  if (content.length === 0 && text.trim()) {
+  // Add the original text (without processing "Attached file at" syntax)
+  if (text.trim()) {
     content.push({ type: 'text', value: text });
+    log(`Added original text content (${text.length} chars)`);
   }
   
   return content;
