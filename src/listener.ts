@@ -461,9 +461,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       
       log(`Parsed ${messages.length} messages from document`);
       
-      // Generate system prompt first
-      const mcpTools = mcpClientManager.getAllTools();
-      const systemPrompt = generateToolCallingSystemPrompt(mcpTools);
+      // Generate system prompt first, using grouped tools
+      const mcpGroupedTools = mcpClientManager.getGroupedTools(); // Get tools grouped by server
+      const systemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools); // Pass the map
       log(`Generated system prompt for history log: ${systemPrompt.substring(0, 100)}...`);
       
       // Save chat history for debugging, now including the system prompt

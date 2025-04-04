@@ -91,9 +91,14 @@ export class McpClientManager {
     }
   }
   
-  // Get all tool objects with their original schemas
+  // Get all tool objects with their original schemas (flat list)
   public getAllTools(): Tool[] {
     return Array.from(this.tools.values());
+  }
+
+  // Get tools grouped by server ID
+  public getGroupedTools(): Map<string, Map<string, Tool>> {
+    return this.serverTools;
   }
   
   // Execute a tool through the appropriate MCP client

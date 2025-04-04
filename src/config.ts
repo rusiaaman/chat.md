@@ -17,29 +17,43 @@ export interface ApiConfig {
 export type ApiConfigs = Record<string, ApiConfig>;
 
 /**
- * Generate system prompt for tool calling, including MCP tools
- * @param mcpTools Array of MCP tools to include in the prompt
+ * Generate system prompt for tool calling, including MCP tools grouped by server
+ * @param mcpGroupedTools Map where keys are server IDs and values are maps of tools from that server
  * @returns The system prompt string
  */
-export function generateToolCallingSystemPrompt(mcpTools: Tool[] = []): string {
-  const mcpToolsDescription = mcpTools.map((tool, index) => `
-${index + 1}. ${tool.name} - ${tool.description || ''}
+export function generateToolCallingSystemPrompt(mcpGroupedTools: Map<string, Map<string, Tool>> = new Map()): string {
+  let mcpToolsDescription = '';
+  let toolIndex = 1; // Overall tool index
+
+  // Iterate through each server and its tools
+  for (const [serverId, serverToolMap] of mcpGroupedTools.entries()) {
+    if (serverToolMap.size === 0) {
+      continue; // Skip servers with no tools
+    }
+    
+    mcpToolsDescription += `\n\n## Tools from server: ${serverId}\n`;
+    
+    for (const tool of serverToolMap.values()) {
+      mcpToolsDescription += `\n${toolIndex}. ${tool.name} - ${tool.description || ''}
    Input Schema: 
    \`\`\`json
-   ${JSON.stringify(tool.inputSchema, null, 2)}
+${JSON.stringify(tool.inputSchema, null, 2)}
    \`\`\`
-`).join('');
+`;
+      toolIndex++;
+    }
+  }
 
   // Return a different message if no tools are available
-  if (mcpTools.length === 0) {
+  if (mcpGroupedTools.size === 0 || toolIndex === 1) { // Check if map is empty or no tools were added
     return `
 You are an AI assistant helping the user with their tasks. Currently, no external tools are available.
 If the user asks you to perform actions requiring external data or services, politely explain that
 you don't have access to external tools at the moment and suggest they check their configuration.
 `;
-  }
-
-  return `
+   }
+ 
+   return `
 This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool, preferably inside a code fence block:
 
 \`\`\`
@@ -56,7 +70,7 @@ IMPORTANT FORMATTING REQUIREMENTS:
 4. Preferably place the tool call within code fence blocks, though the parser will accept tool calls without fences as well
 
 Available tools:${mcpToolsDescription}
-   
+
 After calling a tool, wait for the result which will be provided in the following format:
 
 <tool_result>
@@ -75,9 +89,9 @@ Tool usage guidelines:
 }
 
 /**
- * Default system prompt for backward compatibility
+ * Default system prompt (now generated with an empty map)
  */
-export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt();
+export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt(new Map());
 
 /**
  * Gets all API configurations

@@ -86,12 +86,14 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
     log(`Tool call format: ${properFenceMatch ? 'properly fenced' : partialFenceMatch ? 'partially fenced' : 'not fenced'}`);
     
     // Focus on the part between <tool_call> and </tool_call> tags
-    const toolCallContentMatch = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(xmlContent);
+    // Require the closing tag to be on its own line
+    const toolCallContentMatch = /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(xmlContent);
     
     // If we can't find the tool_call tags, try on the original string as a fallback
+    // Still require the closing tag to be on its own line
     const toolCallContent = toolCallContentMatch 
       ? toolCallContentMatch[1] 
-      : (/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(toolCallXml)?.[1] || '');
+      : (/<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(toolCallXml)?.[1] || '');
     
     if (!toolCallContent) {
       log('Could not extract tool call content');

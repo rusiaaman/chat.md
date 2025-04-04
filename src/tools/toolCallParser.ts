@@ -204,16 +204,35 @@ export function preprocessCdataForMatching(text: string): string {
  * @returns The content inside the CDATA tags if present, or the original text if not
  */
 export function extractCdataContent(text: string): string {
-  // Handle the case where text contains CDATA sections
-  if (text.includes('<![CDATA[')) {
-    log('Found CDATA section, extracting content');
-    // Handle multiple CDATA sections if present
-    return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gs, (match, content) => {
-      // Return just the content inside the CDATA tags
-      return content;
-    });
+  // Trim whitespace first to handle potential padding around the CDATA tag itself
+  const trimmedText = text.trim();
+
+  // Check if the entire trimmed string matches the CDATA pattern
+  // Use ^ and $ anchors to ensure it's the whole string
+  // Use the 's' flag for dotall matching multi-line content
+  const cdataMatch = trimmedText.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/s);
+
+  if (cdataMatch) {
+    // If the entire trimmed text is a CDATA block, return the captured content (group 1)
+    log('Found parameter value fully wrapped in CDATA, extracting content.');
+    return cdataMatch[1];
   }
-  return text; // Return original if no CDATA
+
+  // If the entire string wasn't a CDATA block, check if CDATA exists *within* the text.
+  // This handles cases where CDATA might be mixed with other text, though less common for params.
+  // Use the original 'replace' logic as a fallback, operating on the original 'text'
+  // to preserve surrounding characters if it wasn't a full CDATAblock.
+  if (text.includes('<![CDATA[')) {
+     log('Found CDATA section within parameter value, attempting replacement.');
+     // Use the original replace logic but apply it to the original text, not trimmed
+     return text.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gs, (match, content) => {
+        return content;
+     });
+  }
+
+  // If no CDATA found at all, return the original text
+  log('No CDATA found in parameter value.');
+  return text;
 }
 
 /**
@@ -227,26 +246,37 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
     // Extract the XML content
     const xmlContent = extractXmlContent(toolCallXml);
     
-    // Process XML content to handle CDATA sections and regular XML
-    // This custom preprocessing helps prevent issues when XML tags are inside CDATA
+    // Process XML content to handle CDATA sections for structural validation only
+    // This helps with finding tag boundaries but preserves the original content for parameter extraction
     const preprocessedXml = preprocessXmlWithCdata(xmlContent);
     
-    // Focus on the part between <tool_call> and </tool_call> tags
-    // Use the preprocessed XML which handles CDATA sections properly
-    const toolCallContentMatch = /<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(preprocessedXml);
+    // Focus on the part between <tool_call> and \n</tool_call> tags using the preprocessed XML
+    // Require the closing tag to be on its own line
+    const toolCallContentMatch = /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(preprocessedXml);
     
-    // If we can't find the tool_call tags, try on the original string as a fallback
-    const toolCallContent = toolCallContentMatch 
-      ? toolCallContentMatch[1] 
-      : (/<tool_call>\s*([\s\S]*?)\s*<\/tool_call>/s.exec(toolCallXml)?.[1] || '');
+    // Get the corresponding part from the original XML for parameter extraction
+    // This ensures we have the original CDATA tags intact when parsing parameters
+    let originalToolCallContent = '';
+    if (toolCallContentMatch) {
+      // Use the same pattern with newline requirement for the original content
+      const fullMatch = /<tool_call>[\s\S]*?\n\s*<\/tool_call>/s.exec(xmlContent);
+      if (fullMatch) {
+        originalToolCallContent = fullMatch[0].replace(/<tool_call>\s*|\n\s*<\/tool_call>/g, '');
+      }
+    } else {
+      // Fallback to the original string if preprocessed matching fails
+      // Still require newline before closing tag
+      originalToolCallContent = /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(xmlContent)?.[1] || '';
+    }
     
-    if (!toolCallContent) {
+    if (!originalToolCallContent) {
       log('Could not extract tool call content');
       return null;
     }
     
     // Simple XML parser for tool calls - allow indentation with more flexible whitespace
-    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(toolCallContent);
+    // Use the original content for name extraction
+    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(originalToolCallContent);
     if (!nameMatch) {
       log('Could not find tool_name tag');
       return null;
@@ -257,10 +287,11 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
     
     // Extract parameters with more precise formatting
     // Updated regex to require quotes around parameter names and be flexible with whitespace
+    // Use the original content with intact CDATA sections
     const paramRegex = /<param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/param>/sg;
     let paramMatch;
     
-    while ((paramMatch = paramRegex.exec(toolCallContent)) !== null) {
+    while ((paramMatch = paramRegex.exec(originalToolCallContent)) !== null) {
       const paramName = paramMatch[1].trim(); // No need to replace quotes, they're already handled in the regex
       let paramValue = paramMatch[2].trim();
       
@@ -293,22 +324,25 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
 export function findToolCallPatterns(text: string): Array<{ type: ToolCallFormatType, match: RegExpExecArray }> {
   const patterns = [];
   
-  // First try to match the simplest and most direct case - just the tool_call tags without any context
+  // First try to match the simplest and most direct case - tool_call tags with newline before closing tag
   // This is the most permissive pattern and will work in direct messages
-  const directToolCallRegex = /<tool_call>[\s\S]*?<\/tool_call>/s;
+  const directToolCallRegex = /<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
   const directMatch = directToolCallRegex.exec(text);
   
   // First try to match properly fenced tool calls (with opening and closing fences)
   // Allow for any annotation after the triple backticks (xml, tool_call, tool_code, etc.)
-  const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
+  // Require the closing tool_call tag to be on its own line
+  const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?\n\s*<\/tool_call>(?:\s*)\n\s*```/s;
   const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
   
   // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
   // Allow for any annotation after the triple backticks
-  const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+  // Require the closing tool_call tag to be on its own line
+  const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s;
   const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
   
   // Then try to match non-fenced tool calls with newlines around them
+  // Specifically requires newlines around the closing tag
   const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
   const nonFencedMatch = nonFencedToolCallRegex.exec(text);
   
