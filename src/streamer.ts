@@ -71,23 +71,19 @@ export class StreamingService {
    */
   public async streamResponse(
     messages: readonly MessageParam[],
-    streamer: StreamerState
+    streamer: StreamerState,
+    systemPrompt: string // Added systemPrompt parameter
   ): Promise<void> {
     try {
       log(`Starting to stream response for ${messages.length} messages`);
       // Show streaming status in status bar
       statusManager.showStreamingStatus();
       
-      // Get all available tools from MCP client
-      const mcpTools = mcpClientManager.getAllTools();
-      
       // Import getModelName to make sure it's available
       const { getModelName } = require('./config');
       
-      // Generate system prompt with MCP tools
-      const systemPrompt = generateToolCallingSystemPrompt(mcpTools);
-      
-      log(`Generated system prompt with ${mcpTools.length} MCP tools`);
+      // Use the provided system prompt
+      log(`Using provided system prompt (${systemPrompt.length} chars)`);
       log(`FULL SYSTEM PROMPT:\n${systemPrompt}`);
       
       // Start streaming completion based on provider, passing document for file path resolution

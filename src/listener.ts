@@ -3,9 +3,9 @@ import { parseDocument, hasEmptyAssistantBlock, hasEmptyToolExecuteBlock } from 
 import { Lock } from './utils/lock';
 import { StreamingService } from './streamer';
 import { StreamerState } from './types';
-import { getApiKey, getAnthropicApiKey, getProvider } from './config';
+import { getApiKey, getAnthropicApiKey, getProvider, generateToolCallingSystemPrompt } from './config'; // Added generateToolCallingSystemPrompt
 import * as path from 'path';
-import { log } from './extension';
+import { log, mcpClientManager } from './extension'; // Added mcpClientManager
 import { executeToolCall, formatToolResult, parseToolCall } from './tools/toolExecutor';
 import { ensureDirectoryExists, writeFile, saveChatHistory } from './utils/fileUtils';
 
@@ -415,8 +415,13 @@ export class DocumentListener {
       
       log(`Parsed ${messages.length} messages from document`);
       
-      // Save chat history for debugging
-      const historyFilePath = saveChatHistory(this.document, messages, 'before_llm_call');
+      // Generate system prompt first
+      const mcpTools = mcpClientManager.getAllTools();
+      const systemPrompt = generateToolCallingSystemPrompt(mcpTools);
+      log(`Generated system prompt for history log: ${systemPrompt.substring(0, 100)}...`);
+      
+      // Save chat history for debugging, now including the system prompt
+      const historyFilePath = saveChatHistory(this.document, messages, 'before_llm_call', systemPrompt);
       log(`Saved chat history to: ${historyFilePath}`);
       
       if (messages.length === 0) {
@@ -447,8 +452,8 @@ export class DocumentListener {
       this.streamers.set(messageIndex, streamer);
       log(`Created new streamer for message index ${messageIndex} with cancellation capability`);
       
-      // Start streaming without awaiting to allow it to run in the background
-      streamingService.streamResponse(messages, streamer).catch(err => {
+      // Start streaming without awaiting, passing the generated system prompt
+      streamingService.streamResponse(messages, streamer, systemPrompt).catch(err => {
         log(`Streaming error: ${err}`);
         streamer.isActive = false;
       });

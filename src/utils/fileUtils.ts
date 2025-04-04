@@ -105,11 +105,13 @@ export function writeFile(filePath: string, content: string): void {
  * @param messages The messages to be sent to the LLM
  * @param action The action being performed (e.g., "before_llm_call")
  * @param additionalContent Optional additional content to append to the file
+ * @param systemPrompt Optional system prompt to include at the top
  */
 export function saveChatHistory(
   document: vscode.TextDocument,
   messages: readonly MessageParam[],
   action: string,
+  systemPrompt?: string, // Added systemPrompt parameter
   additionalContent?: string
 ): string {
   try {
@@ -130,6 +132,11 @@ export function saveChatHistory(
     content += `- **Timestamp:** ${new Date().toISOString()}\n`;
     content += `- **Action:** ${action}\n`;
     content += `- **Document:** ${document.fileName}\n\n`;
+    
+    // Add System Prompt if provided
+    if (systemPrompt) {
+      content += `## System Prompt\n\n\`\`\`\n${systemPrompt}\n\`\`\`\n\n`;
+    }
     
     content += `## Messages\n\n`;
     messages.forEach((msg, index) => {
