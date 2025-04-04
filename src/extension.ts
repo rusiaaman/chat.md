@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { DocumentListener } from './listener';
 import {
   getApiKey,
@@ -14,9 +15,11 @@ import {
   removeApiConfig,
   ApiConfig
 } from './config';
-import { getBlockInfoAtPosition } from './parser'; // Import the new function
+import { getBlockInfoAtPosition } from './parser';
 import { McpClientManager, McpServerConfig } from './mcpClient';
 import { StatusManager } from './utils/statusManager';
+import { getNewChatFilePath } from './utils/chatDirUtils';
+import { generateChatTemplate, getCurrentContext } from './utils/contextTemplateUtils';
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -143,6 +146,37 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('filechat.refreshMcpTools', async () => {
       await initializeMcpClients();
       vscode.window.showInformationMessage('MCP tools refreshed successfully');
+    }),
+    
+    vscode.commands.registerCommand('filechat.newContextChat', async () => {
+      try {
+        // Get current context (workspace, file, selection)
+        const context = getCurrentContext();
+        
+        // Generate chat template with context
+        const template = generateChatTemplate(
+          context.workspacePath,
+          context.filePath,
+          context.selectedText
+        );
+        
+        // Get file path in XDG directory
+        const chatFilePath = getNewChatFilePath();
+        
+        // Create the file
+        fs.writeFileSync(chatFilePath, template, 'utf8');
+        
+        // Open the file in editor
+        const uri = vscode.Uri.file(chatFilePath);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc);
+        
+        log(`Created new context chat at: ${chatFilePath}`);
+        vscode.window.setStatusBarMessage('Created new context chat', 3000);
+      } catch (error) {
+        log(`Error creating context chat: ${error}`);
+        vscode.window.showErrorMessage(`Failed to create context chat: ${error}`);
+      }
     }),
     
     vscode.commands.registerCommand('filechat.newChat', async () => {

@@ -26,6 +26,10 @@
         "title": "New Chat Markdown"
       },
       {
+        "command": "filechat.newContextChat",
+        "title": "New Chat with Workspace Context"
+      },
+      {
         "command": "filechat.addApiConfig",
         "title": "Add or Edit API Configuration"
       },
@@ -123,6 +127,12 @@
          "command": "filechat.insertNextBlock",
          "key": "shift+enter",
          "when": "editorTextFocus && editorLangId == markdown"
+       },
+       {
+         "command": "filechat.newContextChat",
+         "key": "alt+cmd+'",
+         "mac": "alt+cmd+'",
+         "when": "editorTextFocus"
        }
      ]
    },
