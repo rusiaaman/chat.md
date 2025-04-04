@@ -18,7 +18,7 @@ import {
 import { getBlockInfoAtPosition } from './parser';
 import { McpClientManager, McpServerConfig } from './mcpClient';
 import { StatusManager } from './utils/statusManager';
-import { getNewChatFilePath } from './utils/chatDirUtils';
+import { getNewChatPaths } from './utils/chatDirUtils';
 import { generateChatTemplate, getCurrentContext } from './utils/contextTemplateUtils';
 
 // Map to keep track of active document listeners
@@ -160,18 +160,20 @@ export function activate(context: vscode.ExtensionContext) {
           context.selectedText
         );
         
-        // Get file path in XDG directory
-        const chatFilePath = getNewChatFilePath();
+        // Get paths for new chat (including workspace-specific and chat-specific folders)
+        const chatPaths = getNewChatPaths(context.workspacePath);
         
-        // Create the file
-        fs.writeFileSync(chatFilePath, template, 'utf8');
+        // Create the file in its dedicated folder
+        fs.writeFileSync(chatPaths.chatFilePath, template, 'utf8');
         
         // Open the file in editor
-        const uri = vscode.Uri.file(chatFilePath);
+        const uri = vscode.Uri.file(chatPaths.chatFilePath);
         const doc = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(doc);
         
-        log(`Created new context chat at: ${chatFilePath}`);
+        log(`Created new context chat at: ${chatPaths.chatFilePath}`);
+        log(`Chat folder: ${chatPaths.chatFolderPath}`);
+        log(`Workspace folder: ${chatPaths.chatDir}`);
         vscode.window.setStatusBarMessage('Created new context chat', 3000);
       } catch (error) {
         log(`Error creating context chat: ${error}`);

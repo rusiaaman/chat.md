@@ -12,7 +12,7 @@ import { ensureDirectoryExists } from './fileUtils';
  *   - Linux/macOS: ~/.local/state
  *   - Windows: %LOCALAPPDATA%
  */
-export function getChatStateDirectory(): string {
+export function getChatStateBaseDirectory(): string {
   // Get base XDG directory according to platform
   let baseDir: string;
   
@@ -31,19 +31,19 @@ export function getChatStateDirectory(): string {
   }
   
   // Create app-specific subdirectory
-  const chatDir = path.join(baseDir, 'vscode-filechat', 'chats');
+  const chatBaseDir = path.join(baseDir, 'vscode-filechat');
   
   // Ensure the directory exists
-  ensureDirectoryExists(chatDir);
+  ensureDirectoryExists(chatBaseDir);
   
-  return chatDir;
+  return chatBaseDir;
 }
 
 /**
- * Generates a unique filename for a new chat
- * Format: chat-YYYYMMDD-HHmmss-RANDOM.chat.md
+ * Generates a unique folder name for a new chat
+ * Format: chat-YYYYMMDD-HHmmss-RANDOM
  */
-export function generateChatFilename(): string {
+export function generateChatFolderName(): string {
   // Get current date and time
   const now = new Date();
   const timestamp = now.toISOString()
@@ -54,14 +54,64 @@ export function generateChatFilename(): string {
   // Generate a random string for uniqueness
   const randomStr = Math.random().toString(36).substring(2, 8);
   
-  return `chat-${timestamp.substring(0, 15)}-${randomStr}.chat.md`;
+  return `chat-${timestamp.substring(0, 15)}-${randomStr}`;
 }
 
 /**
- * Generates the full path for a new chat file
+ * Gets workspace-specific directory for organizing chats
+ * 
+ * @param workspacePath The path to the current workspace folder
+ * @returns Path to workspace-specific chat directory
  */
-export function getNewChatFilePath(): string {
-  const chatDir = getChatStateDirectory();
-  const filename = generateChatFilename();
-  return path.join(chatDir, filename);
+export function getWorkspaceChatDirectory(workspacePath: string | null): string {
+  const baseDir = getChatStateBaseDirectory();
+  
+  // Determine workspace folder name
+  let workspaceFolderName = 'root';
+  
+  if (workspacePath) {
+    // Extract folder name from workspace path
+    workspaceFolderName = path.basename(workspacePath);
+  }
+  
+  // Create workspace-specific subdirectory
+  const workspaceDir = path.join(baseDir, workspaceFolderName);
+  
+  // Ensure the directory exists
+  ensureDirectoryExists(workspaceDir);
+  
+  return workspaceDir;
+}
+
+/**
+ * Generates structured paths for a new chat
+ * 
+ * @param workspacePath The path to the current workspace folder
+ * @returns Object containing directory path, chat folder name, and file path
+ */
+export function getNewChatPaths(workspacePath: string | null): { 
+  chatDir: string, 
+  chatFolderName: string, 
+  chatFolderPath: string,
+  chatFilePath: string 
+} {
+  // Get workspace-specific directory
+  const workspaceDir = getWorkspaceChatDirectory(workspacePath);
+  
+  // Generate unique chat folder name
+  const chatFolderName = generateChatFolderName();
+  
+  // Create chat-specific folder
+  const chatFolderPath = path.join(workspaceDir, chatFolderName);
+  ensureDirectoryExists(chatFolderPath);
+  
+  // Chat file path
+  const chatFilePath = path.join(chatFolderPath, 'chat.chat.md');
+  
+  return {
+    chatDir: workspaceDir,
+    chatFolderName,
+    chatFolderPath,
+    chatFilePath
+  };
 }

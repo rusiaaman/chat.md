@@ -19,9 +19,9 @@ export function generateChatTemplate(
   // Add workspace context
   template += `Current workspace dir: \`${workspacePath || 'No workspace open'}\`\n`;
   
-  // Add current file context
+  // Add current file context (as plain text, not a link)
   if (filePath) {
-    template += `[Current working file](${filePath})\n`;
+    template += `Current working file: ${filePath}\n`;
   } else {
     template += 'No file currently open\n';
   }
