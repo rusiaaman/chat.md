@@ -5,6 +5,7 @@ import { StreamingService } from './streamer';
 import { StreamerState } from './types';
 import { getApiKey, getAnthropicApiKey, getProvider, generateToolCallingSystemPrompt } from './config'; // Added generateToolCallingSystemPrompt
 import * as path from 'path';
+import * as fs from 'fs';
 import { log, mcpClientManager } from './extension'; // Added mcpClientManager
 import { executeToolCall, formatToolResult, parseToolCall } from './tools/toolExecutor';
 import { ensureDirectoryExists, writeFile, saveChatHistory } from './utils/fileUtils';
@@ -241,10 +242,55 @@ export class DocumentListener {
         return;
       }
       
+      // Log that we have a valid parsed tool call with parameter details
+      log(`Successfully parsed tool call: ${parsedToolCall.name} with ${Object.keys(parsedToolCall.params).length} parameters`);
+      
       log(`Executing tool: ${parsedToolCall.name} with params: ${JSON.stringify(parsedToolCall.params)}`);
       
-      // Execute the tool
-      const rawResult = await executeToolCall(parsedToolCall.name, parsedToolCall.params, this.document);
+      // Add detailed parsing information to the document itself
+      const paramDetailsBlock = `## Parsed Tool Call Parameters (debug info)
+\`\`\`json
+${JSON.stringify(parsedToolCall.params, null, 2)}
+\`\`\`
+`;
+
+      // Create a history entry that captures the tool execution process
+      const docDir = path.dirname(this.document.uri.fsPath);
+      const historyDir = path.join(docDir, '.cmd_history');
+      if (!fs.existsSync(historyDir)) {
+        fs.mkdirSync(historyDir, { recursive: true });
+      }
+
+      const timestamp = new Date().toISOString()
+        .replace(/:/g, '-')
+        .replace(/\..+Z/, '');
+      const executionLogPath = path.join(historyDir, `tool_execution_${timestamp}.md`);
+      
+      // Log pre-execution information
+      let executionLog = `# Tool Call Execution Flow\n\n`;
+      executionLog += `- **Timestamp:** ${new Date().toISOString()}\n`;
+      executionLog += `- **Document:** ${this.document.fileName}\n`;
+      executionLog += `- **Tool Name:** ${parsedToolCall.name}\n\n`;
+      
+      executionLog += `## Raw Tool Call XML\n\n\`\`\`xml\n${toolCallXml}\n\`\`\`\n\n`;
+      executionLog += `## Parsed Parameters\n\n\`\`\`json\n${JSON.stringify(parsedToolCall.params, null, 2)}\n\`\`\`\n\n`;
+      
+      // Write pre-execution information
+      fs.writeFileSync(executionLogPath, executionLog);
+      log(`Tool execution flow log created: ${executionLogPath}`);
+      
+      // Execute the tool, passing the raw tool call XML for logging
+      const rawResult = await executeToolCall(
+        parsedToolCall.name, 
+        parsedToolCall.params, 
+        this.document,
+        toolCallXml  // Pass the raw XML for logging
+      );
+      
+      // Append the result to the execution log
+      executionLog += `## Tool Execution Result\n\n\`\`\`\n${rawResult}\n\`\`\`\n`;
+      fs.writeFileSync(executionLogPath, executionLog);
+      log(`Tool execution result appended to log: ${executionLogPath}`);
       
       // Insert the raw result (insertToolResult will handle formatting/linking)
       await this.insertToolResult(rawResult);

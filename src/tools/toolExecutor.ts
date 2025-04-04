@@ -1,9 +1,55 @@
 import { log } from '../extension';
 import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
 import { mcpClientManager } from '../mcpClientManager';
 
-export async function executeToolCall(toolName: string, params: Record<string, string>, document?: vscode.TextDocument): Promise<string> {
+/**
+ * Saves the parsed tool call to a log file for debugging
+ * @param toolName The name of the tool being called
+ * @param params The parameters of the tool call
+ * @param rawToolCall The raw XML of the tool call
+ */
+function saveToolCallLog(toolName: string, params: Record<string, string>, rawToolCall: string): void {
+  try {
+    // Create samples/cmdassets directory if it doesn't exist
+    const rootDir = path.resolve(__dirname, '..', '..');
+    const assetsDir = path.join(rootDir, 'samples', 'cmdassets');
+    
+    if (!fs.existsSync(assetsDir)) {
+      fs.mkdirSync(assetsDir, { recursive: true });
+    }
+    
+    // Create a timestamp-based filename
+    const date = new Date();
+    const timestamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}-${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}${String(date.getSeconds()).padStart(2, '0')}`;
+    const randomSuffix = Math.random().toString(36).substring(2, 8);
+    const filename = `tool-call-${timestamp}-${randomSuffix}.txt`;
+    const filePath = path.join(assetsDir, filename);
+    
+    // Format the log content
+    let content = `# Tool Call Log\n\n`;
+    content += `Timestamp: ${date.toISOString()}\n`;
+    content += `Tool Name: ${toolName}\n\n`;
+    content += `## Parsed Parameters\n\`\`\`json\n${JSON.stringify(params, null, 2)}\n\`\`\`\n\n`;
+    content += `## Raw Tool Call XML\n\`\`\`xml\n${rawToolCall}\n\`\`\`\n`;
+    
+    // Write to file
+    fs.writeFileSync(filePath, content, 'utf8');
+    log(`Tool call log saved to: ${filePath}`);
+  } catch (error) {
+    log(`Error saving tool call log: ${error}`);
+    // Don't throw - we want this to be non-blocking
+  }
+}
+
+export async function executeToolCall(toolName: string, params: Record<string, string>, document?: vscode.TextDocument, rawToolCall?: string): Promise<string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
+  
+  // Save the parsed tool call to a log file if we have the raw XML
+  if (rawToolCall) {
+    saveToolCallLog(toolName, params, rawToolCall);
+  }
   
   // Execute through MCP
   try {
@@ -24,7 +70,7 @@ export function formatToolResult(result: string): string {
   return `<tool_result>\n${result}\n</tool_result>`;
 }
 
-export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string> } | null {
+export function parseToolCall(toolCallXml: string): { name: string, params: Record<string, string>, rawXml: string } | null {
   try {
     // First, check if the tool call has a proper opening and closing fence
     const properFenceMatch = /```(?:xml|tool_call)?\s*\n([\s\S]*?)\n\s*```/s.exec(toolCallXml);
@@ -80,8 +126,18 @@ export function parseToolCall(toolCallXml: string): { name: string, params: Reco
       }
     }
     
-    log(`Parsed tool call with parameters: ${JSON.stringify(Object.keys(params))}`);
-    return { name: toolName, params };
+    // Log the full details including parameter values for debugging
+    log(`Parsed tool call ${toolName} with ${Object.keys(params).length} parameters`);
+    Object.entries(params).forEach(([key, value]) => {
+      log(`  Parameter "${key}" = "${value.substring(0, 50)}${value.length > 50 ? '...' : ''}"`);
+    });
+    
+    // Return the parsed tool call with the raw XML included
+    return { 
+      name: toolName, 
+      params,
+      rawXml: xmlContent 
+    };
   } catch (error) {
     log(`Error parsing tool call: ${error}`);
     return null;
