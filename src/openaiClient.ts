@@ -107,8 +107,12 @@ export class OpenAIClient {
       }
       
       req.on('error', (error) => {
-        log(`OpenAI API request error: ${error}`);
+        const message = error instanceof Error ? error.message : String(error);
+        log(`OpenAI API request error: ${message}`);
         console.error('OpenAI API request error:', error);
+        vscode.window.showErrorMessage(`OpenAI API request error: ${message}`);
+        // We still need to reject the promise or throw to stop the process
+        // The promise rejection in the main try/catch handles this
         throw error;
       });
       
@@ -131,14 +135,17 @@ export class OpenAIClient {
         }
         const errorMessage = `OpenAI API request failed with status ${response.statusCode}: ${errorData}`;
         log(errorMessage);
+        vscode.window.showErrorMessage(`OpenAI API Error (${response.statusCode}): ${errorData || 'Failed to get error details'}`);
         throw new Error(errorMessage);
       }
       
       log('Processing streaming response from OpenAI');
       yield* this.createStreamGenerator(response);
     } catch (error) {
-      log(`Error in streamCompletion: ${error}`);
-      throw error;
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Error in streamCompletion: ${message}`);
+      vscode.window.showErrorMessage(`Failed to initiate OpenAI stream: ${message}`);
+      throw error; // Re-throw the error to be caught by the caller (e.g., streamer.ts)
     }
   }
   
@@ -259,7 +266,11 @@ export class OpenAIClient {
       
       log(`Stream completed, processed ${eventCount} events`);
     } catch (error) {
-      log(`Error in createStreamGenerator: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Error in createStreamGenerator: ${message}`);
+      // Notify the user about the error during processing
+      vscode.window.showErrorMessage(`Error during OpenAI stream processing: ${message}`);
+      // Re-throw the error so the main streamCompletion loop knows something went wrong
       throw error;
     }
   }

@@ -244,7 +244,10 @@ export class StreamingService {
                 break;
               }
             } catch (error) {
-              log(`Error updating document with tokens: ${error}`);
+              const message = error instanceof Error ? error.message : String(error);
+              log(`Error updating document with tokens: ${message}`);
+              // Show error notification to the user
+              vscode.window.showErrorMessage(`Failed to update document with stream content: ${message}`);
               // Cancel the streamer on any error
               streamer.isActive = false;
               break;
@@ -257,10 +260,11 @@ export class StreamingService {
       
       log(`Stream completed successfully, processed ${tokenCount} tokens total`);
     } catch (error) {
-      log(`Streaming error: ${error}`);
+      const message = error instanceof Error ? error.message : String(error);
+      log(`Streaming error: ${message}`);
       console.error('Streaming error:', error);
-      // Show error in status bar
-      vscode.window.setStatusBarMessage(`FileChat streaming error: ${error}`, 5000);
+      // Show error notification to the user instead of just status bar
+      vscode.window.showErrorMessage(`FileChat streaming error: ${message}`);
     } finally {
       log('Streaming finished, marking streamer as inactive');
       streamer.isActive = false;
