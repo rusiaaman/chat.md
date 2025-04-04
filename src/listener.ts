@@ -7,7 +7,8 @@ import { getApiKey, getAnthropicApiKey, getProvider, generateToolCallingSystemPr
 import * as path from 'path';
 import * as fs from 'fs';
 import { log, mcpClientManager } from './extension'; // Added mcpClientManager
-import { executeToolCall, formatToolResult, parseToolCall } from './tools/toolExecutor';
+import { executeToolCall, formatToolResult } from './tools/toolExecutor'; // Removed parseToolCall from here
+import { parseToolCall } from './tools/toolCallParser'; // Added import for the correct parser
 import { ensureDirectoryExists, writeFile, saveChatHistory } from './utils/fileUtils';
 
 /**
@@ -174,11 +175,11 @@ export class DocumentListener {
       
       // Match for properly fenced tool calls (with opening and closing fences)
       // Allow for any annotation after the triple backticks
-      const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/sg;
+      const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/sg;
       
       // Match for partially fenced tool calls (with opening fence but missing closing fence)
       // Allow for any annotation after the triple backticks
-      const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/sg;
+      const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/sg;
       
       // Match for non-fenced tool calls
       const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/sg;

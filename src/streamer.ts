@@ -203,7 +203,7 @@ export class StreamingService {
                 // Check for unbalanced fence blocks
                 // Look for opening ``` before <tool_call> but no matching closing ```
                 // Allow for any annotation after the triple backticks
-                const openingFenceMatch = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s.exec(currentText);
+                const openingFenceMatch = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s.exec(currentText);
                 
                 let textToInsert = '';
                 
@@ -333,12 +333,12 @@ export class StreamingService {
     
     // First try to match properly fenced tool calls (with opening and closing fences)
     // Allow for any annotation after the triple backticks like ```tool_code or ```xml
-    const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>\s*\n\s*```/s;
+    const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/s;
     const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
     
     // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
     // Allow for any annotation after the triple backticks
-    const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+    const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s;
     const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
     
     // Then try to match non-fenced tool calls - make pattern consistent with listener.ts

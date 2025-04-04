@@ -67,7 +67,7 @@ IMPORTANT FORMATTING REQUIREMENTS:
 1. Always use double quotes around parameter names: name="paramName"
 2. Parameter values can be inline (no newlines required)
 3. Parameter names must exactly match those in the tool's schema
-4. Preferably place the tool call within code fence blocks, though the parser will accept tool calls without fences as well
+4. Always place the tool call within code fence blocks.
 
 Available tools:${mcpToolsDescription}
 
