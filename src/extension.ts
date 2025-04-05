@@ -72,6 +72,12 @@ async function initializeMcpClients(): Promise<void> {
     const mcpServers = vscode.workspace.getConfiguration().get('chatmd.mcpServers') as Record<string, McpServerConfig> || {};
     log(`Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`);
     
+    for (const [serverId, config] of Object.entries(mcpServers)) {
+      if (!config.command && !config.url) {
+        log(`Warning: MCP server "${serverId}" is missing both 'command' and 'url' properties.`);
+      }
+    }
+    
     await mcpClientManager.initializeClients(mcpServers);
     log('MCP clients initialized successfully');
   } catch (error) {
@@ -146,6 +152,255 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('filechat.refreshMcpTools', async () => {
       await initializeMcpClients();
       vscode.window.showInformationMessage('MCP tools refreshed successfully');
+    }),
+    
+    vscode.commands.registerCommand('filechat.mcpDiagnostics', async () => {
+      // Create diagnostics report
+      const report = await mcpClientManager.generateDiagnosticsReport();
+      
+      // Show in output channel
+      outputChannel.clear();
+      outputChannel.appendLine('=== MCP Diagnostics Report ===');
+      outputChannel.appendLine(report);
+      outputChannel.show();
+    }),
+    
+    vscode.commands.registerCommand('filechat.testSseConnection', async () => {
+      // Get all SSE server configurations
+      const mcpServers = vscode.workspace.getConfiguration().get('chatmd.mcpServers') as Record<string, McpServerConfig> || {};
+      const sseServers = Object.entries(mcpServers).filter(([_, config]) => config.url);
+      
+      if (sseServers.length === 0) {
+        vscode.window.showInformationMessage('No SSE servers configured. Configure one using the "chat.md: Configure MCP Server" command.');
+        return;
+      }
+      
+      // Ask which server to test
+      const serverItems = sseServers.map(([id, config]) => ({
+        label: id,
+        description: config.url || 'No URL specified',
+      }));
+      
+      const selected = await vscode.window.showQuickPick(serverItems, {
+        placeHolder: 'Select an SSE server to test'
+      });
+      
+      if (!selected) {
+        return; // User cancelled
+      }
+      
+      // Start the test
+      outputChannel.clear();
+      outputChannel.appendLine(`=== Testing SSE Connection to ${selected.label} ===`);
+      outputChannel.appendLine(`URL: ${selected.description}`);
+      outputChannel.appendLine('');
+      outputChannel.appendLine('Attempting to connect...');
+      outputChannel.show();
+      
+      try {
+        // Test basic HTTP connectivity first
+        const url = new URL(selected.description);
+        
+        outputChannel.appendLine(`Testing basic HTTP connectivity to ${url.origin}...`);
+        try {
+          // Fetch with a timeout
+          const abortController = new AbortController();
+          const timeoutId = setTimeout(() => abortController.abort(), 5000);
+          
+          const response = await fetch(url.origin, { 
+            method: 'HEAD', 
+            signal: abortController.signal 
+          });
+          
+          clearTimeout(timeoutId);
+          
+          outputChannel.appendLine(`HTTP connection successful: ${response.status} ${response.statusText}`);
+        } catch (error) {
+          outputChannel.appendLine(`HTTP connection failed: ${error.message}`);
+          outputChannel.appendLine('This indicates the server might not be running or not accessible.');
+          outputChannel.appendLine('');
+          throw new Error(`Cannot connect to ${url.origin}`);
+        }
+        
+        // Now try to connect via SSE
+        outputChannel.appendLine(`Testing SSE endpoint specifically...`);
+        
+        // Use the EventSource directly for testing (bypassing the MCP protocol)
+        const EventSource = (await import('eventsource')).default;
+        const eventSource = new EventSource(url.href);
+        
+        // Set up a timeout
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => {
+            eventSource.close();
+            reject(new Error('Connection timeout (10s)'));
+          }, 10000);
+        });
+        
+        // Set up event handlers
+        const connectionPromise = new Promise((resolve, reject) => {
+          eventSource.onopen = (event) => {
+            outputChannel.appendLine('SSE connection opened successfully!');
+            resolve('Connection successful');
+          };
+          
+          eventSource.onerror = (event) => {
+            const errorMsg = event.message || 'Unknown error';
+            outputChannel.appendLine(`SSE connection error: ${errorMsg}`);
+            reject(new Error(`SSE Error: ${errorMsg}`));
+          };
+          
+          eventSource.onmessage = (event) => {
+            outputChannel.appendLine(`Received message from SSE server: ${event.data}`);
+          };
+        });
+        
+        // Wait for connection or timeout
+        try {
+          await Promise.race([connectionPromise, timeoutPromise]);
+          outputChannel.appendLine('');
+          outputChannel.appendLine('The SSE server appears to be working correctly.');
+          outputChannel.appendLine('If you still have issues with MCP, check that the server implements the MCP protocol correctly.');
+          
+          // Close the connection after successful test
+          eventSource.close();
+        } catch (error) {
+          outputChannel.appendLine('');
+          outputChannel.appendLine(`SSE connection test failed: ${error.message}`);
+          outputChannel.appendLine('Troubleshooting tips:');
+          outputChannel.appendLine('1. Ensure the server is running and accessible');
+          outputChannel.appendLine('2. Check that the server supports SSE (not all HTTP servers do)');
+          outputChannel.appendLine('3. Verify the URL is correct and includes http:// or https://');
+          outputChannel.appendLine('4. Check for CORS issues if connecting to a different domain');
+          outputChannel.appendLine('5. Ensure the server sends the correct "Content-Type: text/event-stream" header');
+        }
+      } catch (error) {
+        outputChannel.appendLine(`Error during connection test: ${error.message}`);
+      }
+      
+      outputChannel.appendLine('');
+      outputChannel.appendLine('=== Test complete ===');
+    }),
+    
+    vscode.commands.registerCommand('filechat.configureMcpServer', async () => {
+      // Get server type first
+      const serverType = await vscode.window.showQuickPick(
+        [
+          { label: 'stdio', description: 'Local process using stdio' },
+          { label: 'sse', description: 'Remote server using Server-Sent Events (SSE)' }
+        ],
+        {
+          placeHolder: 'Select MCP server type',
+          title: 'Configure MCP Server',
+        }
+      );
+      
+      if (!serverType) return; // User cancelled
+      
+      // Get server ID
+      const serverId = await vscode.window.showInputBox({
+        prompt: 'Enter an identifier for this MCP server',
+        placeHolder: 'e.g., local-tools, github-tools, database-tools'
+      });
+      
+      if (!serverId) return; // User cancelled
+      
+      // Get existing config or create new one
+      const mcpServers = vscode.workspace.getConfiguration().get('chatmd.mcpServers') as Record<string, McpServerConfig> || {};
+      const existingConfig = mcpServers[serverId] || {};
+      
+      let config: McpServerConfig;
+      
+      if (serverType.label === 'stdio') {
+        // Configure stdio transport
+        const command = await vscode.window.showInputBox({
+          prompt: 'Enter the command to start the MCP server',
+          value: existingConfig.command || '',
+          placeHolder: 'e.g., python, node, ./my-server'
+        });
+        
+        if (!command) return; // User cancelled
+        
+        const argsStr = await vscode.window.showInputBox({
+          prompt: 'Enter command arguments (space-separated)',
+          value: existingConfig.args?.join(' ') || '',
+          placeHolder: 'e.g., -m mcp_server.py --port 8080'
+        });
+        
+        const args = argsStr ? argsStr.split(' ').filter(arg => arg.trim() !== '') : [];
+        
+        config = {
+          command,
+          args,
+          env: existingConfig.env || {}
+        };
+      } else {
+        // Configure SSE transport
+        const url = await vscode.window.showInputBox({
+          prompt: 'Enter the SSE endpoint URL',
+          value: existingConfig.url || '',
+          placeHolder: 'e.g., http://localhost:3000/sse'
+        });
+        
+        if (!url) return; // User cancelled
+        
+        config = {
+          url,
+          env: existingConfig.env || {}
+        };
+      }
+      
+      // Ask to configure environment variables
+      const configureEnv = await vscode.window.showQuickPick(
+        ['Yes', 'No'],
+        { placeHolder: 'Configure environment variables?' }
+      );
+      
+      if (configureEnv === 'Yes') {
+        let configureMoreEnv = true;
+        let env: Record<string, string> = existingConfig.env || {};
+        
+        while (configureMoreEnv) {
+          const envName = await vscode.window.showInputBox({
+            prompt: 'Enter environment variable name',
+            placeHolder: 'e.g., API_KEY'
+          });
+          
+          if (!envName) break;
+          
+          const envValue = await vscode.window.showInputBox({
+            prompt: `Enter value for ${envName}`,
+            placeHolder: 'e.g., your-api-key-here'
+          });
+          
+          if (envValue) {
+            env[envName] = envValue;
+          }
+          
+          const addAnother = await vscode.window.showQuickPick(
+            ['Yes', 'No'],
+            { placeHolder: 'Add another environment variable?' }
+          );
+          
+          configureMoreEnv = addAnother === 'Yes';
+        }
+        
+        config.env = env;
+      }
+      
+      // Save the configuration
+      mcpServers[serverId] = config;
+      await vscode.workspace.getConfiguration().update('chatmd.mcpServers', mcpServers, vscode.ConfigurationTarget.Global);
+      
+      // Ask to refresh MCP tools
+      const refreshNow = await vscode.window.showInformationMessage(
+        `MCP server "${serverId}" configured. Refresh MCP tools now?`,
+        'Yes', 'No'
+      );
+      
+      if (refreshNow === 'Yes') {
+        await vscode.commands.executeCommand('filechat.refreshMcpTools');
+      }
     }),
     vscode.commands.registerCommand('filechat.newContextChat', async () => {
       const activeEditor = vscode.window.activeTextEditor;
@@ -627,6 +882,11 @@ export function deactivate() {
   });
   documentListeners.clear();
   documentListenerInstances.clear();
+  
+  // Clean up MCP client connections
+  mcpClientManager.cleanup().catch(error => {
+    log(`Error during MCP client cleanup: ${error}`);
+  });
   
   // Dispose of status manager
   statusManager.dispose();
