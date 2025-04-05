@@ -4,8 +4,6 @@
 
 chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files.
 
-![chat.md demo](samples/image-1.png)
-
 ## Why chat.md?
 
 | Other AI Tools | chat.md |
