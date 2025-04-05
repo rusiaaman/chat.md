@@ -4,6 +4,10 @@
 
 chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files.
 
+Any '*.chat.md' file is now an AI agent hackable by you.
+
+<img width="1057" alt="image" src="https://github.com/user-attachments/assets/9a947041-e964-4abb-8996-f5893f37684e" />
+
 ## Why chat.md?
 
 | Other AI Tools | chat.md |
@@ -80,19 +84,14 @@ Since chat.md files are just text, you have complete control over your AI intera
 
 1. Install from the VS Code marketplace
 2. Configure your API key(s):
-   - Command Palette → "Configure chat.md API Key"
+   - Command Palette → "Add or Edit API Configuration"
 3. Create a new chat:
-   - Command Palette → "New chat.md"
-   - Or create any file with the `.chat.md` extension
-4. Start your conversation:
-   ```markdown
-   # %% user
-   Hello, can you help me with a coding question?
+   - `Opt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux) to create a new '.chat.md' file with workspace information populated in a user block.
+   - Or create any file with the `.chat.md` extension anywhere and open it in vscode.
+4. In a '# %% user' block write your query and press 'Shift + Enter' (or just create a new '# %% assistant' block and press enter)
+5. Watch the assistant stream its response and do any tool call.
 
-   # %% assistant
-   
-   ```
-5. When you add an empty `# %% assistant` line, the AI automatically generates a response
+Optionally you can start a markdown preview side by side to get live markdown preview of the chat which is more user friendly.
 
 ## Configuration
 
@@ -105,7 +104,7 @@ Access these settings through VS Code's settings UI or settings.json:
 ## Keyboard Shortcuts
 
 - `Shift+Enter`: Insert next block (alternates between user/assistant)
-- `Alt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat or cancel existing streaming
+- `Opt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat or cancel existing streaming
 
 ## MCP Tool Integration
 
