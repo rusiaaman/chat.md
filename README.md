@@ -113,13 +113,15 @@ Connect any Model Context Protocol server to extend AI capabilities:
 
 ```json
 "chatmd.mcpServers": {
-  "filesystem": {
-    "command": "node",
-    "args": ["./mcp-tools/filesystem-server.js"]
-  },
-  "search": {
-    "command": "python",
-    "args": ["-m", "mcp_search_tools"]
+  "wcgw": {
+    "command": "uvx",
+    "args": [
+      "--python",
+      "3.12",
+      "--from",
+      "wcgw@latest",
+      "wcgw_mcp"
+    ]
   }
 }
 ```
