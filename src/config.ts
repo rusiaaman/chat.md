@@ -34,7 +34,7 @@ export function generateToolCallingSystemPrompt(mcpGroupedTools: Map<string, Map
     mcpToolsDescription += `\n\n## Tools from server: ${serverId}\n`;
     
     for (const tool of serverToolMap.values()) {
-      mcpToolsDescription += `\n${toolIndex}. ${tool.name} - ${tool.description || ''}
+      mcpToolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${tool.description || ''}
    Input Schema: 
    \`\`\`json
 ${JSON.stringify(tool.inputSchema, null, 2)}
