@@ -1,0 +1,38 @@
+
+/Users/arusia/repos/filechat/.github/workflows/publish.yml
+```
+1 name: Publish VS Code Extension
+2 
+3 on:
+4   push:
+5     tags:
+6       - 'v*.*.*' # Trigger on version tags like v0.1.0
+7 
+8 jobs:
+9   publish:
+10     runs-on: ubuntu-latest
+11     steps:
+12       - name: Checkout code
+13         uses: actions/checkout@v4
+14 
+15       - name: Set up Node.js
+16         uses: actions/setup-node@v4
+17         with:
+18           node-version: '18.x' # Use a suitable Node.js version
+19 
+20       - name: Install dependencies
+21         run: npm ci
+22 
+23       - name: Install vsce
+24         run: npm install -g @vscode/vsce
+25 
+26       - name: Publish to Visual Studio Marketplace
+27         run: vsce publish -p $VSCE_PAT
+28         env:
+29           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+30 
+31       - name: Publish to Open VSX Registry
+32         run: npx ovsx publish -p $OVSX_TOKEN
+33         env:
+34           OVSX_TOKEN: ${{ secrets.OVSX_TOKEN }}
+```

@@ -1,0 +1,34 @@
+
+/Users/arusia/repos/filechat/.vscodeignore
+```
+1 .vscode/**
+2 .vscode-test/**
+3 src/**
+4 .gitignore
+5 tsconfig.json
+6 **/*.map
+7 **/*.ts
+8 .npmignore
+9 *.vsix
+10 node_modules/**
+11 out/**
+12 test/**
+13 *.chat.md
+14 CLAUDE.md
+15 setup.sh
+16 test-tool-calling.js
+17 esbuild.js
+18 samples/**
+19 .cmd_history/**
+```
+/Users/arusia/repos/filechat/.npmignore
+```
+1 .vscode/**
+2 .vscode-test/**
+3 src/**
+4 .gitignore
+5 .yarnrc
+6 tsconfig.json
+7 **/*.map
+8 **/*.ts9 
+```

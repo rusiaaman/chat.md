@@ -1,0 +1,179 @@
+
+/Users/arusia/repos/filechat/package.json
+```
+1 {
+2   "name": "filechat",
+3   "displayName": "chat.md",
+4   "description": "Interact with LLMs directly in markdown files",
+5   "version": "0.1.1",
+6   "publisher": "AmanRusia",
+7   "license": "MIT",
+8   "icon": "images/icon.png",
+9   "repository": {
+10     "type": "git",
+11     "url": "https://github.com/rusiaaman/chat.md"
+12   },
+13   "engines": {
+14     "vscode": "^1.60.0"
+15   },
+16   "categories": [
+17     "Chat",
+18     "AI"
+19   ],
+20   "activationEvents": [
+21     "onLanguage:markdown",
+22     "onStartupFinished"
+23   ],
+24   "main": "./dist/extension.js",
+25   "contributes": {
+26     "commands": [
+27       {
+28         "command": "filechat.newChat",
+29         "title": "chat.md: New chat.md"
+30       },
+31       {
+32         "command": "filechat.newContextChat",
+33         "title": "chat.md: New Chat with Workspace Context"
+34       },
+35       {
+36         "command": "filechat.addApiConfig",
+37         "title": "chat.md: Add or Edit API Configuration"
+38       },
+39       {
+40         "command": "filechat.selectApiConfig",
+41         "title": "chat.md: Select API Configuration"
+42       },
+43       {
+44         "command": "filechat.removeApiConfig",
+45         "title": "chat.md: Remove API Configuration"
+46       },
+47       {
+48         "command": "filechat.refreshMcpTools",
+49         "title": "chat.md: Refresh MCP Tools"
+50      },
+51      {
+52        "command": "filechat.insertNextBlock",
+53        "title": "chat.md: Insert Next Block"
+54       },
+55       {
+56         "command": "filechat.cancelStreaming",
+57         "title": "chat.md: Cancel Streaming"
+58       }
+59     ],
+60     "configuration": {
+61       "title": "chat.md",
+62       "properties": {
+63         "chatmd.apiConfigs": {
+64           "type": "object",
+65           "description": "Dictionary of named API configurations",
+66           "additionalProperties": {
+67             "type": "object",
+68             "properties": {
+69               "type": {
+70                 "type": "string",
+71                 "enum": ["anthropic", "openai"],
+72                 "description": "Provider type"
+73               },
+74               "apiKey": {
+75                 "type": "string",
+76                 "description": "API Key for the selected provider"
+77               },
+78               "base_url": {
+79                 "type": "string",
+80                 "description": "Base URL for the API (optional, leave empty for default)"
+81               },
+82               "model_name": {
+83                 "type": "string",
+84                 "description": "Model name to use with the selected provider"
+85               }
+86             },
+87             "required": ["type", "apiKey"]
+88           },
+89           "default": {},
+90           "scope": "application"
+91         },
+92         "chatmd.selectedConfig": {
+93           "type": "string",
+94           "description": "Name of the selected API configuration",
+95           "scope": "application"
+96         },
+97         "chatmd.mcpServers": {
+98           "type": "object",
+99           "description": "MCP server configurations for tool integration",
+100           "additionalProperties": {
+101             "type": "object",
+102             "properties": {
+103               "command": {
+104                 "type": "string",
+105                 "description": "Command to start the MCP server"
+106               },
+107               "args": {
+108                 "type": "array",
+109                 "items": {
+110                   "type": "string"
+111                 },
+112                 "description": "Arguments for the MCP server command"
+113               },
+114               "env": {
+115                 "type": "object",
+116                 "additionalProperties": {
+117                   "type": "string"
+118                 },
+119                 "description": "Environment variables for the MCP server"
+120               }
+121             },
+122             "required": [
+123               "command",
+124               "args"
+125             ]
+126           },
+127           "default": {},
+128           "scope": "application"
+129          }
+130        }
+131      },
+132      "keybindings": [
+133        {
+134          "command": "filechat.insertNextBlock",
+135          "key": "shift+enter",
+136          "when": "editorTextFocus && editorLangId == markdown"
+137        },
+138        {
+139          "command": "filechat.newContextChat",
+140          "key": "alt+cmd+'",
+141          "mac": "alt+cmd+'",
+142          "when": "editorTextFocus"
+143        }
+144      ]
+145    },
+146    "scripts": {
+147      "vscode:prepublish": "node ./esbuild.js --production",
+148     "esbuild-base": "node ./esbuild.js",
+149     "esbuild": "npm run esbuild-base -- --sourcemap",
+150     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
+151     "compile": "npm run esbuild",
+152     "watch": "npm run esbuild-watch",
+153     "pretest": "npm run esbuild",
+154     "lint": "eslint src --ext ts",
+155     "test": "node ./out/test/runTest.js",
+156     "build:vsix": "npm run vscode:prepublish && npx @vscode/vsce package"
+157   },
+158   "devDependencies": {
+159     "@types/glob": "^7.1.3",
+160     "pretest": "npm run esbuild && npm run lint",
+161     "@types/node": "^14.0.27",
+162     "@types/vscode": "^1.60.0",
+163     "@typescript-eslint/eslint-plugin": "^4.1.1",
+164     "@typescript-eslint/parser": "^4.1.1",
+165     "esbuild": "^0.25.2",
+166     "eslint": "^7.9.0",
+167     "glob": "^7.1.6",
+168     "typescript": "^4.0.2",
+169     "vscode-test": "^1.4.0"
+170   },
+171   "dependencies": {
+172     "@modelcontextprotocol/sdk": "^1.8.0",
+173     "zod": "^3.24.2"
+174   }
+175 }176 
+```
