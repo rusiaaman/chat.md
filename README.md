@@ -8,6 +8,8 @@ Any '*.chat.md' file is now an AI agent hackable by you.
 
 <img width="1005" alt="image" src="https://github.com/user-attachments/assets/67983da2-6046-4ba8-bc8c-16944a5476fd" />
 
+[Usage video](https://www.youtube.com/watch?v=DyYoZLmpzc0)
+
 [Here's the chat I used to publish this vscode extension using gemini-2.5-pro and wcgw mcp](samples/publishing-help/chat.chat.md)
 
 ## Why chat.md?
