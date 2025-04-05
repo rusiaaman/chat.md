@@ -15,3 +15,5 @@ CLAUDE.md
 setup.sh
 test-tool-calling.js
 esbuild.js
+samples/**
+.cmd_history/**

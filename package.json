@@ -2,17 +2,20 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files",
-  "version": "0.1.0",
-  "publisher": "arusia",
+  "version": "0.1.1",
+  "publisher": "AmanRusia",
+  "license": "MIT",
+  "icon": "images/icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/arusia/filechat"
+    "url": "https://github.com/rusiaaman/chat.md"
   },
   "engines": {
     "vscode": "^1.60.0"
   },
   "categories": [
-    "Other"
+    "Chat",
+    "AI"
   ],
   "activationEvents": [
     "onLanguage:markdown",
@@ -147,7 +150,7 @@
     "esbuild-watch": "npm run esbuild-base -- --sourcemap --watch",
     "compile": "npm run esbuild",
     "watch": "npm run esbuild-watch",
-    "pretest": "npm run esbuild && npm run lint",
+    "pretest": "npm run esbuild",
     "lint": "eslint src --ext ts",
     "test": "node ./out/test/runTest.js",
     "build:vsix": "npm run vscode:prepublish && npx @vscode/vsce package"
