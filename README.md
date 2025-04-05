@@ -1,86 +1,152 @@
-# chat.md
+# chat.md: The File-First AI Conversation Interface
 
-chat.md is a Visual Studio Code extension that enables you to interact with Large Language Models (LLMs) directly in markdown files. Have conversations with models like Claude (Anthropic) and GPT (OpenAI) right within your text editor.
+**Finally, AI chat that works like code: versioned, shareable, and in your editor.**
+
+chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files.
+
+![chat.md demo](samples/image-1.png)
+
+## Why chat.md?
+
+| Other AI Tools | chat.md |
+|----------------|---------|
+| ❌ Locked to a specific vendor's models | ✅ Use Claude, GPT, or any compatible API |
+| ❌ Tool execution tied to proprietary implementations | ✅ Open MCP protocol for universal tool support |
+| ❌ Conversations live in the cloud | ✅ Files stored locally alongside your code |
+| ❌ Separate context from your workspace | ✅ Attach files directly from your project |
+| ❌ Linear conversations only | ✅ Non-linear editing - rewrite history, branch conversations |
+| ❌ Can't manually edit AI responses | ✅ Put words in LLM's mouth - edit and have it continue from there |
+| ❌ Truncated outputs are lost forever | ✅ Resume incomplete AI responses at any point |
+| ❌ Require constant context switching | ✅ Stay in your editor where you work |
 
 ## Features
 
-### 🗣️ Interactive Chat Interface
-- Use `.chat.md` files with a simple format to structure conversations
-- Sections start with `# %% user` or `# %% assistant` to define roles
-- Supports streaming responses from the AI model
-- Auto-scrolls to keep new content visible
+### 🗣️ File-Based Conversations
 
-### 🔌 Multi-Provider Support
-- Works with Anthropic (Claude) models
-- Works with OpenAI models (including GPT-4, GPT-3.5)
-- Supports custom OpenAI-compatible APIs (like Azure OpenAI, Google Gemini)
+Unlike Copilot's inline suggestions, ChatGPT's web interface, or Cursor's side panel, chat.md treats conversations as *first-class files* in your workspace:
 
-### 📎 File Attachments
-- Attach both text files and images to your messages
-- Two syntax options:
-  1. Traditional: `Attached file at /path/to/file`
-  2. Markdown-style: `[#file](path/to/file)`
-- Handles both relative and absolute paths
+```markdown
+# %% user
+How can I optimize this function?
 
-### 🛠️ Tool Calling
-- Integrates with Model Context Protocol (MCP) tools
-- Allows AI to execute external tools using a standardized XML format
-- Supports dynamic registration of tool servers
-- Handles tool results with proper formatting and linking
+[#file](src/utils.js)
+
+# %% assistant
+Looking at your utils.js file, I see several opportunities for optimization:
+
+1. The loop on line 24 could be replaced with a more efficient map/reduce pattern
+2. The repetitive string concatenation can be improved with template literals
+...
+```
+
+### 🔌 Universal Model Support
+
+- **Anthropic Claude**: All models (Opus, Sonnet, Haiku)
+- **OpenAI**: GPT-4, GPT-3.5, and future models
+- **Custom APIs**: Any OpenAI-compatible endpoint (Azure, Google Gemini, etc.)
+- **Quick Switching**: Toggle between different models for different tasks
+
+### 🛠️ Universal Tool Ecosystem with MCP
+
+Unlike Cursor or Copilot's closed tool implementations, chat.md embraces the **Model Context Protocol (MCP)** - an open standard for tool execution that works with any LLM:
+
+- **Truly Universal**: Any AI model (Claude, GPT, open-source models) can use any MCP tool
+- **Model Agnostic**: Tools work identically regardless of which AI powers your conversation
+- **Extensible**: Bring your own tools or use community-built ones
+- **Local Control**: Tools run on your machine - no data leaves unless you want it to
+- **Documentation-Driven**: Tools self-describe their capabilities to models
+- **No Vendor Lock-in**: Switch models without losing tool functionality
+
+```
+<tool_call>
+<tool_name>filesystem.searchFiles</tool_name>
+<param name="pattern">*.js</param>
+<param name="directory">src</param>
+</tool_call>
+```
+
+### 📎 Contextual File Attachments
+
+- Attach text files and images directly in your conversations
+- Link files using familiar markdown syntax: `[#file](path/to/file)`
+- Files are resolved relative to the chat document - perfect for project context
+
+### 💾 Editable Conversations
+
+Since chat.md files are just text, you have complete control over your AI interactions:
+
+- **Non-linear Editing**: Rewrite history by editing earlier parts of the conversation
+- **Conversation Hacking**: Put words in the AI's mouth by editing its responses
+- **Continuation Control**: Have the AI continue from any edited point
+- **Resume Truncated Outputs**: If an AI response gets cut off, just add a new assistant block and continue
+- **Git-Friendly**: Track conversation changes, collaborate on prompts, and branch conversations
+- **Conversation Templates**: Create reusable conversation starters for common tasks
 
 ## Getting Started
 
-1. Install the extension from the VS Code marketplace
+1. Install from the VS Code marketplace
 2. Configure your API key(s):
    - Command Palette → "Configure chat.md API Key"
-3. Create a new chat file:
+3. Create a new chat:
    - Command Palette → "New chat.md"
-   - Or create a file with the `.chat.md` extension
+   - Or create any file with the `.chat.md` extension
 4. Start your conversation:
-   ```
+   ```markdown
    # %% user
    Hello, can you help me with a coding question?
 
    # %% assistant
    
    ```
-5. When you add an empty `# %% assistant` line, the AI will automatically start generating a response
+5. When you add an empty `# %% assistant` line, the AI automatically generates a response
 
 ## Configuration
 
 Access these settings through VS Code's settings UI or settings.json:
 
-- `chatmd.apiConfigs`: Dictionary containing named API configurations (Provider type, API key, model, base URL). Replaces the old individual keys.
-- `chatmd.selectedConfig`: Name of the active API configuration to use from `chatmd.apiConfigs`.
-- `chatmd.mcpServers`: Configuration for MCP tool servers (advanced).
+- `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
+- `chatmd.selectedConfig`: Active API configuration
+- `chatmd.mcpServers`: Configure MCP tool servers
 
-## Chat File Format
+## Keyboard Shortcuts
 
-Each `.chat.md` file consists of alternating user and assistant blocks:
+- `Shift+Enter`: Insert next block (alternates between user/assistant)
+- `Alt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat
+- `Alt+Cmd+Esc` (Mac) / `Alt+Ctrl+Esc` (Windows/Linux): Cancel streaming
 
+## MCP Tool Integration
+
+Connect any Model Context Protocol server to extend AI capabilities:
+
+```json
+"chatmd.mcpServers": {
+  "filesystem": {
+    "command": "node",
+    "args": ["./mcp-tools/filesystem-server.js"]
+  },
+  "search": {
+    "command": "python",
+    "args": ["-m", "mcp_search_tools"]
+  }
+}
 ```
-# %% user
-Your question or prompt goes here.
-You can include multiple paragraphs.
 
-[#file](path/to/file.js)
+The AI will automatically discover available tools and know how to use them!
 
-# %% assistant
-The AI response appears here.
-It can include code blocks, explanations, etc.
+## The Philosophy
 
-# %% user
-Your follow-up question...
+chat.md breaks away from the artificial "chat" paradigm and acknowledges that AI interaction is fundamentally about text processing. By treating conversations as files:
 
-# %% assistant
-
-```
+1. **Persistence becomes trivial** - no special cloud sync or proprietary formats
+2. **Collaboration is built-in** - share, diff, and merge like any other code
+3. **Version control is natural** - track changes over time
+4. **Customization is unlimited** - edit the file however you want
 
 ## License
 
-This extension is licensed under the MIT License. See the LICENSE file for details.
+MIT License - see the LICENSE file for details.
 
 ## Feedback & Contributions
 
 - File issues on the GitHub repository
-- Contributions are welcome via pull requests
+- Contributions welcome via pull requests
