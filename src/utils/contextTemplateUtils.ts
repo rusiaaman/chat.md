@@ -22,8 +22,6 @@ export function generateChatTemplate(
   // Add current file context (as plain text, not a link)
   if (filePath) {
     template += `Current working file: ${filePath}\n`;
-  } else {
-    template += 'No file currently open\n';
   }
   
   // Add selected text if any
