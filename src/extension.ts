@@ -86,6 +86,23 @@ async function initializeMcpClients(): Promise<void> {
   }
 }
 
+/**
+ * Handles configuration changes for MCP servers
+ */
+async function handleMcpConfigChange(event: vscode.ConfigurationChangeEvent): Promise<void> {
+  if (event.affectsConfiguration('chatmd.mcpServers')) {
+    log('MCP server configuration changed, updating servers');
+    try {
+      const newConfigs = vscode.workspace.getConfiguration().get('chatmd.mcpServers') as Record<string, McpServerConfig> || {};
+      await mcpClientManager.checkConfigChanges(newConfigs);
+      log('MCP servers updated after configuration change');
+    } catch (error) {
+      log(`Error updating MCP servers after configuration change: ${error}`);
+      vscode.window.showErrorMessage(`Failed to update MCP servers: ${error}`);
+    }
+  }
+}
+
 export function activate(context: vscode.ExtensionContext) {
   log('chat.md extension is now active');
   
@@ -120,6 +137,15 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(document => {
       setupDocumentListener(document, context);
+    })
+  );
+  
+  // Listen for configuration changes to update MCP servers
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration(event => {
+      handleMcpConfigChange(event).catch(error => {
+        log(`Error handling configuration change: ${error}`);
+      });
     })
   );
   

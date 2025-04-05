@@ -25,9 +25,18 @@ export class McpClientManager {
   private sseRetryIntervals: Map<string, NodeJS.Timeout> = new Map();
   private sseMaxRetries: number = 5;
   private sseRetryCount: Map<string, number> = new Map();
+  private refreshInterval: NodeJS.Timeout | null = null;
+  private refreshIntervalMs: number = 5000; // 5 seconds
+  private lastKnownConfigs: Record<string, McpServerConfig> = {};
   
   // Initialize MCP clients from configuration
   public async initializeClients(mcpServers: Record<string, McpServerConfig>): Promise<void> {
+    // Stop any existing refresh interval
+    this.stopBackgroundRefresh();
+    
+    // Store the current configs for comparison later
+    this.lastKnownConfigs = JSON.parse(JSON.stringify(mcpServers));
+    
     // Clear existing clients and tools
     this.clients.clear();
     this.tools.clear();
@@ -41,6 +50,144 @@ export class McpClientManager {
         log(`Failed to connect to MCP server ${serverId}: ${error}`);
       }
     }
+    
+    // Start background refresh for tool lists
+    this.startBackgroundRefresh();
+  }
+  
+  /**
+   * Starts the background refresh interval for tool lists
+   */
+  private startBackgroundRefresh(): void {
+    if (this.refreshInterval) {
+      clearInterval(this.refreshInterval);
+    }
+    
+    log(`Starting background tool refresh at ${this.refreshIntervalMs}ms intervals`);
+    this.refreshInterval = setInterval(() => {
+      this.refreshAllToolLists().catch(error => {
+        log(`Error in background tool refresh: ${error}`);
+      });
+    }, this.refreshIntervalMs);
+  }
+  
+  /**
+   * Stops the background refresh interval
+   */
+  private stopBackgroundRefresh(): void {
+    if (this.refreshInterval) {
+      log('Stopping background tool refresh');
+      clearInterval(this.refreshInterval);
+      this.refreshInterval = null;
+    }
+  }
+  
+  /**
+   * Check for configuration changes and reload affected servers
+   */
+  public async checkConfigChanges(newConfigs: Record<string, McpServerConfig>): Promise<void> {
+    log('Checking for MCP server configuration changes');
+    
+    // Find servers that need to be reloaded
+    const serversToReload: string[] = [];
+    const serversToRemove: string[] = [];
+    const serversToAdd: string[] = [];
+    
+    // First, find servers that changed or were removed
+    for (const [serverId, oldConfig] of Object.entries(this.lastKnownConfigs)) {
+      if (!newConfigs[serverId]) {
+        // Server was removed from configuration
+        serversToRemove.push(serverId);
+        log(`Server ${serverId} removed from configuration`);
+      } else if (!this.configsEqual(oldConfig, newConfigs[serverId])) {
+        // Server config changed
+        serversToReload.push(serverId);
+        log(`Configuration changed for server ${serverId}`);
+      }
+    }
+    
+    // Find new servers that were added
+    for (const serverId of Object.keys(newConfigs)) {
+      if (!this.lastKnownConfigs[serverId]) {
+        serversToAdd.push(serverId);
+        log(`New server ${serverId} added to configuration`);
+      }
+    }
+    
+    // Remove servers that were removed from configuration
+    for (const serverId of serversToRemove) {
+      await this.disconnectServer(serverId);
+    }
+    
+    // Reload servers with changed configuration
+    for (const serverId of serversToReload) {
+      log(`Reloading server ${serverId} due to configuration change`);
+      await this.disconnectServer(serverId);
+      try {
+        await this.connectServer(serverId, newConfigs[serverId]);
+        log(`Successfully reloaded server ${serverId}`);
+      } catch (error) {
+        log(`Failed to reload server ${serverId}: ${error}`);
+      }
+    }
+    
+    // Add new servers
+    for (const serverId of serversToAdd) {
+      try {
+        await this.connectServer(serverId, newConfigs[serverId]);
+        log(`Connected to new server ${serverId}`);
+      } catch (error) {
+        log(`Failed to connect to new server ${serverId}: ${error}`);
+      }
+    }
+    
+    // Update the stored configuration
+    this.lastKnownConfigs = JSON.parse(JSON.stringify(newConfigs));
+  }
+  
+  /**
+   * Compare two server configurations for equality
+   */
+  private configsEqual(config1: McpServerConfig, config2: McpServerConfig): boolean {
+    // Compare URL (for SSE servers)
+    if (config1.url !== config2.url) {
+      return false;
+    }
+    
+    // Compare command and args (for stdio servers)
+    if (config1.command !== config2.command) {
+      return false;
+    }
+    
+    // Compare args array
+    const args1 = config1.args || [];
+    const args2 = config2.args || [];
+    if (args1.length !== args2.length) {
+      return false;
+    }
+    for (let i = 0; i < args1.length; i++) {
+      if (args1[i] !== args2[i]) {
+        return false;
+      }
+    }
+    
+    // Compare environment variables
+    const env1 = config1.env || {};
+    const env2 = config2.env || {};
+    const env1Keys = Object.keys(env1);
+    const env2Keys = Object.keys(env2);
+    
+    if (env1Keys.length !== env2Keys.length) {
+      return false;
+    }
+    
+    for (const key of env1Keys) {
+      if (env1[key] !== env2[key]) {
+        return false;
+      }
+    }
+    
+    return true;
   }
   
   // Connect to a single MCP server
@@ -317,22 +464,158 @@ export class McpClientManager {
   }
   
   /**
+   * Refreshes tool lists for all connected servers
+   */
+  public async refreshAllToolLists(): Promise<void> {
+    const startTime = Date.now();
+    log(`Background refresh: Refreshing tool lists for ${this.clients.size} servers`);
+    
+    // Track successes and failures
+    let successCount = 0;
+    let failCount = 0;
+    
+    // Refresh each server's tools
+    for (const [serverId, client] of this.clients.entries()) {
+      try {
+        await this.refreshServerTools(serverId, client);
+        successCount++;
+      } catch (error) {
+        failCount++;
+        log(`Failed to refresh tools for server ${serverId}: ${error}`);
+      }
+    }
+    
+    const duration = Date.now() - startTime;
+    log(`Background refresh: completed in ${duration}ms (${successCount} succeeded, ${failCount} failed)`);
+  }
+  
+  /**
+   * Refreshes the tool list for a specific server
+   */
+  private async refreshServerTools(serverId: string, client: Client): Promise<void> {
+    try {
+      // Get available tools
+      const toolsResult = await client.listTools();
+      
+      // Create or get the server's tool map
+      let serverToolMap = this.serverTools.get(serverId);
+      if (!serverToolMap) {
+        serverToolMap = new Map<string, Tool>();
+        this.serverTools.set(serverId, serverToolMap);
+      }
+      
+      // Keep track of which tools were updated
+      const currentTools = new Set(serverToolMap.keys());
+      const updatedTools = new Set<string>();
+      
+      // Process each tool in the result
+      for (const tool of toolsResult.tools) {
+        updatedTools.add(tool.name);
+        
+        // Check if the tool exists and needs updating
+        const existingTool = serverToolMap.get(tool.name);
+        if (!existingTool || JSON.stringify(existingTool) !== JSON.stringify(tool)) {
+          // Update or add the tool
+          this.tools.set(tool.name, tool);
+          serverToolMap.set(tool.name, tool);
+          log(`Updated tool: ${tool.name} from server ${serverId}`);
+        }
+      }
+      
+      // Remove tools that no longer exist
+      for (const toolName of currentTools) {
+        if (!updatedTools.has(toolName)) {
+          serverToolMap.delete(toolName);
+          // Only remove from global tools if no other server has it
+          let stillExists = false;
+          for (const [otherServerId, otherToolMap] of this.serverTools.entries()) {
+            if (otherServerId !== serverId && otherToolMap.has(toolName)) {
+              stillExists = true;
+              break;
+            }
+          }
+          
+          if (!stillExists) {
+            this.tools.delete(toolName);
+            log(`Removed tool: ${toolName} from server ${serverId}`);
+          }
+        }
+      }
+    } catch (error) {
+      log(`Error refreshing tools for server ${serverId}: ${error}`);
+      throw error;
+    }
+  }
+  
+  /**
+   * Disconnects and cleans up resources for a specific server
+   */
+  private async disconnectServer(serverId: string): Promise<void> {
+    log(`Disconnecting server ${serverId}`);
+    
+    const client = this.clients.get(serverId);
+    if (client) {
+      try {
+        await client.close();
+      } catch (error) {
+        log(`Error closing client for server ${serverId}: ${error}`);
+      }
+      
+      this.clients.delete(serverId);
+    }
+    
+    // Clean up transport
+    const transport = this.transports.get(serverId);
+    if (transport) {
+      this.transports.delete(serverId);
+    }
+    
+    // Clear any reconnection timers
+    if (this.sseRetryIntervals.has(serverId)) {
+      clearInterval(this.sseRetryIntervals.get(serverId)!);
+      this.sseRetryIntervals.delete(serverId);
+    }
+    
+    // Clear retry counts
+    this.sseRetryCount.delete(serverId);
+    
+    // Remove tools for this server
+    const serverToolMap = this.serverTools.get(serverId);
+    if (serverToolMap) {
+      // For each tool in this server
+      for (const [toolName, _] of serverToolMap.entries()) {
+        // Check if tool exists in other servers
+        let stillExists = false;
+        for (const [otherServerId, otherToolMap] of this.serverTools.entries()) {
+          if (otherServerId !== serverId && otherToolMap.has(toolName)) {
+            stillExists = true;
+            break;
+          }
+        }
+        
+        // If tool doesn't exist elsewhere, remove from global map
+        if (!stillExists) {
+          this.tools.delete(toolName);
+        }
+      }
+      
+      // Remove the server's tool map
+      this.serverTools.delete(serverId);
+    }
+    
+    log(`Server ${serverId} disconnected`);
+  }
+  
+  /**
    * Cleans up all MCP client connections and resources
    */
   public async cleanup(): Promise<void> {
+    // Stop the background refresh interval
+    this.stopBackgroundRefresh();
+    
     // Close all connections
-    for (const [serverId, client] of this.clients.entries()) {
-      try {
-        await client.close();
-        
-        // Clear any reconnection timers
-        if (this.sseRetryIntervals.has(serverId)) {
-          clearInterval(this.sseRetryIntervals.get(serverId)!);
-          this.sseRetryIntervals.delete(serverId);
-        }
-      } catch (error) {
-        log(`Error closing client ${serverId}: ${error}`);
-      }
+    for (const [serverId, _] of this.clients.entries()) {
+      await this.disconnectServer(serverId);
     }
     
     this.clients.clear();
