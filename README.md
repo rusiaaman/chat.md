@@ -1,10 +1,10 @@
-# chat.md: The engineer's AI Conversation Interface
+# chat.md: The Hacker's AI Chat Interface
 
 **Finally, a fully editable chat interface with MCP support on any LLM.**
 
-chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files.
+chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files. The AI directly writes its response in the file.
 
-Any '*.chat.md' file is now an AI agent hackable by you.
+Any '*.chat.md' file is now an AI agent hackable by you. Go crazy with non linear AI conversation.
 
 <img width="1005" alt="image" src="https://github.com/user-attachments/assets/67983da2-6046-4ba8-bc8c-16944a5476fd" />
 
@@ -18,8 +18,8 @@ Any '*.chat.md' file is now an AI agent hackable by you.
 |----------------|---------|
 | ❌ Linear conversations or limited editing | ✅ Non-linear editing - rewrite history, branch conversations |
 | ❌ Tool execution tied to proprietary implementations | ✅ Any LLM model can do tool calling |
-| ❌ MCP not supported in many LLMs | ✅ Any LLM model can use MCP servers |
 | ❌ Can't manually edit AI responses | ✅ Put words in LLM's mouth - edit and have it continue from there |
+| ❌ MCP not supported in many LLMs | ✅ Any LLM model can use MCP servers |
 | ❌ Max token limit for assistant response can't be resumed | ✅ Resume incomplete AI responses at any point |
 | ❌ Conversations live in the cloud or inaccessible | ✅ Files stored locally alongside your code in human readable format |
 | ❌ Separate context from your workspace | ✅ Attach files directly from your project |
@@ -184,3 +184,7 @@ MIT License - see the LICENSE file for details.
 
 - File issues on the GitHub repository
 - Contributions welcome via pull requests
+
+## Credits
+- Claude with wcgw mcp
+- Gemini 2.5 pro with chat.md
