@@ -100,76 +100,127 @@ export class McpClientManager {
   public getGroupedTools(): Map<string, Map<string, Tool>> {
     return this.serverTools;
   }
-  
   // Execute a tool through the appropriate MCP client
-  public async executeToolCall(name: string, params: Record<string, string>): Promise<string> {
-    const tool = this.tools.get(name);
-    if (!tool) {
-      return `Error: Tool "${name}" not found`;
+  // Tool name is expected in the format "serverName.toolName"
+  public async executeToolCall(fullName: string, params: Record<string, string>): Promise<string> {
+    // Parse the fullName to get serverName and actualToolName
+    const dotIndex = fullName.indexOf('.');
+    let serverName: string | undefined = undefined;
+    let actualToolName: string = fullName; // Default to fullName if parsing fails
+
+    if (dotIndex > 0 && dotIndex < fullName.length - 1) {
+      serverName = fullName.substring(0, dotIndex);
+      actualToolName = fullName.substring(dotIndex + 1);
+      log(`Parsed tool name: server="${serverName}", tool="${actualToolName}"`);
+    } else {
+      log(`Warning: Tool name "${fullName}" does not follow the expected "serverName.toolName" format. Falling back to legacy lookup.`);
+      // Fallback: Use the old method of iterating through all servers
+      return this.executeToolCallLegacyFallback(fullName, params);
     }
-    
-    // Find which client has this tool and execute it
-    for (const [serverId, serverToolMap] of this.serverTools.entries()) {
-      if (!serverToolMap.has(name)) {
-        continue; // This server doesn't have this tool
-      }
-      
-      const client = this.clients.get(serverId);
-      if (!client) {
-        continue; // Shouldn't happen but check anyway
-      }
-      
-      try {
-        log(`Executing tool "${name}" with string parameters: ${JSON.stringify(params)}`);
-        
-        // Process parameters according to the tool's schema
-        const processedParams: Record<string, any> = {};
-        const toolSchema = tool.inputSchema?.properties || {};
-        
-        // Process each parameter based on its declared type in the schema
-        for (const [paramName, paramValue] of Object.entries(params)) {
-          const paramSchema = toolSchema[paramName] as { type?: string } | undefined;
-          
-          // For parameters that are declared as objects or arrays in the schema,
-          // we might need to parse the JSON string to match the expected type
-          if (paramSchema?.type && (paramSchema.type === 'object' || paramSchema.type === 'array')) {
-            try {
-              // Log that we're parsing the JSON string
-              log(`Parameter "${paramName}" has type ${paramSchema.type} in schema, attempting to parse JSON`);
-              processedParams[paramName] = JSON.parse(paramValue);
-            } catch (e) {
-              // If parsing fails, keep as string
-              log(`Failed to parse JSON for parameter "${paramName}", keeping as string: ${e}`);
-              processedParams[paramName] = paramValue;
-            }
-          } else {
-            // Keep as string for all other types
+
+    // --- New Logic using parsed serverName and actualToolName ---
+
+    // Get the specific client for the server
+    const client = this.clients.get(serverName);
+    if (!client) {
+      return `Error: MCP server "${serverName}" not found or not connected.`;
+    }
+
+    // Get the specific tool definition from the server's map
+    const serverToolMap = this.serverTools.get(serverName);
+    const tool = serverToolMap?.get(actualToolName);
+    if (!tool) {
+      return `Error: Tool "${actualToolName}" not found on server "${serverName}".`;
+    }
+
+    // Execute the tool using the specific client and actual tool name
+    try {
+      return await this._executeToolOnClient(client, serverName, actualToolName, tool, params);
+    } catch (error) {
+      log(`Error executing tool ${actualToolName} on server ${serverName}: ${error}`);
+      return `Error executing tool ${actualToolName}: ${error}`;
+    }
+  }
+
+  // Fallback method for the old way of finding the tool across all servers
+  private async executeToolCallLegacyFallback(name: string, params: Record<string, string>): Promise<string> {
+     log(`Executing legacy fallback for tool "${name}"`);
+     // Find which client has this tool and execute it
+     for (const [serverId, serverToolMap] of this.serverTools.entries()) {
+       const tool = serverToolMap.get(name);
+       if (!tool) {
+         continue; // This server doesn't have this tool
+       }
+
+       const client = this.clients.get(serverId);
+       if (!client) {
+         continue; // Shouldn't happen but check anyway
+       }
+
+       try {
+         return await this._executeToolOnClient(client, serverId, name, tool, params);
+       } catch (error) {
+         log(`Error executing tool ${name} on server ${serverId} (fallback): ${error}`);
+         // Continue searching on other servers in case of error? Or return error immediately?
+         // For now, return the error from the first server that failed.
+         return `Error executing tool ${name}: ${error}`;
+       }
+     }
+
+     // If loop completes without finding the tool
+     return `Error: Tool "${name}" not found on any connected server.`;
+  }
+
+  // Private helper method for the core tool execution logic
+  private async _executeToolOnClient(client: Client, serverId: string, toolName: string, tool: Tool, params: Record<string, string>): Promise<string> {
+    try {
+      log(`Executing tool "${toolName}" on server "${serverId}" with string parameters: ${JSON.stringify(params)}`);
+
+      // Process parameters according to the tool's schema
+      const processedParams: Record<string, any> = {};
+      const toolSchema = tool.inputSchema?.properties || {};
+
+      // Process each parameter based on its declared type in the schema
+      for (const [paramName, paramValue] of Object.entries(params)) {
+        const paramSchema = toolSchema[paramName] as { type?: string } | undefined;
+
+        // For parameters that are declared as objects or arrays in the schema,
+        // we might need to parse the JSON string to match the expected type
+        if (paramSchema?.type && (paramSchema.type === 'object' || paramSchema.type === 'array')) {
+          try {
+            // Log that we're parsing the JSON string
+            log(`Parameter "${paramName}" for tool "${toolName}" has type ${paramSchema.type} in schema, attempting to parse JSON`);
+            processedParams[paramName] = JSON.parse(paramValue);
+          } catch (e) {
+            // If parsing fails, keep as string
+            log(`Failed to parse JSON for parameter "${paramName}" of tool "${toolName}", keeping as string: ${e}`);
             processedParams[paramName] = paramValue;
           }
+        } else {
+          // Keep as string for all other types
+          processedParams[paramName] = paramValue;
         }
-        
-        const result = await client.callTool({
-          name,
-          arguments: processedParams
-        });
-        
-        // Convert result to string format
-        if (result && result.content && Array.isArray(result.content)) {
-          const resultText = result.content
-            .filter((item: any) => item.type === 'text')
-            .map((item: any) => item.text)
-            .join('\n');
-            
-          return resultText;
-        }
-        
-        return "Error: Invalid result format from MCP tool";
-      } catch (error) {
-        log(`Error executing tool ${name} on server ${serverId}: ${error}`);
-        return `Error executing tool ${name}: ${error}`;
       }
+
+      const result = await client.callTool({
+        name: toolName, // Use the actual tool name here
+        arguments: processedParams
+      });
+
+      // Convert result to string format
+      if (result && result.content && Array.isArray(result.content)) {
+        const resultText = result.content
+          .filter((item: any) => item.type === 'text')
+          .map((item: any) => item.text)
+          .join('\n');
+
+        return resultText;
+      }
+
+      return "Error: Invalid result format from MCP tool";
+    } catch (error) {
+      // Logged by the caller, rethrow to be handled there
+      throw error;
     }
-    
-    return `Error: No server available to execute tool "${name}"`;
   }
 }

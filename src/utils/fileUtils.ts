@@ -181,9 +181,8 @@ export function appendToChatHistory(historyFilePath: string, content: string): v
     // Read existing content
     const existingContent = readFileAsText(historyFilePath) || '';
     
-    // Append new content
-    const updatedContent = existingContent + 
-      `\n\n## Received Tokens (${new Date().toISOString()})\n\n\`\`\`\n${content}\n\`\`\`\n`;
+    // Append new content (raw tokens)
+    const updatedContent = existingContent + content;
     
     // Write back to file
     writeFile(historyFilePath, updatedContent);
