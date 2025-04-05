@@ -116,6 +116,10 @@ Access these settings through VS Code's settings UI or settings.json:
 
 Connect any Model Context Protocol server to extend AI capabilities:
 
+### Local MCP Servers (stdio)
+
+For local MCP servers running in the same environment as VS Code:
+
 ```json
 "chatmd.mcpServers": {
   "wcgw": {
@@ -131,7 +135,32 @@ Connect any Model Context Protocol server to extend AI capabilities:
 }
 ```
 
-The AI will automatically discover available tools and know how to use them!
+### Remote MCP Servers (SSE)
+
+For remote MCP servers accessible via HTTP/Server-Sent Events:
+
+```json
+"chatmd.mcpServers": {
+  "remote-mcp": {
+    "url": "http://localhost:3000/sse"
+  }
+}
+```
+
+You can also add environment variables if needed:
+
+```json
+"chatmd.mcpServers": {
+  "remote-mcp": {
+    "url": "http://localhost:3000/sse",
+    "env": {
+      "API_KEY": "your-api-key-here"
+    }
+  }
+}
+```
+
+The AI will automatically discover available tools from both local and remote servers and know how to use them! Tool lists are refreshed automatically every 5 seconds to keep them up-to-date.
 
 ## The Philosophy
 
@@ -145,7 +174,7 @@ chat.md breaks away from the artificial "chat" paradigm and acknowledges that AI
 ## Limitations
 1. MCP -- only tools supported, prompts and resources will be supported in the future.
 2. Caching not yet supported in anthropic api.
-3. Gemini, ollama, llm studio and other moels have to be accessed using openai-api only.
+3. Gemini, ollama, llm studio and other models have to be accessed using openai-api only.
 
 ## License
 
