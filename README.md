@@ -6,7 +6,7 @@ chat.md is a Visual Studio Code extension that reimagines AI interaction through
 
 Any '*.chat.md' file is now an AI agent hackable by you.
 
-<img width="1057" alt="image" src="https://github.com/user-attachments/assets/9a947041-e964-4abb-8996-f5893f37684e" />
+<img width="1005" alt="image" src="https://github.com/user-attachments/assets/67983da2-6046-4ba8-bc8c-16944a5476fd" />
 
 ## Why chat.md?
 
