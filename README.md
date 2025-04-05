@@ -8,14 +8,13 @@ chat.md is a Visual Studio Code extension that reimagines AI interaction through
 
 | Other AI Tools | chat.md |
 |----------------|---------|
-| ❌ Locked to a specific vendor's models | ✅ Use Claude, GPT, or any compatible API |
-| ❌ Tool execution tied to proprietary implementations | ✅ Open MCP protocol for universal tool support |
-| ❌ Conversations live in the cloud | ✅ Files stored locally alongside your code |
-| ❌ Separate context from your workspace | ✅ Attach files directly from your project |
-| ❌ Linear conversations only | ✅ Non-linear editing - rewrite history, branch conversations |
+| ❌ Linear conversations or limited editing | ✅ Non-linear editing - rewrite history, branch conversations |
+| ❌ Tool execution tied to proprietary implementations | ✅ Any LLM model can do tool calling |
+| ❌ MCP not supported in many LLMs | ✅ Any LLM model can use MCP servers |
 | ❌ Can't manually edit AI responses | ✅ Put words in LLM's mouth - edit and have it continue from there |
-| ❌ Truncated outputs are lost forever | ✅ Resume incomplete AI responses at any point |
-| ❌ Require constant context switching | ✅ Stay in your editor where you work |
+| ❌ Max token limit for assistant response can't be resumed | ✅ Resume incomplete AI responses at any point |
+| ❌ Conversations live in the cloud or inaccessible | ✅ Files stored locally alongside your code in human readable format |
+| ❌ Separate context from your workspace | ✅ Attach files directly from your project |
 
 ## Features
 
@@ -50,9 +49,6 @@ Unlike Cursor or Copilot's closed tool implementations, chat.md embraces the **M
 
 - **Truly Universal**: Any AI model (Claude, GPT, open-source models) can use any MCP tool
 - **Model Agnostic**: Tools work identically regardless of which AI powers your conversation
-- **Extensible**: Bring your own tools or use community-built ones
-- **Local Control**: Tools run on your machine - no data leaves unless you want it to
-- **Documentation-Driven**: Tools self-describe their capabilities to models
 - **No Vendor Lock-in**: Switch models without losing tool functionality
 
 ```
@@ -65,9 +61,9 @@ Unlike Cursor or Copilot's closed tool implementations, chat.md embraces the **M
 
 ### 📎 Contextual File Attachments
 
-- Attach text files and images directly in your conversations
-- Link files using familiar markdown syntax: `[#file](path/to/file)`
-- Files are resolved relative to the chat document - perfect for project context
+- Attach text files and images directly in your conversations (paste any copied image)
+- Link files using familiar markdown syntax: `[file](path/to/file)`
+- Files are resolved relative to the chat document - perfect for project context (or use absolute paths)
 
 ### 💾 Editable Conversations
 
@@ -109,8 +105,7 @@ Access these settings through VS Code's settings UI or settings.json:
 ## Keyboard Shortcuts
 
 - `Shift+Enter`: Insert next block (alternates between user/assistant)
-- `Alt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat
-- `Alt+Cmd+Esc` (Mac) / `Alt+Ctrl+Esc` (Windows/Linux): Cancel streaming
+- `Alt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat or cancel existing streaming
 
 ## MCP Tool Integration
 
