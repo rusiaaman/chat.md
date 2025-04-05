@@ -67,5 +67,4 @@ A lock on the file is shared between streamer and the listener, only is allowed 
 
 # Configuration
 
-For now only anthropic is supported, and only configuration is ANTHROPIC_API_KEY
-
+Anthropic api and openai api (with custom url) are supported.

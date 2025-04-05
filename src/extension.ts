@@ -106,7 +106,7 @@ export function activate(context: vscode.ExtensionContext) {
       updateStreamingStatusBar();
     })
   );
-  
+
   // Update status bar initially
   updateStreamingStatusBar();
   
@@ -147,11 +147,28 @@ export function activate(context: vscode.ExtensionContext) {
       await initializeMcpClients();
       vscode.window.showInformationMessage('MCP tools refreshed successfully');
     }),
-    
     vscode.commands.registerCommand('filechat.newContextChat', async () => {
-      try {
-        // Get current context (workspace, file, selection)
-        const context = getCurrentContext();
+      const activeEditor = vscode.window.activeTextEditor;
+      let streamerCancelled = false;
+
+      // Check if active editor is a chat file and if streaming is active
+      if (activeEditor && activeEditor.document.fileName.endsWith('.chat.md')) {
+        const streamer = getActiveStreamerForDocument(activeEditor.document);
+        if (streamer && streamer.isActive && streamer.cancel) {
+          log('newContextChat shortcut used while streaming: Cancelling stream.');
+          streamer.cancel();
+          vscode.window.showInformationMessage('chat.md streaming cancelled');
+          updateStreamingStatusBar(); // Update status bar after cancelling
+          streamerCancelled = true;
+        }
+      }
+
+      // If streaming was not cancelled, proceed with creating a new chat
+      if (!streamerCancelled) {
+        log('newContextChat shortcut used: Creating new context chat.');
+        try {
+          // Get current context (workspace, file, selection)
+          const context = getCurrentContext();
         
         // Generate chat template with context
         const template = generateChatTemplate(
@@ -171,16 +188,17 @@ export function activate(context: vscode.ExtensionContext) {
         const doc = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(doc);
         
-        log(`Created new context chat at: ${chatPaths.chatFilePath}`);
-        log(`Chat folder: ${chatPaths.chatFolderPath}`);
-        log(`Workspace folder: ${chatPaths.chatDir}`);
-        vscode.window.setStatusBarMessage('Created new context chat', 3000);
-      } catch (error) {
-        log(`Error creating context chat: ${error}`);
-        vscode.window.showErrorMessage(`Failed to create context chat: ${error}`);
-      }
-    }),
-    
+          log(`Created new context chat at: ${chatPaths.chatFilePath}`);
+          log(`Chat folder: ${chatPaths.chatFolderPath}`);
+          log(`Workspace folder: ${chatPaths.chatDir}`);
+          vscode.window.setStatusBarMessage('Created new context chat', 3000);
+        } catch (error) {
+          log(`Error creating context chat: ${error}`);
+          vscode.window.showErrorMessage(`Failed to create context chat: ${error}`);
+        }
+      } // This brace closes the if (!streamerCancelled) block
+    }), // This closes the registerCommand call
+
     vscode.commands.registerCommand('filechat.newChat', async () => {
       // Create a new chat file
       const document = await vscode.workspace.openTextDocument({

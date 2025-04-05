@@ -50,8 +50,8 @@
        "title": "chat.md: Insert Next Block"
       },
       {
-        "command": "filechat.cancelStreaming", // Re-use existing command
-        "title": "chat.md: Cancel Streaming"  // Update title for consistency
+        "command": "filechat.cancelStreaming",
+        "title": "chat.md: Cancel Streaming"
       }
     ],
     "configuration": {
@@ -137,12 +137,6 @@
          "key": "alt+cmd+'",
          "mac": "alt+cmd+'",
          "when": "editorTextFocus"
-       },
-       {
-         "command": "filechat.cancelStreaming", // Point keybinding to the correct command
-         "key": "alt+cmd+esc",
-         "mac": "alt+cmd+esc",
-         "when": "editorTextFocus && editorLangId == markdown"
        }
      ]
    },
