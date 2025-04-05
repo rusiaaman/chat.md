@@ -264,7 +264,7 @@ export class StreamingService {
       log(`Streaming error: ${message}`);
       console.error('Streaming error:', error);
       // Show error notification to the user instead of just status bar
-      vscode.window.showErrorMessage(`FileChat streaming error: ${message}`);
+      vscode.window.showErrorMessage(`chat.md streaming error: ${message}`);
     } finally {
       log('Streaming finished, marking streamer as inactive');
       streamer.isActive = false;

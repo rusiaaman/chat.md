@@ -56,34 +56,30 @@ you don't have access to external tools at the moment and suggest they check the
    return `
 This AI assistant can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool, preferably inside a code fence block:
 
-\`\`\`
+\`\`\`tool_call
 <tool_call>
 <tool_name>toolName</tool_name>
 <param name="paramName">paramValue</param>
 </tool_call>
 \`\`\`
 
+Note: you should always give both \`\`\`tool_call and <tool_call>.
+
 IMPORTANT FORMATTING REQUIREMENTS:
-1. Always use double quotes around parameter names: name="paramName"
+1. Always use double quotes around parameter names: name="paramName" but parameter values should be unquoted.
 2. Parameter values can be inline (no newlines required)
-3. Parameter names must exactly match those in the tool's schema
+3. Parameter names must exactly match those in the tool's schema without server name (only tool name).
 4. Always place the tool call within code fence blocks.
 
 Available tools:${mcpToolsDescription}
 
-After calling a tool, wait for the result which will be provided in the following format:
-
-<tool_result>
-The content or result of the tool execution will appear here.
-</tool_result>
+After calling a tool, wait for the result.
 
 Tool usage guidelines:
-- Only use tools when necessary to fulfill the user's request
-- Always wait for tool results before continuing
-- Use the exact format shown above - it's a simplified XML-like format, not strict XML
-- You don't need to worry about CDATA tags or XML escaping
+- Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.
+- You should use CDATA tag in the parameter value if it contains conflicting XML tags only, not for special characters.
 - Make sure to use correct parameter names with quotes (name="paramName")
-- For scalar parameters (string, number, boolean), write values directly without quotes
+- In <param> value for scalar parameters (string, number, boolean), write values directly without quotes
 - For object/array type parameters, use properly encoded JSON format
 `;
 }
@@ -97,14 +93,14 @@ export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt(new Ma
  * Gets all API configurations
  */
 export function getApiConfigs(): ApiConfigs {
-  return vscode.workspace.getConfiguration().get('filechat.apiConfigs') || {};
+  return vscode.workspace.getConfiguration().get('chatmd.apiConfigs') || {};
 }
 
 /**
  * Gets the currently selected configuration name
  */
 export function getSelectedConfigName(): string | undefined {
-  return vscode.workspace.getConfiguration().get('filechat.selectedConfig');
+  return vscode.workspace.getConfiguration().get('chatmd.selectedConfig');
 }
 
 /**
@@ -125,7 +121,7 @@ export function getSelectedConfig(): ApiConfig | undefined {
  */
 export async function setSelectedConfig(configName: string): Promise<void> {
   await vscode.workspace.getConfiguration().update(
-    'filechat.selectedConfig',
+    'chatmd.selectedConfig',
     configName,
     vscode.ConfigurationTarget.Global
   );
@@ -139,7 +135,7 @@ export async function setApiConfig(name: string, config: ApiConfig): Promise<voi
   configs[name] = config;
   
   await vscode.workspace.getConfiguration().update(
-    'filechat.apiConfigs',
+    'chatmd.apiConfigs',
     configs,
     vscode.ConfigurationTarget.Global
   );
@@ -154,7 +150,7 @@ export async function removeApiConfig(name: string): Promise<boolean> {
     delete configs[name];
     
     await vscode.workspace.getConfiguration().update(
-      'filechat.apiConfigs',
+      'chatmd.apiConfigs',
       configs,
       vscode.ConfigurationTarget.Global
     );

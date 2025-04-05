@@ -1,6 +1,6 @@
-# Chat Markdown
+# chat.md
 
-Chat Markdown is a Visual Studio Code extension that enables you to interact with Large Language Models (LLMs) directly in markdown files. Have conversations with models like Claude (Anthropic) and GPT (OpenAI) right within your text editor.
+chat.md is a Visual Studio Code extension that enables you to interact with Large Language Models (LLMs) directly in markdown files. Have conversations with models like Claude (Anthropic) and GPT (OpenAI) right within your text editor.
 
 ## Features
 
@@ -32,9 +32,9 @@ Chat Markdown is a Visual Studio Code extension that enables you to interact wit
 
 1. Install the extension from the VS Code marketplace
 2. Configure your API key(s):
-   - Command Palette → "Configure Chat Markdown API Key"
+   - Command Palette → "Configure chat.md API Key"
 3. Create a new chat file:
-   - Command Palette → "New Chat Markdown"
+   - Command Palette → "New chat.md"
    - Or create a file with the `.chat.md` extension
 4. Start your conversation:
    ```
@@ -50,11 +50,9 @@ Chat Markdown is a Visual Studio Code extension that enables you to interact wit
 
 Access these settings through VS Code's settings UI or settings.json:
 
-- `filechat.provider`: AI provider to use ("anthropic" or "openai")
-- `filechat.apiKey`: API key for the selected provider
-- `filechat.model_name`: Specific model to use (optional)
-- `filechat.base_url`: Custom API endpoint for OpenAI-compatible APIs (optional)
-- `filechat.mcpServers`: Configuration for MCP tool servers (advanced)
+- `chatmd.apiConfigs`: Dictionary containing named API configurations (Provider type, API key, model, base URL). Replaces the old individual keys.
+- `chatmd.selectedConfig`: Name of the active API configuration to use from `chatmd.apiConfigs`.
+- `chatmd.mcpServers`: Configuration for MCP tool servers (advanced).
 
 ## Chat File Format
 

@@ -29,7 +29,7 @@ const documentListeners = new Map<string, vscode.Disposable>();
 const documentListenerInstances = new Map<string, DocumentListener>();
 
 // Output channel for logging
-export const outputChannel = vscode.window.createOutputChannel('FileChat');
+export const outputChannel = vscode.window.createOutputChannel('chat.md');
 
 // Create MCP client manager
 export const mcpClientManager = new McpClientManager();
@@ -69,7 +69,7 @@ export function updateStreamingStatusBar(): void {
  */
 async function initializeMcpClients(): Promise<void> {
   try {
-    const mcpServers = vscode.workspace.getConfiguration().get('filechat.mcpServers') as Record<string, McpServerConfig> || {};
+    const mcpServers = vscode.workspace.getConfiguration().get('chatmd.mcpServers') as Record<string, McpServerConfig> || {};
     log(`Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`);
     
     await mcpClientManager.initializeClients(mcpServers);
@@ -81,7 +81,7 @@ async function initializeMcpClients(): Promise<void> {
 }
 
 export function activate(context: vscode.ExtensionContext) {
-  log('FileChat extension is now active');
+  log('chat.md extension is now active');
   
   // Initialize MCP clients
   void initializeMcpClients();
@@ -137,7 +137,7 @@ export function activate(context: vscode.ExtensionContext) {
         const streamer = getActiveStreamerForDocument(activeEditor.document);
         if (streamer && streamer.isActive && streamer.cancel) {
           streamer.cancel();
-          vscode.window.showInformationMessage('FileChat streaming cancelled');
+          vscode.window.showInformationMessage('chat.md streaming cancelled');
           updateStreamingStatusBar();
         }
       }
@@ -198,9 +198,9 @@ export function activate(context: vscode.ExtensionContext) {
       
       const saveUri = await vscode.window.showSaveDialog({
         defaultUri: vscode.Uri.file(defaultPath),
-        filters: { 'Chat Markdown': ['chat.md'] }
+        filters: { 'chat.md': ['chat.md'] }
       });
-      
+
       if (saveUri) {
         await vscode.workspace.fs.writeFile(saveUri, Buffer.from(document.getText()));
         const savedDoc = await vscode.workspace.openTextDocument(saveUri);

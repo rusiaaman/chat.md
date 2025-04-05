@@ -1,6 +1,6 @@
 {
   "name": "filechat",
-  "displayName": "Chat Markdown",
+  "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files",
   "version": "0.1.0",
   "publisher": "arusia",
@@ -23,7 +23,7 @@
     "commands": [
       {
         "command": "filechat.newChat",
-        "title": "New Chat Markdown"
+        "title": "New chat.md"
       },
       {
         "command": "filechat.newContextChat",
@@ -47,13 +47,13 @@
      },
      {
        "command": "filechat.insertNextBlock",
-       "title": "Chat Markdown: Insert Next Block"
+       "title": "chat.md: Insert Next Block"
       }
     ],
     "configuration": {
-      "title": "Chat Markdown",
+      "title": "chat.md",
       "properties": {
-        "filechat.apiConfigs": {
+        "chatmd.apiConfigs": {
           "type": "object",
           "description": "Dictionary of named API configurations",
           "additionalProperties": {
@@ -82,12 +82,12 @@
           "default": {},
           "scope": "application"
         },
-        "filechat.selectedConfig": {
+        "chatmd.selectedConfig": {
           "type": "string",
           "description": "Name of the selected API configuration",
           "scope": "application"
         },
-        "filechat.mcpServers": {
+        "chatmd.mcpServers": {
           "type": "object",
           "description": "MCP server configurations for tool integration",
           "additionalProperties": {

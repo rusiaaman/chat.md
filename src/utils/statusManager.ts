@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { log } from '../extension';
 
 /**
- * Manages status bar items for the FileChat extension
+ * Manages status bar items for the chat.md extension
  */
 export class StatusManager {
   private static instance: StatusManager;
@@ -13,8 +13,8 @@ export class StatusManager {
   private constructor() {
     // Create streaming status bar item with higher priority (lower number)
     this.streamingStatusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 10);
-    this.streamingStatusItem.text = "$(check) FileChat: Idle";
-    this.streamingStatusItem.tooltip = "FileChat is ready. When streaming, click to cancel.";
+    this.streamingStatusItem.text = "$(check) chat.md: Idle";
+    this.streamingStatusItem.tooltip = "chat.md is ready. When streaming, click to cancel.";
     this.streamingStatusItem.command = 'filechat.cancelStreaming';
     // Always show the status bar item, even in idle state
     this.streamingStatusItem.show();
@@ -48,7 +48,7 @@ export class StatusManager {
 
     this.streamingDots = "";
     // Change to streaming state with animation
-    this.streamingStatusItem.text = "$(loading~spin) FileChat: Streaming";
+    this.streamingStatusItem.text = "$(loading~spin) chat.md: Streaming";
     this.streamingStatusItem.tooltip = "An AI response is currently streaming. Click to cancel.";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
     
@@ -70,8 +70,8 @@ export class StatusManager {
     }
     
     // Change to idle state
-    this.streamingStatusItem.text = "$(check) FileChat: Idle";
-    this.streamingStatusItem.tooltip = "FileChat is ready. When streaming, click to cancel.";
+    this.streamingStatusItem.text = "$(check) chat.md: Idle";
+    this.streamingStatusItem.tooltip = "chat.md is ready. When streaming, click to cancel.";
     this.streamingStatusItem.backgroundColor = undefined; // Remove background color
     
     log('Changed to idle status');
@@ -83,7 +83,7 @@ export class StatusManager {
   private updateStreamingAnimation(): void {
     // Cycle through 1, 2, and 3 dots
     this.streamingDots = this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
-    this.streamingStatusItem.text = `$(loading~spin) FileChat: Streaming${this.streamingDots}`;
+    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming${this.streamingDots}`;
   }
 
   /**
