@@ -1,6 +1,6 @@
-# chat.md: The File-First AI Conversation Interface
+# chat.md: The engineer's AI Conversation Interface
 
-**Finally, AI chat that works like code: versioned, shareable, and in your editor.**
+**Finally, a fully editable chat interface with MCP support on any LLM.**
 
 chat.md is a Visual Studio Code extension that reimagines AI interaction through plain text files. Unlike ephemeral web interfaces or proprietary chat windows, chat.md embraces a file-first approach where your conversations with AI are just markdown files with a `.chat.md` extension. Edit them, version control them, share them - they're your files.
 
@@ -45,11 +45,13 @@ Looking at your utils.js file, I see several opportunities for optimization:
 - **Anthropic Claude**: All models (Opus, Sonnet, Haiku)
 - **OpenAI**: GPT-4, GPT-3.5, and future models
 - **Custom APIs**: Any OpenAI-compatible endpoint (Azure, Google Gemini, etc.)
-- **Quick Switching**: Toggle between different models for different tasks
+- **Quick Switching**: Toggle between different models in between a conversation.
 
 ### 🛠️ Universal Tool Ecosystem with MCP
 
-Unlike Cursor or Copilot's closed tool implementations, chat.md embraces the **Model Context Protocol (MCP)** - an open standard for tool execution that works with any LLM:
+Chat.md is a **Model Context Protocol (MCP)**  client  - an open standard for tool execution that works with any LLM.
+
+Chat.md doesn't restrict any LLM from tool calling unlike many chat applications.
 
 - **Truly Universal**: Any AI model (Claude, GPT, open-source models) can use any MCP tool
 - **Model Agnostic**: Tools work identically regardless of which AI powers your conversation
@@ -82,7 +84,7 @@ Since chat.md files are just text, you have complete control over your AI intera
 
 ## Getting Started
 
-1. Install from the VS Code marketplace
+1. Install 'chat.md' from the VS Code marketplace
 2. Configure your API key(s):
    - Command Palette → "Add or Edit API Configuration"
 3. Create a new chat:
@@ -135,6 +137,11 @@ chat.md breaks away from the artificial "chat" paradigm and acknowledges that AI
 2. **Collaboration is built-in** - share, diff, and merge like any other code
 3. **Version control is natural** - track changes over time
 4. **Customization is unlimited** - edit the file however you want
+
+## Limitations
+1. MCP -- only tools supported, prompts and resources will be supported in the future.
+2. Caching not yet supported in anthropic api.
+3. Gemini, ollama, llm studio and other moels have to be accessed using openai-api only.
 
 ## License
 
