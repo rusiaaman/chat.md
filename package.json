@@ -23,27 +23,27 @@
     "commands": [
       {
         "command": "filechat.newChat",
-        "title": "New chat.md"
+        "title": "chat.md: New chat.md"
       },
       {
         "command": "filechat.newContextChat",
-        "title": "New Chat with Workspace Context"
+        "title": "chat.md: New Chat with Workspace Context"
       },
       {
         "command": "filechat.addApiConfig",
-        "title": "Add or Edit API Configuration"
+        "title": "chat.md: Add or Edit API Configuration"
       },
       {
         "command": "filechat.selectApiConfig",
-        "title": "Select API Configuration"
+        "title": "chat.md: Select API Configuration"
       },
       {
         "command": "filechat.removeApiConfig",
-        "title": "Remove API Configuration"
+        "title": "chat.md: Remove API Configuration"
       },
       {
         "command": "filechat.refreshMcpTools",
-        "title": "Refresh MCP Tools"
+        "title": "chat.md: Refresh MCP Tools"
      },
      {
        "command": "filechat.insertNextBlock",
