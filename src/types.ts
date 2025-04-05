@@ -5,13 +5,13 @@
 /**
  * Represents the type of content in a message
  */
-export type ContentType = 'text' | 'image';
+export type ContentType = "text" | "image";
 
 /**
  * Text content in a message
  */
 export interface TextContent {
-  type: 'text';
+  type: "text";
   value: string;
 }
 
@@ -19,7 +19,7 @@ export interface TextContent {
  * Image content in a message
  */
 export interface ImageContent {
-  type: 'image';
+  type: "image";
   path: string;
 }
 
@@ -31,7 +31,7 @@ export type Content = TextContent | ImageContent;
 /**
  * Roles in a chat conversation
  */
-export type Role = 'user' | 'assistant';
+export type Role = "user" | "assistant";
 
 /**
  * Structure of a message in the chat
@@ -48,13 +48,13 @@ export interface StreamerState {
   messageIndex: number;
   tokens: string[];
   isActive: boolean;
-  
+
   /**
    * Path to the history file where chat context is saved
    * Used for debugging purposes
    */
   historyFilePath?: string;
-  
+
   /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.

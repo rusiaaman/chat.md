@@ -1,26 +1,29 @@
-import * as path from 'path';
-import * as fs from 'fs';
-import * as vscode from 'vscode';
-import { MessageParam } from '../types';
+import * as path from "path";
+import * as fs from "fs";
+import * as vscode from "vscode";
+import { MessageParam } from "../types";
 
 /**
  * Resolves file paths that may be relative to the current document
  */
-export function resolveFilePath(filePath: string, document: vscode.TextDocument): string {
+export function resolveFilePath(
+  filePath: string,
+  document: vscode.TextDocument,
+): string {
   // If path starts with ~ replace with home dir
-  if (filePath.startsWith('~')) {
-    return filePath.replace(/^~/, process.env.HOME || '');
+  if (filePath.startsWith("~")) {
+    return filePath.replace(/^~/, process.env.HOME || "");
   }
-  
+
   // If it's an absolute path, return as is
   if (path.isAbsolute(filePath)) {
     return filePath;
   }
-  
+
   // Try to resolve relative to the document
   const documentDir = path.dirname(document.uri.fsPath);
   const resolvedPath = path.resolve(documentDir, filePath);
-  
+
   return resolvedPath;
 }
 
@@ -55,7 +58,7 @@ export function readFileAsBuffer(filePath: string): Buffer | undefined {
  */
 export function readFileAsText(filePath: string): string | undefined {
   try {
-    return fs.readFileSync(filePath, 'utf8');
+    return fs.readFileSync(filePath, "utf8");
   } catch (error) {
     console.error(`Error reading file ${filePath}:`, error);
     return undefined;
@@ -67,7 +70,7 @@ export function readFileAsText(filePath: string): string | undefined {
  */
 export function isImageFile(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
-  return ['.png', '.jpg', '.jpeg', '.gif', '.webp'].includes(ext);
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(ext);
 }
 
 /**
@@ -92,7 +95,7 @@ export function ensureDirectoryExists(dirPath: string): void {
  */
 export function writeFile(filePath: string, content: string): void {
   try {
-    fs.writeFileSync(filePath, content, 'utf8');
+    fs.writeFileSync(filePath, content, "utf8");
   } catch (error) {
     console.error(`Error writing file ${filePath}:`, error);
     throw error; // Re-throw the error
@@ -112,18 +115,19 @@ export function saveChatHistory(
   messages: readonly MessageParam[],
   action: string,
   systemPrompt?: string, // Added systemPrompt parameter
-  additionalContent?: string
+  additionalContent?: string,
 ): string {
   try {
     // Create .cmd_history directory relative to the chat document
     const docDir = path.dirname(document.uri.fsPath);
-    const historyDir = path.join(docDir, '.cmd_history');
+    const historyDir = path.join(docDir, ".cmd_history");
     ensureDirectoryExists(historyDir);
 
     // Create a timestamp-based filename
-    const timestamp = new Date().toISOString()
-      .replace(/:/g, '-')
-      .replace(/\..+Z/, '');
+    const timestamp = new Date()
+      .toISOString()
+      .replace(/:/g, "-")
+      .replace(/\..+Z/, "");
     const filename = `history_${timestamp}_${action}.md`;
     const filePath = path.join(historyDir, filename);
 
@@ -132,20 +136,20 @@ export function saveChatHistory(
     content += `- **Timestamp:** ${new Date().toISOString()}\n`;
     content += `- **Action:** ${action}\n`;
     content += `- **Document:** ${document.fileName}\n\n`;
-    
+
     // Add System Prompt if provided
     if (systemPrompt) {
       content += `## System Prompt\n\n\`\`\`\n${systemPrompt}\n\`\`\`\n\n`;
     }
-    
+
     content += `## Messages\n\n`;
     messages.forEach((msg, index) => {
       content += `### ${index + 1}. ${msg.role.toUpperCase()}\n\n`;
-      
-      msg.content.forEach(item => {
-        if (item.type === 'text') {
+
+      msg.content.forEach((item) => {
+        if (item.type === "text") {
           content += `\`\`\`\n${item.value}\n\`\`\`\n\n`;
-        } else if (item.type === 'image') {
+        } else if (item.type === "image") {
           content += `[Image: ${item.path}]\n\n`;
         }
       });
@@ -158,12 +162,12 @@ export function saveChatHistory(
 
     // Write to file
     writeFile(filePath, content);
-    
+
     return filePath;
   } catch (error) {
-    console.error('Error saving chat history:', error);
+    console.error("Error saving chat history:", error);
     // Don't throw - we want this to be non-blocking
-    return '';
+    return "";
   }
 }
 
@@ -172,22 +176,25 @@ export function saveChatHistory(
  * @param historyFilePath Path to the history file
  * @param content Content to append
  */
-export function appendToChatHistory(historyFilePath: string, content: string): void {
+export function appendToChatHistory(
+  historyFilePath: string,
+  content: string,
+): void {
   try {
     if (!historyFilePath || !fileExists(historyFilePath)) {
       return;
     }
-    
+
     // Read existing content
-    const existingContent = readFileAsText(historyFilePath) || '';
-    
+    const existingContent = readFileAsText(historyFilePath) || "";
+
     // Append new content (raw tokens)
     const updatedContent = existingContent + content;
-    
+
     // Write back to file
     writeFile(historyFilePath, updatedContent);
   } catch (error) {
-    console.error('Error appending to chat history:', error);
+    console.error("Error appending to chat history:", error);
     // Don't throw - we want this to be non-blocking
   }
 }
