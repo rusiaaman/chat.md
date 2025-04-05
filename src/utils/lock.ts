@@ -4,7 +4,7 @@
 export class Lock {
   private isLocked: boolean = false;
   private queue: Array<() => void> = [];
-  
+
   /**
    * Acquire the lock - will wait if already locked
    * Returns Promise that resolves when lock is acquired
@@ -14,12 +14,12 @@ export class Lock {
       this.isLocked = true;
       return;
     }
-    
-    return new Promise<void>(resolve => {
+
+    return new Promise<void>((resolve) => {
       this.queue.push(resolve);
     });
   }
-  
+
   /**
    * Release the lock and notify next waiter if any
    */

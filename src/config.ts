@@ -1,11 +1,11 @@
-import * as vscode from 'vscode';
+import * as vscode from "vscode";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 
 /**
  * API Configuration interface
  */
 export interface ApiConfig {
-  type: 'anthropic' | 'openai';
+  type: "anthropic" | "openai";
   apiKey: string;
   model_name?: string;
   base_url?: string;
@@ -21,8 +21,10 @@ export type ApiConfigs = Record<string, ApiConfig>;
  * @param mcpGroupedTools Map where keys are server IDs and values are maps of tools from that server
  * @returns The system prompt string
  */
-export function generateToolCallingSystemPrompt(mcpGroupedTools: Map<string, Map<string, Tool>> = new Map()): string {
-  let mcpToolsDescription = '';
+export function generateToolCallingSystemPrompt(
+  mcpGroupedTools: Map<string, Map<string, Tool>> = new Map(),
+): string {
+  let mcpToolsDescription = "";
   let toolIndex = 1; // Overall tool index
 
   // Iterate through each server and its tools
@@ -30,11 +32,11 @@ export function generateToolCallingSystemPrompt(mcpGroupedTools: Map<string, Map
     if (serverToolMap.size === 0) {
       continue; // Skip servers with no tools
     }
-    
+
     mcpToolsDescription += `\n\n## Tools from server: ${serverId}\n`;
-    
+
     for (const tool of serverToolMap.values()) {
-      mcpToolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${tool.description || ''}
+      mcpToolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${tool.description || ""}
    Input Schema: 
    \`\`\`json
 ${JSON.stringify(tool.inputSchema, null, 2)}
@@ -45,7 +47,8 @@ ${JSON.stringify(tool.inputSchema, null, 2)}
   }
 
   // Return a different message if no tools are available
-  if (mcpGroupedTools.size === 0 || toolIndex === 1) { // Check if map is empty or no tools were added
+  if (mcpGroupedTools.size === 0 || toolIndex === 1) {
+    // Check if map is empty or no tools were added
     return `The assistant is called 'Chatmd'. 
 
 Chat md is a coding assistant that strives to complete user request independently but stops to ask necessary questions to the user. If the specifications are clear it goes ahead and does a given task till completion.
@@ -64,9 +67,9 @@ Chatmd provides the shortest answer it can to the person’s message, while resp
 Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses on key info instead of trying to be comprehensive. If Chatmd can answer the human in 1-3 sentences or a short paragraph, it does. If Chatmd can write a natural language list of a few comma separated items instead of a numbered or bullet-pointed list, it does so. Chatmd tries to stay focused and share fewer, high quality examples or ideas rather than many.
 
 `;
-   }
- 
-   return `The assistant is called 'Chatmd'. 
+  }
+
+  return `The assistant is called 'Chatmd'. 
 
 Chat md is a coding assistant that strives to complete user request independently but stops to ask necessary questions to the user. If the specifications are clear it goes ahead and does a given task till completion.
 
@@ -114,20 +117,22 @@ Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses
 /**
  * Default system prompt (now generated with an empty map)
  */
-export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt(new Map());
+export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt(
+  new Map(),
+);
 
 /**
  * Gets all API configurations
  */
 export function getApiConfigs(): ApiConfigs {
-  return vscode.workspace.getConfiguration().get('chatmd.apiConfigs') || {};
+  return vscode.workspace.getConfiguration().get("chatmd.apiConfigs") || {};
 }
 
 /**
  * Gets the currently selected configuration name
  */
 export function getSelectedConfigName(): string | undefined {
-  return vscode.workspace.getConfiguration().get('chatmd.selectedConfig');
+  return vscode.workspace.getConfiguration().get("chatmd.selectedConfig");
 }
 
 /**
@@ -138,7 +143,7 @@ export function getSelectedConfig(): ApiConfig | undefined {
   if (!configName) {
     return undefined;
   }
-  
+
   const configs = getApiConfigs();
   return configs[configName];
 }
@@ -147,25 +152,28 @@ export function getSelectedConfig(): ApiConfig | undefined {
  * Sets the selected configuration
  */
 export async function setSelectedConfig(configName: string): Promise<void> {
-  await vscode.workspace.getConfiguration().update(
-    'chatmd.selectedConfig',
-    configName,
-    vscode.ConfigurationTarget.Global
-  );
+  await vscode.workspace
+    .getConfiguration()
+    .update(
+      "chatmd.selectedConfig",
+      configName,
+      vscode.ConfigurationTarget.Global,
+    );
 }
 
 /**
  * Adds or updates an API configuration
  */
-export async function setApiConfig(name: string, config: ApiConfig): Promise<void> {
+export async function setApiConfig(
+  name: string,
+  config: ApiConfig,
+): Promise<void> {
   const configs = getApiConfigs();
   configs[name] = config;
-  
-  await vscode.workspace.getConfiguration().update(
-    'chatmd.apiConfigs',
-    configs,
-    vscode.ConfigurationTarget.Global
-  );
+
+  await vscode.workspace
+    .getConfiguration()
+    .update("chatmd.apiConfigs", configs, vscode.ConfigurationTarget.Global);
 }
 
 /**
@@ -175,19 +183,17 @@ export async function removeApiConfig(name: string): Promise<boolean> {
   const configs = getApiConfigs();
   if (configs[name]) {
     delete configs[name];
-    
-    await vscode.workspace.getConfiguration().update(
-      'chatmd.apiConfigs',
-      configs,
-      vscode.ConfigurationTarget.Global
-    );
-    
+
+    await vscode.workspace
+      .getConfiguration()
+      .update("chatmd.apiConfigs", configs, vscode.ConfigurationTarget.Global);
+
     // If the removed config was selected, clear the selection
     const selectedConfig = getSelectedConfigName();
     if (selectedConfig === name) {
-      await setSelectedConfig('');
+      await setSelectedConfig("");
     }
-    
+
     return true;
   }
   return false;
@@ -199,9 +205,11 @@ export async function removeApiConfig(name: string): Promise<boolean> {
 export function getProvider(): string {
   const config = getSelectedConfig();
   if (!config) {
-    throw new Error('No API configuration selected. Please select a configuration first.');
+    throw new Error(
+      "No API configuration selected. Please select a configuration first.",
+    );
   }
-  
+
   return config.type;
 }
 
@@ -211,9 +219,11 @@ export function getProvider(): string {
 export function getApiKey(): string {
   const config = getSelectedConfig();
   if (!config) {
-    throw new Error('No API configuration selected. Please select a configuration first.');
+    throw new Error(
+      "No API configuration selected. Please select a configuration first.",
+    );
   }
-  
+
   return config.apiKey;
 }
 
@@ -223,9 +233,11 @@ export function getApiKey(): string {
 export function getModelName(): string | undefined {
   const config = getSelectedConfig();
   if (!config) {
-    throw new Error('No API configuration selected. Please select a configuration first.');
+    throw new Error(
+      "No API configuration selected. Please select a configuration first.",
+    );
   }
-  
+
   return config.model_name;
 }
 
@@ -236,8 +248,12 @@ export function getModelName(): string | undefined {
 export function getBaseUrl(): string | undefined {
   const config = getSelectedConfig();
   if (!config) {
-    throw new Error('No API configuration selected. Please select a configuration first.');
+    throw new Error(
+      "No API configuration selected. Please select a configuration first.",
+    );
   }
-  
-  return config.base_url && config.base_url.trim() !== '' ? config.base_url : undefined;
+
+  return config.base_url && config.base_url.trim() !== ""
+    ? config.base_url
+    : undefined;
 }
