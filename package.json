@@ -2,7 +2,7 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "AmanRusia",
   "license": "MIT",
   "icon": "./images/icon.png",
@@ -168,7 +168,7 @@
       },
       {
         "command": "filechat.newContextChat",
-        "key": "alt+cmd+'",
+        "key": "ctrl+alt+'",
         "mac": "alt+cmd+'"
       }
     ]
