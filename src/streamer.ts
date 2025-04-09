@@ -59,11 +59,17 @@ export class StreamingService {
    * This can be called by external components holding a reference to the streamer
    */
   public cancelStreaming(streamer: StreamerState): void {
-    if (streamer && streamer.isActive) {
+    if (streamer) {
       log("Explicitly cancelling active streamer");
+      // Set to inactive regardless of current state to ensure cancellation works
+      // during retries, waiting periods, or normal streaming
       streamer.isActive = false;
-      // Hide streaming status
+      
+      // Immediately hide streaming status
       statusManager.hideStreamingStatus();
+      
+      // Notify user that cancellation request was processed
+      vscode.window.showInformationMessage("Streaming cancellation initiated");
     }
   }
 
@@ -187,8 +193,9 @@ export class StreamingService {
           let tokenCount = 0;
 
           for await (const tokens of stream) {
+            // Check streamer status at the beginning of each token processing
             if (!streamer.isActive) {
-              log("Streamer no longer active, stopping stream");
+              log("Streamer no longer active, stopping stream immediately");
               break;
             }
 
@@ -377,7 +384,7 @@ export class StreamingService {
         } catch (error) {
           // Check if this is a server error or rate limit error that we should retry
           if (this.isServerError(error)) {
-            if (retryAttempt < maxRetries) {
+            if (retryAttempt < maxRetries && streamer.isActive) {
               retryAttempt++;
               const backoffDelay = Math.min(
                 1000 * Math.pow(2, retryAttempt),
@@ -396,17 +403,58 @@ export class StreamingService {
               );
               
               // Show different messages based on error type
+              const message = `${isRateLimit ? "Rate limit reached" : "Server error"}. Retrying in ${backoffDelay / 1000} seconds...`;
               vscode.window.showInformationMessage(
-                `${isRateLimit ? "Rate limit reached" : "Server error"}. Retrying in ${backoffDelay / 1000} seconds...`,
+                message + " (Click 'Cancel Streaming' to abort)",
               );
               
-              await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+              // Use a cancellable timeout instead of Promise
+              let timeoutCancelled = false;
+              const timeoutPromise = new Promise<void>((resolve) => {
+                const timeout = setTimeout(() => {
+                  if (!timeoutCancelled) {
+                    resolve();
+                  }
+                }, backoffDelay);
+                
+                // Set up a watcher that checks if streaming was cancelled during wait
+                const checkInterval = setInterval(() => {
+                  if (!streamer.isActive) {
+                    clearTimeout(timeout);
+                    clearInterval(checkInterval);
+                    timeoutCancelled = true;
+                    resolve(); // Resolve immediately to continue execution flow
+                  }
+                }, 100); // Check every 100ms
+                
+                // Clean up interval when timeout completes
+                timeout.unref(); // Allow Node.js to exit if this is the only active timer
+                timeout.ref();   // Ensure the timer runs
+                
+                // Cleanup function
+                return () => {
+                  clearTimeout(timeout);
+                  clearInterval(checkInterval);
+                };
+              });
+              
+              await timeoutPromise;
+              
+              // Check if streaming was cancelled during the timeout
+              if (!streamer.isActive) {
+                log("Streaming was cancelled during retry backoff, aborting retry attempts");
+                break; // Exit the retry loop
+              }
+              
               continue; // Try again with backoff
+            } else if (!streamer.isActive) {
+              log("Streaming is no longer active, aborting retry attempts");
+              break; // Exit the retry loop
             }
           }
 
           // Check if it's a max tokens error
-          if (this.isMaxTokensError(error)) {
+          if (this.isMaxTokensError(error) && streamer.isActive) {
             maxTokensReached = true;
             log(
               `🚨 Max tokens reached: ${error}. Will restart stream automatically.`,
@@ -419,8 +467,14 @@ export class StreamingService {
 
             // Show notification to user
             vscode.window.showInformationMessage(
-              "Maximum token limit reached. Restarting stream automatically...",
+              "Maximum token limit reached. Restarting stream automatically... (Click 'Cancel Streaming' to abort)",
             );
+            
+            // Check if streaming was cancelled while showing the notification
+            if (!streamer.isActive) {
+              log("Streaming was cancelled before max tokens restart, aborting");
+              break; // Exit the retry loop
+            }
 
             // Create an updated messages array that includes the current partial assistant response
             const updatedMessages = [...messages];
@@ -476,20 +530,25 @@ export class StreamingService {
             // Add a small delay before restarting to ensure clean state
             await new Promise((resolve) => setTimeout(resolve, 100));
 
-            // Re-call the same method to restart the stream with updated messages
-            try {
-              log(
-                `🔄 RESTARTING STREAM after max tokens error with updated context`,
-              );
-              await this.streamResponse(
-                updatedMessages,
-                streamer,
-                systemPrompt,
-              );
-              return; // If successful, exit this function
-            } catch (retryError) {
-              log(`❌ Error restarting stream after max tokens: ${retryError}`);
-              // Fall through to general error handling
+            // Re-call the same method to restart the stream with updated messages,
+            // but only if streaming is still active
+            if (streamer.isActive) {
+              try {
+                log(
+                  `🔄 RESTARTING STREAM after max tokens error with updated context`,
+                );
+                await this.streamResponse(
+                  updatedMessages,
+                  streamer,
+                  systemPrompt,
+                );
+                return; // If successful, exit this function
+              } catch (retryError) {
+                log(`❌ Error restarting stream after max tokens: ${retryError}`);
+                // Fall through to general error handling
+              }
+            } else {
+              log("Streaming cancelled during token handling, aborting restart");
             }
           }
 
