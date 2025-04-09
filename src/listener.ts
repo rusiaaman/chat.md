@@ -389,49 +389,57 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       contentToInsert = rawResult;
       log("Inserting preformatted error message.");
     } else {
-      // Process the raw tool result
-      const lines = rawResult.split("\n");
-      log(`Tool result has ${lines.length} lines.`);
-
-      if (lines.length > lineCountThreshold) {
-        log(`Result exceeds ${lineCountThreshold} lines, saving to file.`);
-        try {
-          const docDir = path.dirname(this.document.uri.fsPath);
-          const assetsDir = path.join(docDir, "cmdassets");
-          ensureDirectoryExists(assetsDir);
-
-          const timestamp = new Date()
-            .toISOString()
-            .replace(/:/g, "")
-            .replace(/-/g, "")
-            .replace("T", "-")
-            .replace(/\..+Z/, "");
-          const randomString = Math.random().toString(36).substring(2, 8);
-          const filename = `tool-result-${timestamp}-${randomString}.txt`;
-          const relativeFilePath = path.join("cmdassets", filename);
-          const fullFilePath = path.join(assetsDir, filename);
-
-          writeFile(fullFilePath, rawResult);
-          log(`Saved tool result to: ${fullFilePath}`);
-
-          const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, "/")})`; // Ensure forward slashes for Markdown
-          contentToInsert = formatToolResult(markdownLink); // Wrap the link in result tags
-          log(`Inserting Markdown link: ${markdownLink}`);
-        } catch (fileError) {
-          log(`Error saving tool result to file: ${fileError}`);
-          // Fallback: insert truncated result with error message
-          const truncatedResult = lines.slice(0, lineCountThreshold).join("\n");
-          contentToInsert = formatToolResult(
-            `${truncatedResult}\n...\n[Error: Failed to save full result to file - ${fileError}]`,
-          );
-          log(
-            "Inserting truncated result with error message due to file save failure.",
-          );
-        }
-      } else {
-        // Result is small enough, insert directly
+      // Check if the result contains image markdown links (from MCP tool image output)
+      const containsImageMarkdown = rawResult.includes("![Tool generated image]");
+      
+      if (containsImageMarkdown) {
+        log("Tool result contains image markdown, preserving it as-is.");
         contentToInsert = formatToolResult(rawResult);
-        log("Inserting full tool result directly.");
+      } else {
+        // Process the raw tool result as before (for text-only content)
+        const lines = rawResult.split("\n");
+        log(`Tool result has ${lines.length} lines.`);
+
+        if (lines.length > lineCountThreshold) {
+          log(`Result exceeds ${lineCountThreshold} lines, saving to file.`);
+          try {
+            const docDir = path.dirname(this.document.uri.fsPath);
+            const assetsDir = path.join(docDir, "cmdassets");
+            ensureDirectoryExists(assetsDir);
+
+            const timestamp = new Date()
+              .toISOString()
+              .replace(/:/g, "")
+              .replace(/-/g, "")
+              .replace("T", "-")
+              .replace(/\..+Z/, "");
+            const randomString = Math.random().toString(36).substring(2, 8);
+            const filename = `tool-result-${timestamp}-${randomString}.txt`;
+            const relativeFilePath = path.join("cmdassets", filename);
+            const fullFilePath = path.join(assetsDir, filename);
+
+            writeFile(fullFilePath, rawResult);
+            log(`Saved tool result to: ${fullFilePath}`);
+
+            const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, "/")})`; // Ensure forward slashes for Markdown
+            contentToInsert = formatToolResult(markdownLink); // Wrap the link in result tags
+            log(`Inserting Markdown link: ${markdownLink}`);
+          } catch (fileError) {
+            log(`Error saving tool result to file: ${fileError}`);
+            // Fallback: insert truncated result with error message
+            const truncatedResult = lines.slice(0, lineCountThreshold).join("\n");
+            contentToInsert = formatToolResult(
+              `${truncatedResult}\n...\n[Error: Failed to save full result to file - ${fileError}]`,
+            );
+            log(
+              "Inserting truncated result with error message due to file save failure.",
+            );
+          }
+        } else {
+          // Result is small enough, insert directly
+          contentToInsert = formatToolResult(rawResult);
+          log("Inserting full tool result directly.");
+        }
       }
     }
 
@@ -482,14 +490,31 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     // Create an edit that replaces the empty content with the result and adds a new assistant block after
     // Determine whether to use code fences based on content type
     let isMarkdownLink =
-      rawResult.split("\n").length > lineCountThreshold &&
-      contentToInsert.includes("[Tool Result]");
+      (rawResult.split("\n").length > lineCountThreshold &&
+      contentToInsert.includes("[Tool Result]")) || 
+      contentToInsert.includes("![Tool generated image]");
 
-    // If it's a markdown link to a file, don't wrap in code fences so it's clickable
-    // Otherwise, wrap in code fences for better display of code/text content
-    let textToInsert = isMarkdownLink
-      ? `\n${contentToInsert.trim()}\n\n# %% assistant\n`
-      : `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
+    // Determine how to handle the content:
+    // 1. If it contains multiple images, we need special handling to ensure proper rendering
+    // 2. If it's a markdown link or contains image markdown, don't wrap in code fences
+    // 3. Otherwise, wrap in code fences for better display of code/text content
+    const hasMultipleImages = contentToInsert.match(/!\[Tool generated image \d+\]/g)?.length > 1;
+    
+    let textToInsert;
+    if (hasMultipleImages) {
+      // For multiple images, keep the tool_result tags but don't add code fences
+      // This ensures images are properly displayed with their numbering
+      textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
+      log(`Inserting content with multiple numbered images (${hasMultipleImages} images detected)`);
+    } else if (isMarkdownLink) {
+      // For regular markdown links or single images
+      textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
+      log(`Inserting content with markdown links/images (no code fences)`);
+    } else {
+      // For regular text content, wrap in code fences
+      textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
+      log(`Inserting plain text content with code fences`);
+    }
     // If the block wasn't just the marker but had whitespace, adjust insertion
     const existingContent = text.substring(insertOffset, actualEndOffset);
     if (existingContent.trim() !== "") {

@@ -131,7 +131,6 @@ export class StreamingService {
 
           // Use the provided system prompt
           log(`Using provided system prompt (${systemPrompt.length} chars)`);
-          log(`FULL SYSTEM PROMPT:\n${systemPrompt}`);
 
           // Start streaming completion based on provider, passing document for file path resolution
           let stream;

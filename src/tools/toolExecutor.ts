@@ -50,10 +50,34 @@ function saveToolCallLog(
 export async function executeToolCall(
   toolName: string,
   params: Record<string, string>,
-  document?: vscode.TextDocument,
+  document?: vscode.TextDocument | null,
   rawToolCall?: string,
 ): Promise<string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
+  log(`Document passed to executeToolCall: ${document ? 'yes' : 'no'}`);
+  
+  // Additional debug info for document
+  if (document) {
+    log(`Document details: fileName=${document.fileName}, languageId=${document.languageId}`);
+  } else {
+    log(`WARNING: No document context available for tool execution`);
+  }
+
+  // Special handling for ReadImage tool which requires document context
+  if (toolName.includes("ReadImage")) {
+    if (!document) {
+      log(`ERROR: ReadImage tool cannot be executed without document context`);
+      return `Error: ReadImage tool requires document context to resolve file paths. The current chat document must be saved before using this tool.`;
+    }
+    
+    // Validate file_path parameter
+    if (!params.file_path) {
+      log(`ERROR: ReadImage tool called without file_path parameter`);
+      return `Error: ReadImage tool requires a file_path parameter`;
+    }
+    
+    log(`ReadImage with file_path=${params.file_path} and document context from ${document.fileName}`);
+  }
 
   // Save the parsed tool call to a log file if we have the raw XML
   if (rawToolCall) {
@@ -62,7 +86,8 @@ export async function executeToolCall(
 
   // Execute through MCP
   try {
-    const result = await mcpClientManager.executeToolCall(toolName, params);
+    log(`Calling mcpClientManager.executeToolCall with document=${document ? 'provided' : 'not provided'}`);
+    const result = await mcpClientManager.executeToolCall(toolName, params, document);
     if (
       result &&
       !result.startsWith("Error: Tool") &&

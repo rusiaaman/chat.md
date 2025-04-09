@@ -101,6 +101,7 @@ After calling a tool, wait for the result.
 
 Tool usage guidelines:
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.
+- You don't need to quote characters like "<", ">", "&", etc. in parameter values.
 - You should use CDATA tag in the parameter value if it contains conflicting XML tags only, not for special characters.
 - Make sure to use correct parameter names with quotes (name="paramName")
 - In <param> value for scalar parameters (string, number, boolean), write values directly without quotes

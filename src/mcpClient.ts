@@ -4,6 +4,9 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
+import * as path from "path";
+import * as fs from "fs";
+import * as vscode from "vscode";
 
 export interface McpServerConfig {
   // For both transport types
@@ -361,7 +364,28 @@ export class McpClientManager {
   public async executeToolCall(
     fullName: string,
     params: Record<string, string>,
+    document?: vscode.TextDocument | null,
   ): Promise<string> {
+    log(`executeToolCall called with document=${document ? 'provided' : 'not provided'}`);
+    
+    // Additional check for ReadImage tool specifically
+    if (fullName.includes("ReadImage")) {
+      log(`SPECIAL HANDLING FOR ReadImage TOOL:`);
+      log(`- Document provided: ${document ? 'YES' : 'NO'}`);
+      log(`- Params: ${JSON.stringify(params)}`);
+      
+      // Check if we have a file_path parameter
+      if (params.file_path) {
+        log(`- file_path parameter: ${params.file_path}`);
+        
+        // Check if document is available to resolve relative paths
+        if (!document) {
+          log(`WARNING: Document not available to resolve relative file path for ReadImage tool`);
+          return `Error: Cannot resolve relative file path "${params.file_path}" without document context`;
+        }
+      }
+    }
+    
     // Parse the fullName to get serverName and actualToolName
     const dotIndex = fullName.indexOf(".");
     let serverName: string | undefined = undefined;
@@ -376,7 +400,7 @@ export class McpClientManager {
         `Warning: Tool name "${fullName}" does not follow the expected "serverName.toolName" format. Falling back to legacy lookup.`,
       );
       // Fallback: Use the old method of iterating through all servers
-      return this.executeToolCallLegacyFallback(fullName, params);
+      return this.executeToolCallLegacyFallback(fullName, params, document);
     }
 
     // --- New Logic using parsed serverName and actualToolName ---
@@ -396,17 +420,35 @@ export class McpClientManager {
 
     // Execute the tool using the specific client and actual tool name
     try {
+      // Make sure we pass the document parameter to _executeToolOnClient
       return await this._executeToolOnClient(
         client,
         serverName,
         actualToolName,
         tool,
         params,
+        document,
       );
     } catch (error) {
       log(
         `Error executing tool ${actualToolName} on server ${serverName}: ${error}`,
       );
+      
+      // More detailed error logging for debugging
+      if (error instanceof Error) {
+        log(`Error type: ${error.name}`);
+        log(`Error message: ${error.message}`);
+        if (error.stack) {
+          log(`Error stack: ${error.stack}`);
+        }
+        
+        // Look for specific "document is not defined" errors
+        if (error.message.includes("document is not defined")) {
+          log(`CRITICAL: 'document is not defined' error detected for tool ${actualToolName}`);
+          log(`This usually happens when trying to resolve file paths without document context`);
+        }
+      }
+      
       return `Error executing tool ${actualToolName}: ${error}`;
     }
   }
@@ -415,6 +457,7 @@ export class McpClientManager {
   private async executeToolCallLegacyFallback(
     name: string,
     params: Record<string, string>,
+    document?: vscode.TextDocument | null,
   ): Promise<string> {
     log(`Executing legacy fallback for tool "${name}"`);
     // Find which client has this tool and execute it
@@ -436,6 +479,7 @@ export class McpClientManager {
           name,
           tool,
           params,
+          document,
         );
       } catch (error) {
         log(
@@ -760,6 +804,7 @@ export class McpClientManager {
     toolName: string,
     tool: Tool,
     params: Record<string, string>,
+    document?: vscode.TextDocument | null,
   ): Promise<string> {
     try {
       log(
@@ -806,14 +851,24 @@ export class McpClientManager {
         arguments: processedParams,
       });
 
-      // Convert result to string format
+      // Process result content which may include both text and images
       if (result && result.content && Array.isArray(result.content)) {
-        const resultText = result.content
-          .filter((item: any) => item.type === "text")
-          .map((item: any) => item.text)
-          .join("\n");
+        // Check if there are any image items in the content
+        const hasImageContent = result.content.some((item: any) => item.type === "image");
+        
+        if (hasImageContent) {
+          // If there are images, process the mixed content using a special handler
+          // Make sure we pass the document parameter to processMixedToolResult
+          return this.processMixedToolResult(result.content, serverId, toolName, document);
+        } else {
+          // Process text-only content as before
+          const resultText = result.content
+            .filter((item: any) => item.type === "text")
+            .map((item: any) => item.text)
+            .join("\n");
 
-        return resultText;
+          return resultText;
+        }
       }
 
       return "Error: Invalid result format from MCP tool";
@@ -821,5 +876,139 @@ export class McpClientManager {
       // Logged by the caller, rethrow to be handled there
       throw error;
     }
+    }
+  
+    /**
+     * Process tool result that contains mixed content (text and images)
+     * Saves images to disk and returns a formatted result with markdown links
+     * @param content The content array from the tool result
+     * @param serverId The server ID that executed the tool
+     * @param toolName The name of the tool that was executed
+     * @param document The current document (for resolving relative paths)
+     * @returns A formatted string with text content and markdown links to saved images
+     */
+    private processMixedToolResult(
+      content: any[],
+      serverId: string,
+      toolName: string,
+      document?: vscode.TextDocument | null
+    ): string {
+      try {
+        log(`Processing mixed content result from tool ${toolName} on server ${serverId}`);
+        
+        // Create cmdassets directory:
+        // If we have a document, create directory relative to it
+        // Otherwise fall back to extension root
+        let assetsDir;
+        let relativePath;
+        
+        if (document) {
+          // Get directory of the current document and create cmdassets within it
+          const docDir = path.dirname(document.uri.fsPath);
+          assetsDir = path.join(docDir, "cmdassets");
+          relativePath = "cmdassets"; // Relative to the chat document
+          log(`Using document-relative assets directory: ${assetsDir}`);
+        } else {
+          // Fallback to extension root if no document provided
+          const rootDir = path.resolve(__dirname, "..", "..");
+          assetsDir = path.join(rootDir, "samples", "cmdassets");
+          relativePath = path.join("samples", "cmdassets");
+          log(`No document provided, using extension root assets directory: ${assetsDir}`);
+        }
+        
+        if (!fs.existsSync(assetsDir)) {
+          fs.mkdirSync(assetsDir, { recursive: true });
+          log(`Created assets directory: ${assetsDir}`);
+        }
+        
+        // Process each content item
+        const processedParts: string[] = [];
+        // Track the number of images to provide sequential numbering
+        let imageCount = 0;
+        // Track if the previous item was text to optimize spacing
+        let prevItemWasText = false;
+        
+        for (const item of content) {
+          if (item.type === "text") {
+            // Add text content directly
+            // If previous item was also text, we may want to preserve some formatting
+            if (prevItemWasText && processedParts.length > 0) {
+              // If the text starts with a list, heading, or other markdown structure, 
+              // we need a paragraph break
+              if (/^[#\-\*\d]/.test(item.text.trimStart())) {
+                processedParts.push(item.text);
+              } else {
+                // For continuing text, append to the previous text with just a space in between
+                processedParts[processedParts.length - 1] += "\n\n" + item.text;
+              }
+            } else {
+              processedParts.push(item.text);
+            }
+            prevItemWasText = true;
+          } 
+          else if (item.type === "image" && item.data && item.mimeType) {
+            try {
+              // Increment image counter
+              imageCount++;
+              
+              // For image content, save the image to disk
+              const date = new Date();
+              const timestamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}${String(date.getSeconds()).padStart(2, "0")}`;
+              const randomSuffix = Math.random().toString(36).substring(2, 8);
+              
+              // Determine file extension based on MIME type
+              let fileExtension = ".png"; // Default
+              if (item.mimeType === "image/jpeg" || item.mimeType === "image/jpg") {
+                fileExtension = ".jpg";
+              } else if (item.mimeType === "image/gif") {
+                fileExtension = ".gif";
+              } else if (item.mimeType === "image/webp") {
+                fileExtension = ".webp";
+              }
+              
+              const filename = `tool-image-${timestamp}-${randomSuffix}${fileExtension}`;
+              const imagePath = path.join(assetsDir, filename);
+              
+              // Decode base64 data and save to file
+              const imageBuffer = Buffer.from(item.data, 'base64');
+              fs.writeFileSync(imagePath, imageBuffer);
+              
+              log(`Saved image #${imageCount} from tool result to: ${imagePath}`);
+              
+              // Create a markdown link to the image using the relative path with sequential numbering
+              const relativeImagePath = path.join(relativePath, filename).replace(/\\/g, "/");
+              // If there are multiple images, add numbering to the alt text
+              const altText = content.filter(i => i.type === "image").length > 1 
+                ? `Tool generated image ${imageCount}` 
+                : `Tool generated image`;
+              const markdownLink = `![${altText}](${relativeImagePath})`;
+              
+              // Add the markdown link to the processed parts
+              processedParts.push(markdownLink);
+              prevItemWasText = false;
+            } catch (imageError) {
+              log(`Error saving image from tool result: ${imageError}`);
+              processedParts.push(`[Error saving image ${imageCount}: ${imageError}]`);
+              prevItemWasText = true; // Error message is text
+            }
+          }
+          else if (item.type === "image") {
+            // Image without required data
+            imageCount++; // Still count it for consistency
+            log(`Image content missing required fields: ${JSON.stringify(item)}`);
+            processedParts.push(`[Image ${imageCount} data invalid or missing]`);
+            prevItemWasText = true; // Error message is text
+          }
+        }
+        
+        // Intelligently join the content:
+        // This approach maintains proper markdown formatting while avoiding excessive spacing
+        const result = processedParts.join("\n\n");
+        log(`Processed ${processedParts.length} content items (${imageCount} images)`);
+        return result;
+      } catch (error) {
+        log(`Error processing mixed tool result: ${error}`);
+        return `Error processing tool result: ${error}`;
+      }
+    }
   }
-}
