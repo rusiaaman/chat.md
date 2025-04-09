@@ -112,6 +112,11 @@ export class AnthropicClient {
           vscode.window.showErrorMessage(
             `Anthropic API Server Error (${response.statusCode}): Will automatically retry`,
           );
+        } else if (response.statusCode === 429) {
+          // 429 errors will be retried by the streamer
+          vscode.window.showErrorMessage(
+            `Anthropic API Rate Limit (${response.statusCode}): Will automatically retry with backoff`,
+          );
         } else if (
           errorData.includes("max_tokens") ||
           errorData.includes("token limit")

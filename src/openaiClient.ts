@@ -146,9 +146,23 @@ export class OpenAIClient {
         }
         const errorMessage = `OpenAI API request failed with status ${response.statusCode}: ${errorData}`;
         log(errorMessage);
-        vscode.window.showErrorMessage(
-          `OpenAI API Error (${response.statusCode}): ${errorData || "Failed to get error details"}`,
-        );
+        
+        if (response.statusCode >= 500) {
+          // 5xx errors will be retried by the streamer
+          vscode.window.showErrorMessage(
+            `OpenAI API Server Error (${response.statusCode}): Will automatically retry`,
+          );
+        } else if (response.statusCode === 429) {
+          // 429 errors will be retried by the streamer
+          vscode.window.showErrorMessage(
+            `OpenAI API Rate Limit (${response.statusCode}): Will automatically retry with backoff`,
+          );
+        } else {
+          vscode.window.showErrorMessage(
+            `OpenAI API Error (${response.statusCode}): ${errorData || "Failed to get error details"}`,
+          );
+        }
+        
         throw new Error(errorMessage);
       }
 

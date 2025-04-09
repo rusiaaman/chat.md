@@ -87,7 +87,8 @@ export class StreamingService {
   }
 
   /**
-   * Check if an error is a server error (5xx)
+   * Check if an error is a server error (5xx) or a rate limit error (429)
+   * or any other error that would benefit from retrying
    */
   private isServerError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
@@ -96,9 +97,15 @@ export class StreamingService {
     return (
       /^5\d{2}/.test(message) ||
       message.includes("status 5") ||
+      /^429/.test(message) ||
+      message.includes("status 429") ||
+      message.includes("Too Many Requests") ||
+      message.includes("rate limit") ||
+      message.includes("RateLimitError") ||
       message.includes("ECONNRESET") ||
       message.includes("socket hang up") ||
-      message.includes("network error")
+      message.includes("network error") ||
+      message.includes("timeout")
     );
   }
 
@@ -368,7 +375,7 @@ export class StreamingService {
             log(`Note: Low token count (${tokenCount}) for completed stream`);
           }
         } catch (error) {
-          // Check if this is a server error that we should retry
+          // Check if this is a server error or rate limit error that we should retry
           if (this.isServerError(error)) {
             if (retryAttempt < maxRetries) {
               retryAttempt++;
@@ -376,12 +383,23 @@ export class StreamingService {
                 1000 * Math.pow(2, retryAttempt),
                 32000,
               );
+              
+              // Determine if this is a rate limit error
+              const isRateLimit = error instanceof Error && 
+                (error.message.includes("429") || 
+                 error.message.includes("Too Many Requests") || 
+                 error.message.includes("rate limit"));
+              
+              // Log with appropriate error type
               log(
-                `Server error: ${error}. Retrying in ${backoffDelay}ms (attempt ${retryAttempt}/${maxRetries})`,
+                `${isRateLimit ? "Rate limit" : "Server"} error: ${error}. Retrying in ${backoffDelay}ms (attempt ${retryAttempt}/${maxRetries})`,
               );
+              
+              // Show different messages based on error type
               vscode.window.showInformationMessage(
-                `Server error. Retrying in ${backoffDelay / 1000} seconds...`,
+                `${isRateLimit ? "Rate limit reached" : "Server error"}. Retrying in ${backoffDelay / 1000} seconds...`,
               );
+              
               await new Promise((resolve) => setTimeout(resolve, backoffDelay));
               continue; // Try again with backoff
             }

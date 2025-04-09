@@ -243,7 +243,7 @@ export class McpClientManager {
         // Log transport details
         log(`Created SSE transport for ${serverId}`);
 
-        // Set up reconnection logic for SSE
+        // Set up reconnection logic for SSE with improved rate limit handling
         this.setupSSEReconnection(
           serverId,
           config,
