@@ -621,6 +621,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         tokens: [],
         isActive: true,
         historyFilePath, // Store the history file path in the streamer state
+        isHandlingToolCall: false, // Initialize with false
         cancel: () => streamingService.cancelStreaming(streamer),
       };
 

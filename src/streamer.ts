@@ -219,6 +219,9 @@ export class StreamingService {
                   "Detected completed tool call, will truncate at position " +
                     toolCallResult.endIndex,
                 );
+                
+                // Set flag to indicate we're handling a tool call
+                streamer.isHandlingToolCall = true;
 
                 try {
                   // Get the end index of the completed tool call
@@ -583,6 +586,20 @@ export class StreamingService {
         log(
           `Streaming finished (${maxTokensReached ? "max tokens reached" : "normal completion"}), marking streamer as inactive`,
         );
+        
+        // Add a new user block after the assistant response completes successfully
+        try {
+          // Only add user block if the streaming finished naturally (not due to a tool call)
+          if (!streamer.isHandlingToolCall) {
+            log('Adding new user block after completed assistant response');
+            this.appendNewUserBlock(streamer);
+          } else {
+            log('Not adding user block since streaming completed due to tool call');
+          }
+        } catch (error) {
+          log(`Error adding new user block: ${error}`);
+        }
+        
         streamer.isActive = false;
         // Hide streaming status when done
         statusManager.hideStreamingStatus();
@@ -784,6 +801,51 @@ export class StreamingService {
     }
 
     return false;
+  }
+
+  /**
+   * Appends a new user block after the assistant response has completed
+   */
+  private async appendNewUserBlock(streamer: StreamerState): Promise<void> {
+    await this.lock.acquire();
+    
+    try {
+      const text = this.document.getText();
+      const tokensSoFar = streamer.tokens.join("");
+      
+      // Find the last assistant block
+      const assistantMarkers = findAllAssistantBlocks(text);
+      
+      if (assistantMarkers.length === 0) {
+        log('No assistant blocks found, cannot add user block');
+        return;
+      }
+      
+      // Get the last assistant block
+      const lastMarker = assistantMarkers[assistantMarkers.length - 1];
+      
+      // Calculate position to insert the new user block
+      const insertOffset = lastMarker.contentStart + tokensSoFar.length;
+      const insertPosition = this.document.positionAt(insertOffset);
+      
+      // Create the edit to insert the new user block
+      const textToInsert = "\n\n# %% user\n";
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(this.document.uri, insertPosition, textToInsert);
+      
+      // Apply the edit
+      const applied = await vscode.workspace.applyEdit(edit);
+      
+      if (applied) {
+        log('Successfully added new user block after assistant response');
+      } else {
+        log('Failed to add new user block after assistant response');
+      }
+    } catch (error) {
+      log(`Error appending user block: ${error}`);
+    } finally {
+      this.lock.release();
+    }
   }
 
   private async updateDocumentWithTokens(

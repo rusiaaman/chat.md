@@ -56,6 +56,12 @@ export interface StreamerState {
   historyFilePath?: string;
 
   /**
+   * Flag to indicate whether the streamer is handling a tool call
+   * Used to determine whether to automatically add a user block after completion
+   */
+  isHandlingToolCall?: boolean;
+
+  /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.
    */
