@@ -92,7 +92,7 @@ Since chat.md files are just text, you have complete control over your AI intera
 2. Configure your API key(s):
    - Command Palette → "Add or Edit API Configuration"
 3. Create a new chat:
-   - `Opt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux) to create a new '.chat.md' file with workspace information populated in a user block.
+   - `Opt+Cmd+'` (Mac) / `Ctrl+k Ctrl+c` (Windows/Linux) to create a new '.chat.md' file with workspace information populated in a user block.
    - Or create any file with the `.chat.md` extension anywhere and open it in vscode.
 4. In a '# %% user' block write your query and press 'Shift + Enter' (or just create a new '# %% assistant' block and press enter)
 5. Watch the assistant stream its response and do any tool call.
@@ -110,7 +110,7 @@ Access these settings through VS Code's settings UI or settings.json:
 ## Keyboard Shortcuts
 
 - `Shift+Enter`: Insert next block (alternates between user/assistant)
-- `Opt+Cmd+'` (Mac) / `Alt+Ctrl+'` (Windows/Linux): Create new context chat or cancel existing streaming
+- `Opt+Cmd+'` (Mac) / `Ctrl+k Ctrl+c'` (Windows/Linux): Create new context chat or cancel existing streaming
 
 ## MCP Tool Integration
 

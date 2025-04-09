@@ -168,7 +168,7 @@
       },
       {
         "command": "filechat.newContextChat",
-        "key": "ctrl+alt+'",
+        "key": "ctrl+k ctrl+c",
         "mac": "alt+cmd+'"
       }
     ]
