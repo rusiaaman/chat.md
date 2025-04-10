@@ -68,9 +68,8 @@ export class McpClientManager {
       clearInterval(this.refreshInterval);
     }
 
-    log(
-      `Starting background tool refresh at ${this.refreshIntervalMs}ms intervals`,
-    );
+    // Only log once when starting the refresh interval
+    log(`Starting background tool refresh at ${this.refreshIntervalMs}ms intervals`);
     this.refreshInterval = setInterval(() => {
       this.refreshAllToolLists().catch((error) => {
         log(`Error in background tool refresh: ${error}`);
@@ -582,11 +581,6 @@ export class McpClientManager {
    * Refreshes tool lists for all connected servers
    */
   public async refreshAllToolLists(): Promise<void> {
-    const startTime = Date.now();
-    log(
-      `Background refresh: Refreshing tool lists for ${this.clients.size} servers`,
-    );
-
     // Track successes and failures
     let successCount = 0;
     let failCount = 0;
@@ -601,11 +595,6 @@ export class McpClientManager {
         log(`Failed to refresh tools for server ${serverId}: ${error}`);
       }
     }
-
-    const duration = Date.now() - startTime;
-    log(
-      `Background refresh: completed in ${duration}ms (${successCount} succeeded, ${failCount} failed)`,
-    );
   }
 
   /**
@@ -643,6 +632,7 @@ export class McpClientManager {
           // Update or add the tool
           this.tools.set(tool.name, tool);
           serverToolMap.set(tool.name, tool);
+          // Keep logs for tool changes
           log(`Updated tool: ${tool.name} from server ${serverId}`);
         }
       }
@@ -665,6 +655,7 @@ export class McpClientManager {
 
           if (!stillExists) {
             this.tools.delete(toolName);
+            // Keep logs for tool removals
             log(`Removed tool: ${toolName} from server ${serverId}`);
           }
         }
