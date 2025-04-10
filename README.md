@@ -101,11 +101,13 @@ Since chat.md files are just text, you have complete control over your AI intera
 
 Optionally you can start a markdown preview side by side to get live markdown preview of the chat which is more user friendly.
 ### Usage info
+- You can insert a `# %% system` block to append any new instructions to the system prompt.
 - You can manually add API configuration and MCP configuration in vscode settings. See [example settings](#example-vscode-settings)
 - Click on the live status bar "Chat.md streaming" icon in the bottom or run "chat.md: Cancel streaming" command to interrupt
 - You can also use the same shortcut "Opt+Cmd+'" to cancel streaming as for creating a new chat.
 - You can run command "Refresh MCP Tools" to reload all mcp servers. Then run "MCP Diagnostics" to see available mcp servers.
 - You can use "Select api configuration" command to switch between the API providers
+
 
 ## Configuration
 
