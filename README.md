@@ -12,7 +12,7 @@ Any '*.chat.md' file is now an AI agent hackable by you. Go crazy with non linea
 
 [Here's the chat I used to publish this vscode extension using gemini-2.5-pro and wcgw mcp](samples/publishing-help/chat.chat.md)
 
-NOTE: chat.md is 100% AI coded and should be treated as a feature rich POC.
+NOTE ⚠️: chat.md is 100% AI coded and should be treated as a feature rich POC.
 
 ## Why chat.md?
 
