@@ -87,7 +87,7 @@ Since chat.md files are just text, you have complete control over your AI intera
 - **Conversation Templates**: Create reusable conversation starters for common tasks
 
 ## Getting Started
-
+### Quick start
 1. Install 'chat.md' from the VS Code marketplace
 2. Configure your API key(s):
    - Command Palette → "Add or Edit API Configuration"
@@ -98,6 +98,12 @@ Since chat.md files are just text, you have complete control over your AI intera
 5. Watch the assistant stream its response and do any tool call.
 
 Optionally you can start a markdown preview side by side to get live markdown preview of the chat which is more user friendly.
+### Usage info
+- You can manually add API configuration and MCP configuration in vscode settings. See [example settings](#example-vscode-settings)
+- Click on the live status bar "Chat.md streaming" icon in the bottom or run "chat.md: Cancel streaming" command to interrupt
+- You can also use the same shortcut "Opt+Cmd+'" to cancel streaming as for creating a new chat.
+- You can run command "Refresh MCP Tools" to reload all mcp servers. Then run "MCP Diagnostics" to see available mcp servers.
+- You can use "Select api configuration" command to switch between the API providers
 
 ## Configuration
 
