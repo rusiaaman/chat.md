@@ -2,7 +2,7 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "AmanRusia",
   "license": "MIT",
   "icon": "./images/icon.png",

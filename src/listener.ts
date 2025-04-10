@@ -1,31 +1,34 @@
 import * as vscode from "vscode";
 import {
-  parseDocument,
+  parseDocument, // Updated signature: returns { messages, systemPrompt, hasImageInSystemBlock }
   hasEmptyAssistantBlock,
   hasEmptyToolExecuteBlock,
+  ParsedDocumentResult, // Import the return type interface
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
-import { StreamerState } from "./types";
+import { StreamerState, MessageParam } from "./types"; // Added MessageParam
 import {
-  getApiKey,
-  getAnthropicApiKey,
-  getProvider,
-  generateToolCallingSystemPrompt,
-} from "./config"; // Added generateToolCallingSystemPrompt
+  getApiKey, // Keep existing config functions
+  // getAnthropicApiKey, // No longer directly used in startStreaming based on latest snippet
+  getProvider, // Keep existing config functions
+  generateToolCallingSystemPrompt, // Keep existing config functions
+  getDefaultSystemPrompt, // Add function to get default system prompt
+} from "./config";
 import * as path from "path";
-import * as fs from "fs";
-import { log, mcpClientManager } from "./extension"; // Added mcpClientManager
-import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Removed parseToolCall from here
-import { parseToolCall } from "./tools/toolCallParser"; // Added import for the correct parser
+import * as fs from "fs"; // Keep fs for file operations
+import { log, mcpClientManager } from "./extension"; // Keep existing imports
+import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
+import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
 import {
-  ensureDirectoryExists,
-  writeFile,
-  saveChatHistory,
+  ensureDirectoryExists, // Keep existing imports
+  writeFile, // Keep existing imports
+  saveChatHistory, // Keep existing imports
 } from "./utils/fileUtils";
 
 /**
- * Listens for document changes and manages streaming LLM responses
+ * Listens for document changes and manages streaming LLM responses.
+ * Handles system prompt aggregation, image errors, and triggering actions.
  */
 export class DocumentListener {
   private readonly streamers: Map<number, StreamerState> = new Map();
@@ -79,47 +82,93 @@ export class DocumentListener {
   }
 
   /**
-   * Check document for empty assistant block
+   * Check document on initial load for actionable states (errors or triggers).
    */
   private async checkDocument(): Promise<void> {
-    if (this.document.fileName.endsWith(".chat.md")) {
-      log(`Checking document: ${this.document.fileName}`);
-      const text = this.document.getText();
-      if (hasEmptyAssistantBlock(text)) {
-        log(`Found empty assistant block, starting streaming`);
-        await this.startStreaming();
-      } else {
-        log(`No empty assistant block found`);
+    // Ignore if not a .chat.md file
+    if (!this.document.fileName.endsWith(".chat.md")) return;
+
+    log(`Checking document initially: ${this.document.fileName}`);
+    const text = this.document.getText();
+    try {
+      // Parse first to check for critical errors like images in system prompt
+      const parseResult = parseDocument(text, this.document);
+
+      // Check for image error first
+      if (parseResult.hasImageInSystemBlock) {
+        log("Initial check: Image found in system block. Showing error.");
+        vscode.window.showErrorMessage(
+          "Images are not allowed in '# %% system' blocks. Please remove image references.",
+        );
+        // Don't proceed if there's an error
+        return;
       }
+
+      // If no errors, check for trigger conditions
+      if (hasEmptyAssistantBlock(text)) {
+        log(`Initial check: Found empty assistant block, starting streaming`);
+        // Call the main startStreaming function which handles parsing and error checks again
+        await this.startStreaming();
+      } else if (hasEmptyToolExecuteBlock(text)) {
+         log(`Initial check: Found empty tool_execute block, executing tool`);
+         await this.executeToolFromPreviousBlock();
+      } else {
+        log(`Initial check: No empty assistant or tool_execute block found.`);
+      }
+    } catch (error) {
+        log(`Error during initial document check: ${error}`);
+        // Avoid showing error message on initial load unless critical
     }
   }
 
+
   /**
-   * Handle document changes and start streaming if needed
+   * Handle document changes: check for errors, trigger streaming, or trigger tool execution.
    */
   private async handleDocumentChange(
     event: vscode.TextDocumentChangeEvent,
   ): Promise<void> {
-    if (event.document.uri.toString() !== this.document.uri.toString()) {
+    // Ignore changes to other documents or non-chat files
+    if (event.document.uri.toString() !== this.document.uri.toString() || !this.document.fileName.endsWith(".chat.md")) {
       return;
     }
 
-    if (this.document.fileName.endsWith(".chat.md")) {
-      log(`Document changed: ${this.document.fileName}`);
-      const text = this.document.getText();
+    log(`Document changed: ${this.document.fileName}`);
+    const text = this.document.getText();
 
-      // Check if any change added an empty assistant block
-      if (hasEmptyAssistantBlock(text)) {
-        log(`Found empty assistant block after change, starting streaming`);
-        await this.startStreaming();
-      }
-      // Check if any change added an empty tool_execute block
-      else if (hasEmptyToolExecuteBlock(text)) {
-        log(`Found empty tool_execute block after change, executing tool`);
-        await this.executeToolFromPreviousBlock();
-      } else {
-        log(`No empty assistant or tool_execute block found after change`);
-      }
+    try {
+        // Parse the document on every change to check for errors first
+        const parseResult = parseDocument(text, this.document);
+
+        // **Handle Image in System Block Error**
+        if (parseResult.hasImageInSystemBlock) {
+          log("Change detected: Image found in system block. Aborting actions.");
+          vscode.window.showErrorMessage(
+            "Images are not allowed in '# %% system' blocks. Please remove image references and try again.",
+          );
+          // Prevent triggering stream/tool execution if there's an error
+          this.removeLastEmptyBlock("assistant"); // Remove trigger block if it exists
+          this.removeLastEmptyBlock("tool_execute"); // Remove trigger block if it exists
+          return;
+        }
+
+        // If no errors, check for action triggers
+        // Check for empty assistant block first (streaming priority)
+        if (hasEmptyAssistantBlock(text)) {
+          log(`Change detected: Found empty assistant block, starting streaming`);
+          await this.startStreaming(); // This function now handles parsing internally
+        }
+        // Otherwise, check for empty tool_execute block
+        else if (hasEmptyToolExecuteBlock(text)) {
+          log(`Change detected: Found empty tool_execute block, executing tool`);
+          await this.executeToolFromPreviousBlock();
+        } else {
+          // Log only if neither trigger is found
+          // log(`Change detected: No empty assistant or tool_execute block found`);
+        }
+    } catch (error) {
+        log(`Error handling document change: ${error}`);
+        vscode.window.showErrorMessage(`Error processing document change: ${error}`);
     }
   }
 
@@ -540,105 +589,189 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       log("Successfully inserted tool result and new assistant block");
       // Auto-scrolling disabled - users can scroll manually if needed
     }
-  }
+  } // <--- Added missing closing brace for insertToolResult
 
   /**
-   * Start streaming response from LLM
+   * Start streaming response from LLM. Handles parsing, errors, prompt assembly, and initiation.
    */
   private async startStreaming(): Promise<void> {
+    // Prevent concurrent streams for the same document
+    if (this.getActiveStreamer()) {
+        log("Streaming is already active for this document.");
+        return;
+    }
     await this.lock.acquire();
+    log("Acquired streaming lock.");
 
     try {
-      let apiKey;
+      // Config validation (as per current structure)
+      let apiKey: string | undefined;
       try {
-        // Import config functions to ensure they're available
+        // Keep the require here if that's the current pattern
         const { getApiKey, getProvider } = require("./config");
-
-        // Get API key from the selected configuration
         apiKey = getApiKey();
-        const provider = getProvider();
-
+        // const provider = getProvider(); // Provider not explicitly used later in this snippet's logic
         if (!apiKey) {
           throw new Error("API key not configured");
         }
       } catch (error) {
-        // Handle configuration errors gracefully
-        const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}. Please configure an API using the "Add or Edit API Configuration" command and select it.`;
+        const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}. Please configure an API...`; // Shortened message
         log(message);
         vscode.window.showErrorMessage(message);
+        this.removeLastEmptyBlock("assistant"); // Clean up trigger
         return;
       }
 
       const text = this.document.getText();
-      const messages = parseDocument(text, this.document);
+      // **Parse document using the updated parser**
+      const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
 
-      log(`Parsed ${messages.length} messages from document`);
+      // **Handle Image in System Block Error**
+      if (parseResult.hasImageInSystemBlock) {
+        log("Error: Image found in system block during startStreaming. Aborting.");
+        this.removeLastEmptyBlock("assistant"); // Clean up trigger
+        // Error message already shown by handleDocumentChange or checkDocument
+        return;
+      }
 
-      // Generate system prompt first, using grouped tools
-      const mcpGroupedTools = mcpClientManager.getGroupedTools(); // Get tools grouped by server
-      const systemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools); // Pass the map
-      log(
-        `Generated system prompt for history log: ${systemPrompt.substring(0, 100)}...`,
-      );
+      // Extract messages and custom system prompt
+      const messages: readonly MessageParam[] = parseResult.messages;
+      // const customSystemPrompt: string =; // Removed incomplete duplicate line
+      const customSystemPrompt: string = parseResult.systemPrompt; // Keep correct line
 
-      // Save chat history for debugging, now including the system prompt
+      log(`Parsed ${messages.length} messages. Custom system prompt length: ${customSystemPrompt.length}`);
+
+      // **Check for Valid Messages**
+      if (messages.length === 0) {
+        log("No valid messages found to start streaming.");
+        this.removeLastEmptyBlock("assistant"); // Clean up trigger
+        return;
+      }
+
+      // **Construct Final System Prompt** (Combining default, custom, and tool prompts)
+      const defaultSystemPrompt = getDefaultSystemPrompt();
+      // Tool prompt generation (as per current structure)
+      const mcpGroupedTools = mcpClientManager.getGroupedTools();
+      const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools);
+      // Combine
+      const finalSystemPrompt = [
+          defaultSystemPrompt,
+          customSystemPrompt, // Add the custom prompt from the file
+          toolSystemPrompt
+      ].filter(p => p && p.trim() !== '').join('\n\n'); // Join non-empty parts
+
+      log(`Final System Prompt Length: ${finalSystemPrompt.length}`);
+      // log(`Final System Prompt:\n---\n${finalSystemPrompt}\n---`); // Debug if needed
+
+      // **Save Chat History (with the final system prompt)**
       const historyFilePath = saveChatHistory(
         this.document,
         messages,
         "before_llm_call",
-        systemPrompt,
+        finalSystemPrompt, // Use the combined prompt
       );
-      log(`Saved chat history to: ${historyFilePath}`);
+      log(`Saved chat history (before call) to: ${historyFilePath}`);
 
-      if (messages.length === 0) {
-        log("No messages to process, not starting streaming");
-        return;
-      }
 
+      // **Streamer Initialization and Management (as per current structure)**
       const messageIndex = messages.length - 1;
 
-      // Check if we already have an active streamer for this message
-      if (
-        this.streamers.has(messageIndex) &&
-        this.streamers.get(messageIndex)!.isActive
-      ) {
-        log(
-          `Streamer for message index ${messageIndex} already active, not starting new one`,
-        );
+      if (this.streamers.has(messageIndex) && this.streamers.get(messageIndex)?.isActive) {
+        log(`Streamer for message index ${messageIndex} already active, skipping.`);
         return;
       }
 
-      // Create streaming service first so we can reference it in the cancel method
+      // Create StreamingService (ensure constructor matches required args: apiKey, document, lock)
       const streamingService = new StreamingService(
-        apiKey,
+        apiKey, // Pass the validated API key
         this.document,
         this.lock,
       );
 
-      // Create new streamer state with cancellation capability
+      // Create streamer state
       const streamer: StreamerState = {
         messageIndex,
         tokens: [],
         isActive: true,
-        historyFilePath, // Store the history file path in the streamer state
-        isHandlingToolCall: false, // Initialize with false
+        historyFilePath,
+        isHandlingToolCall: false,
         cancel: () => streamingService.cancelStreaming(streamer),
       };
 
       this.streamers.set(messageIndex, streamer);
-      log(
-        `Created new streamer for message index ${messageIndex} with cancellation capability`,
-      );
+      log(`Created new streamer for message index ${messageIndex}.`);
 
-      // Start streaming without awaiting, passing the generated system prompt
+      // **Start streaming in background, passing the FINAL system prompt**
       streamingService
-        .streamResponse(messages, streamer, systemPrompt)
+        .streamResponse(messages, streamer, finalSystemPrompt) // Pass the combined prompt
         .catch((err) => {
-          log(`Streaming error: ${err}`);
-          streamer.isActive = false;
+          log(`Streaming error for index ${messageIndex}: ${err}`);
+          // State management (isActive = false) should happen within StreamingService or cancel
+          // streamer.isActive = false; // Avoid setting state directly here if service handles it
+        })
+        .finally(() => {
+            log(`Streamer ${messageIndex} promise finally block reached.`);
+             // Consider if map cleanup is needed here or handled by the service/cancel logic
         });
-    } finally {
+
+    } catch (error) {
+        log(`Error in startStreaming setup phase: ${error}`);
+        vscode.window.showErrorMessage(`Failed to initiate streaming: ${error}`);
+        this.removeLastEmptyBlock("assistant"); // Clean up trigger on setup error
+    }
+    finally {
+      // Always release the lock
       this.lock.release();
+      log("Released streaming lock.");
     }
   }
+
+  /**
+   * Helper to remove the last empty block (assistant or tool_execute) from the end of the document.
+   */
+   // --- Keep the removeLastEmptyBlock function as defined in the previous attempt ---
+   // --- (Assuming that part was correct and only startStreaming needed adjustment) ---
+   private async removeLastEmptyBlock(type: "assistant" | "tool_execute"): Promise<void> {
+       const text = this.document.getText();
+       const marker = `# %% ${type}`;
+       const lastMarkerIndex = text.lastIndexOf(marker);
+
+       if (lastMarkerIndex === -1 || lastMarkerIndex < text.length - (marker.length + 50)) {
+           return;
+       }
+
+        const newlineAfterMarker = text.indexOf('\n', lastMarkerIndex);
+        const contentStartIndex = newlineAfterMarker === -1
+            ? lastMarkerIndex + marker.length
+            : newlineAfterMarker + 1;
+        const contentAfterMarker = text.substring(contentStartIndex);
+
+        if (/^\s*$/.test(contentAfterMarker)) {
+            log(`Removing empty ${type} block starting at index ${lastMarkerIndex}`);
+            let lineStartIndex = lastMarkerIndex;
+            while (lineStartIndex > 0 && text[lineStartIndex - 1] !== '\n') {
+                lineStartIndex--;
+            }
+            const adjustedStartPos = this.document.positionAt(lineStartIndex);
+            const endPos = this.document.positionAt(text.length);
+            const adjustedRange = new vscode.Range(adjustedStartPos, endPos);
+
+            const edit = new vscode.WorkspaceEdit();
+            edit.replace(this.document.uri, adjustedRange, "");
+
+            try {
+                 const success = await vscode.workspace.applyEdit(edit);
+                 if (success) {
+                     log(`Successfully removed empty ${type} block.`);
+                 } else {
+                     log(`Failed to apply edit to remove empty ${type} block.`);
+                 }
+            } catch (editError) {
+                log(`Error applying edit to remove empty ${type} block: ${editError}`);
+            }
+        }
+   }
+   // --- End of removeLastEmptyBlock ---
+
+   // ... (rest of the listener class, e.g., executeToolFromPreviousBlock, insertToolResult) ...
 }
