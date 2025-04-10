@@ -176,6 +176,70 @@ chat.md breaks away from the artificial "chat" paradigm and acknowledges that AI
 2. Caching not yet supported in anthropic api.
 3. Gemini, ollama, llm studio and other models have to be accessed using openai-api only.
 
+## Example vscode settings
+
+vscode json settings
+```json
+  "chatmd.apiConfigs": {
+    "gemini-2.5pro": {
+      "type": "openai",
+      "apiKey": "",
+      "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+      "model_name": "gemini-2.5-pro-exp-03-25"
+    },
+    "anthropic-sonnet-3-7": {
+      "type": "anthropic",
+      "apiKey": "sk-ant-",
+      "base_url": "",
+      "model_name": "claude-3-7-sonnet-latest"
+    },
+    "openrouter-qasar": {
+      "type": "openai",
+      "apiKey": "sk-or-",
+      "base_url": "https://openrouter.ai/api/v1",
+      "model_name": "openrouter/quasar-alpha"
+    },
+    "groq-llam4": {
+      "type": "openai",
+      "apiKey": "",
+      "base_url": "https://api.groq.com/openai/v1",
+      "model_name": "meta-llama/llama-4-scout-17b-16e-instruct"
+    },
+    "together-llama4": {
+      "type": "openai",
+      "base_url": "https://api.together.xyz/v1",
+      "apiKey": "",
+      "model_name": "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"
+    }
+  },
+  "chatmd.mcpServers": {
+    
+    "wcgw": {
+      "command": "/opt/homebrew/bin/uv",
+      "args": [
+        "tool",
+        "run",
+        "--python",
+        "3.12",
+        "--from",
+        "wcgw@latest",
+        "wcgw_mcp"
+      ]
+    },
+    "brave-search": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": ""
+      }
+    },
+    "fetch": {
+      "command": "/opt/homebrew/bin/uvx",
+      "args": ["mcp-server-fetch"]
+    }
+  },
+  "chatmd.selectedConfig": "gemini-2.5pro",
+```
 ## License
 
 MIT License - see the LICENSE file for details.
