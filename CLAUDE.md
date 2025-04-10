@@ -22,10 +22,14 @@ A "streamer" is a thread that's streaming from LLM a set of tokens at a time.
 
 # .chat.md parsing
 
+# %% system
+Respond succinctly.
+
 # %% user
 Hi
+
 # %% assistant
-hello
+Hello
 
 # %% line is treated as describing a role and starting a text block.
 

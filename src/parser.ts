@@ -39,6 +39,15 @@ export function parseDocument(
 
   // Debug logging
   log(`Split document into ${blocks.length} blocks`);
+
+  // **New Check**: Validate content before the first block marker
+  if (blocks.length > 0 && blocks[0].trim() !== "") {
+      const errorMsg = "Invalid content before first block marker. Start with a '# %% user', '# %% system', or similar block.";
+      log(`Error: ${errorMsg}`);
+      // Throw a specific error that can be caught upstream
+      throw new Error("INVALID_START_CONTENT");
+  }
+
   for (let i = 0; i < Math.min(blocks.length, 10); i++) {
     // Minimal logging for brevity
     // log(

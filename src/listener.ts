@@ -91,7 +91,7 @@ export class DocumentListener {
     log(`Checking document initially: ${this.document.fileName}`);
     const text = this.document.getText();
     try {
-      // Parse first to check for critical errors like images in system prompt
+      // Parse first to check for critical errors like images in system prompt or invalid start content
       const parseResult = parseDocument(text, this.document);
 
       // Check for image error first
@@ -116,8 +116,16 @@ export class DocumentListener {
         log(`Initial check: No empty assistant or tool_execute block found.`);
       }
     } catch (error) {
+      // Check for specific parse error: Invalid content before first block
+      if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
+        log("Initial check: Invalid content before first block marker.");
+        vscode.window.showErrorMessage(
+          "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
+        );
+      } else {
         log(`Error during initial document check: ${error}`);
-        // Avoid showing error message on initial load unless critical
+        // Avoid showing other error messages on initial load unless critical
+      }
     }
   }
 
@@ -137,7 +145,7 @@ export class DocumentListener {
     const text = this.document.getText();
 
     try {
-        // Parse the document on every change to check for errors first
+        // Parse the document on every change to check for errors first (invalid start, images in system)
         const parseResult = parseDocument(text, this.document);
 
         // **Handle Image in System Block Error**
@@ -167,8 +175,20 @@ export class DocumentListener {
           // log(`Change detected: No empty assistant or tool_execute block found`);
         }
     } catch (error) {
+      // Check for specific parse error: Invalid content before first block
+      if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
+        log("Change detected: Invalid content before first block marker.");
+        vscode.window.showErrorMessage(
+          "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
+        );
+        // Prevent triggering stream/tool execution if there's an error
+        this.removeLastEmptyBlock("assistant"); // Remove trigger block if it exists
+        this.removeLastEmptyBlock("tool_execute"); // Remove trigger block if it exists
+      } else {
+        // Handle other errors
         log(`Error handling document change: ${error}`);
         vscode.window.showErrorMessage(`Error processing document change: ${error}`);
+      }
     }
   }
 
