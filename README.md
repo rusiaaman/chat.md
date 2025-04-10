@@ -1,4 +1,4 @@
-# chat.md: The Hacker's AI Chat Interface
+# chat.md: The Hacker's AI Chat Interface [Experimental]
 
 **Finally, a fully editable chat interface with MCP support on any LLM.**
 
@@ -11,6 +11,8 @@ Any '*.chat.md' file is now an AI agent hackable by you. Go crazy with non linea
 [Usage video](https://www.youtube.com/watch?v=DyYoZLmpzc0)
 
 [Here's the chat I used to publish this vscode extension using gemini-2.5-pro and wcgw mcp](samples/publishing-help/chat.chat.md)
+
+NOTE: chat.md is 100% AI coded and should be treated as a feature rich POC.
 
 ## Why chat.md?
 
