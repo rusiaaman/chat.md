@@ -80,6 +80,7 @@ export async function executeToolCall(
   
   // Show tool execution status
   statusManager.showToolExecutionStatus();
+  log(`toolExecutor: Showing 'executing tool' status for tool "${toolName}"`);
   
   // Additional debug info for document
   if (document) {
@@ -158,9 +159,11 @@ export async function executeToolCall(
     // Only change status back to idle if we're not already in another state
     // due to cancellation, which would set its own status
     if (statusManager.getCurrentStatus() !== 'cancelling') {
+      log(`toolExecutor: Current status is '${statusManager.getCurrentStatus()}', restoring to idle after tool "${toolName}" execution`);
       statusManager.hideStreamingStatus();
     } else if (statusManager.getCurrentStatus() === 'cancelling' && activeToolExecutions.size === 0) {
       // If we're in cancelling state and this was the last active execution, go back to idle
+      log(`toolExecutor: Restoring status to idle after cancellation of tool "${toolName}"`);
       statusManager.hideStreamingStatus();
     }
   }

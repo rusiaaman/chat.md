@@ -17,7 +17,7 @@ import {
 } from "./config";
 import * as path from "path";
 import * as fs from "fs"; // Keep fs for file operations
-import { log, mcpClientManager } from "./extension"; // Keep existing imports
+import { log, mcpClientManager, statusManager } from "./extension"; // Import statusManager directly
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
 import {
@@ -197,6 +197,10 @@ export class DocumentListener {
    */
   private async executeToolFromPreviousBlock(): Promise<void> {
     await this.lock.acquire();
+
+    // Show tool execution status in the status bar
+    statusManager.showToolExecutionStatus();
+    log(`DocumentListener: Showing 'executing tool' status for tool_execute block`);
 
     try {
       const text = this.document.getText();

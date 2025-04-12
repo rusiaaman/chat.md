@@ -72,3 +72,6 @@ A lock on the file is shared between streamer and the listener, only is allowed 
 # Configuration
 
 Anthropic api and openai api (with custom url) are supported.
+
+# Development instructions
+- Always run `npx tsc --noEmit` to ensure it passes

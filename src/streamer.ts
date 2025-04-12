@@ -8,7 +8,7 @@ import { log, statusManager } from "./extension";
 import { generateToolCallingSystemPrompt, isToolAutoExecuteDisabled } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
-import { parseToolCall } from "./tools/toolCallParser";
+import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser";
 
 /**
  * Service for streaming LLM responses
@@ -98,9 +98,9 @@ export class StreamingService {
    * @param text The text to check for tool calls
    * @returns Result with completion status and metadata
    */
-  private checkForCompletedToolCall(text: string): ReturnType<typeof parseToolCall.checkForCompletedToolCall> {
-    // Use the imported parseToolCall function to check for completed tool calls
-    return parseToolCall.checkForCompletedToolCall(text);
+  private checkForCompletedToolCall(text: string) {
+    // Use the imported checkForCompletedToolCall function directly
+    return checkForCompletedToolCall(text);
   }
 
   /**
@@ -225,13 +225,14 @@ export class StreamingService {
                 this.checkForCompletedToolCall(currentTokens);
 
               // Check if we have a completed tool call
-              if (toolCallResult && typeof toolCallResult !== "boolean" && toolCallResult.isComplete) {
+              if (toolCallResult && toolCallResult.isComplete) {
                 log(
                   "Detected completed tool call, will truncate at position " +
                     toolCallResult.endIndex,
                 );
                 
                 // Set flag to indicate we're handling a tool call
+                log(`Setting isHandlingToolCall flag to true for streamer at index ${streamer.messageIndex}`);
                 streamer.isHandlingToolCall = true;
 
                 try {
@@ -240,7 +241,14 @@ export class StreamingService {
                   const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
                   
                   // Check if auto-execute is disabled for this tool in this file
+                  log(`Found complete tool call for tool "${toolName}" - checking auto-execute status`);
+                  
+                  // Always show the status bar initially when a tool call is detected
+                  statusManager.showToolExecutionStatus();
+                  log(`Showing 'executing tool' status for detected tool "${toolName}"`);
+                  
                   const isAutoExecuteDisabled = isToolAutoExecuteDisabled(toolName, this.document.uri.fsPath);
+                  log(`Auto-execute ${isAutoExecuteDisabled ? 'IS' : 'is NOT'} disabled for tool "${toolName}"`);
                   
                   if (isAutoExecuteDisabled) {
                     log(`Auto-execution is disabled for tool "${toolName}" in this file. Will not add tool_execute block.`);
@@ -351,10 +359,17 @@ export class StreamingService {
                         log(
                           `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
                         );
+                        
+                        // The tool_execute block has been added, but we need to make sure the status
+                        // stays visible until the DocumentListener picks up the change and executes the tool
+                        log(`Ensuring tool execution status remains visible for manual execution`);
+                        statusManager.showToolExecutionStatus();
                       } else {
                         log(
                           `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
                         );
+                        // Since adding the tool_execute block failed, hide the status
+                        statusManager.hideStreamingStatus();
                       }
                     } else {
                       log("Could not find position to insert tool_execute block");
@@ -610,21 +625,35 @@ export class StreamingService {
         );
         
         // Add a new user block after the assistant response completes successfully
+        // But only if tokens were successfully added to document (check tokens length and streamer state)
         try {
-          // Only add user block if the streaming finished naturally (not due to a tool call)
-          if (!streamer.isHandlingToolCall) {
+          // Only add user block if:
+          // 1. The streaming finished naturally (not due to a tool call)
+          // 2. Tokens were actually written successfully to the document (non-zero tokens)
+          // 3. The streamer wasn't cancelled or failed due to other errors
+          if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
             log('Adding new user block after completed assistant response');
             this.appendNewUserBlock(streamer);
-          } else {
+          } else if (streamer.isHandlingToolCall) {
             log('Not adding user block since streaming completed due to tool call');
+          } else if (streamer.tokens.length === 0) {
+            log('Not adding user block since no tokens were written to document');
+          } else if (!streamer.isActive) {
+            log('Not adding user block since streaming was cancelled or failed');
           }
         } catch (error) {
           log(`Error adding new user block: ${error}`);
         }
         
         streamer.isActive = false;
-        // Hide streaming status when done
-        statusManager.hideStreamingStatus();
+        
+        // Only hide streaming status if we're NOT handling a tool call
+        if (!streamer.isHandlingToolCall) {
+          log(`Streaming completed normally, restoring status to idle`);
+          statusManager.hideStreamingStatus();
+        } else {
+          log(`Streaming completed due to tool call detection, keeping 'executing tool' status visible`);
+        }
       } else {
         log(
           `Stream finished due to max tokens, keeping streamer active for restart`,
@@ -691,139 +720,7 @@ export class StreamingService {
     }
   }
 
-  /**
-   * Check if text contains a complete tool call
-   * Returns:
-   * - false if no complete tool call is found
-   * - { isComplete: true, endIndex: number } if a complete tool call is found
-   */
-  private checkForCompletedToolCall(
-    text: string,
-  ): boolean | { isComplete: true; endIndex: number } {
-    // Match both fenced and non-fenced tool calls
-    // 1. Fenced tool call: ```\n<tool_call>...\n</tool_call>\n```
-    // 2. Non-fenced tool call: <tool_call>...\n</tool_call>
-
-    // First try to match properly fenced tool calls (with opening and closing fences)
-    // Allow for any annotation after the triple backticks like ```tool_code or ```xml
-    const properlyFencedToolCallRegex =
-      /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/s;
-    const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
-
-    // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
-    // Allow for any annotation after the triple backticks
-    const partiallyFencedToolCallRegex =
-      /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s;
-    const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
-
-    // Then try to match non-fenced tool calls - make pattern consistent with listener.ts
-    const nonFencedToolCallRegex =
-      /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
-    const nonFencedMatch = nonFencedToolCallRegex.exec(text);
-
-    // Determine which match to use if any
-    let toolCallMatch = null;
-    let matchType = "none";
-
-    if (properlyFencedMatch && partiallyFencedMatch && nonFencedMatch) {
-      // If all three exist, use the one that appears first in the text
-      if (
-        properlyFencedMatch.index <= partiallyFencedMatch.index &&
-        properlyFencedMatch.index <= nonFencedMatch.index
-      ) {
-        toolCallMatch = properlyFencedMatch;
-        matchType = "properly-fenced";
-      } else if (
-        partiallyFencedMatch.index <= properlyFencedMatch.index &&
-        partiallyFencedMatch.index <= nonFencedMatch.index
-      ) {
-        toolCallMatch = partiallyFencedMatch;
-        matchType = "partially-fenced";
-      } else {
-        toolCallMatch = nonFencedMatch;
-        matchType = "non-fenced";
-      }
-    } else if (properlyFencedMatch && partiallyFencedMatch) {
-      // If both fenced types exist, use the one that appears first
-      if (properlyFencedMatch.index <= partiallyFencedMatch.index) {
-        toolCallMatch = properlyFencedMatch;
-        matchType = "properly-fenced";
-      } else {
-        toolCallMatch = partiallyFencedMatch;
-        matchType = "partially-fenced";
-      }
-    } else if (properlyFencedMatch && nonFencedMatch) {
-      // If properly fenced and non-fenced exist, use the one that appears first
-      if (properlyFencedMatch.index <= nonFencedMatch.index) {
-        toolCallMatch = properlyFencedMatch;
-        matchType = "properly-fenced";
-      } else {
-        toolCallMatch = nonFencedMatch;
-        matchType = "non-fenced";
-      }
-    } else if (partiallyFencedMatch && nonFencedMatch) {
-      // If partially fenced and non-fenced exist, use the one that appears first
-      if (partiallyFencedMatch.index <= nonFencedMatch.index) {
-        toolCallMatch = partiallyFencedMatch;
-        matchType = "partially-fenced";
-      } else {
-        toolCallMatch = nonFencedMatch;
-        matchType = "non-fenced";
-      }
-    } else if (properlyFencedMatch) {
-      toolCallMatch = properlyFencedMatch;
-      matchType = "properly-fenced";
-    } else if (partiallyFencedMatch) {
-      toolCallMatch = partiallyFencedMatch;
-      matchType = "partially-fenced";
-    } else if (nonFencedMatch) {
-      toolCallMatch = nonFencedMatch;
-      matchType = "non-fenced";
-    }
-
-    if (toolCallMatch) {
-      // Make sure this is a complete tool call
-      const fullMatch = toolCallMatch[0];
-      const matchEndIndex = toolCallMatch.index + fullMatch.length;
-
-      // Log the completed tool call
-      log(
-        `Found completed tool call (${matchType}): "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? "..." : ""}"`,
-      );
-
-      // Check if there's another opening tag after this complete tag
-      // Look for both fenced and non-fenced opening patterns
-      // Allow for any annotation after the triple backticks
-      const nextOpeningFencedRegex =
-        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>/g;
-      const nextOpeningNonFencedRegex = /\n\s*<tool_call>/g;
-
-      nextOpeningFencedRegex.lastIndex = matchEndIndex;
-      nextOpeningNonFencedRegex.lastIndex = matchEndIndex;
-
-      const nextFencedMatch = nextOpeningFencedRegex.exec(text);
-      const nextNonFencedMatch = nextOpeningNonFencedRegex.exec(text);
-
-      let nextOpeningTagIndex = -1;
-
-      if (nextFencedMatch && nextNonFencedMatch) {
-        nextOpeningTagIndex = Math.min(
-          nextFencedMatch.index,
-          nextNonFencedMatch.index,
-        );
-      } else if (nextFencedMatch) {
-        nextOpeningTagIndex = nextFencedMatch.index;
-      } else if (nextNonFencedMatch) {
-        nextOpeningTagIndex = nextNonFencedMatch.index;
-      }
-
-      // Always stop at the first complete tool call, regardless of subsequent content
-      log("Found completed tool call - stopping streaming immediately");
-      return { isComplete: true, endIndex: matchEndIndex };
-    }
-
-    return false;
-  }
+  // This function has been replaced with the one at the beginning of the class
 
   /**
    * Appends a new user block after the assistant response has completed
@@ -870,6 +767,11 @@ export class StreamingService {
     }
   }
 
+  /**
+   * Updates document with new tokens idempotently.
+   * Returns true if tokens were successfully added to the document.
+   * Returns false if tokens couldn't be added (document changed, no matching assistant block found, etc.)
+   */
   private async updateDocumentWithTokens(
     streamer: StreamerState,
     newTokens: string[],
