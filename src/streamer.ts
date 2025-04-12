@@ -5,9 +5,10 @@ import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
 import { log, statusManager } from "./extension";
-import { generateToolCallingSystemPrompt } from "./config";
+import { generateToolCallingSystemPrompt, isToolAutoExecuteDisabled } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
+import { parseToolCall } from "./tools/toolCallParser";
 
 /**
  * Service for streaming LLM responses
@@ -90,6 +91,16 @@ export class StreamingService {
       message.includes("context length") ||
       message.includes("finish_reason=length")
     );
+  }
+
+  /**
+   * Check for completed tool calls in text
+   * @param text The text to check for tool calls
+   * @returns Result with completion status and metadata
+   */
+  private checkForCompletedToolCall(text: string): ReturnType<typeof parseToolCall.checkForCompletedToolCall> {
+    // Use the imported parseToolCall function to check for completed tool calls
+    return parseToolCall.checkForCompletedToolCall(text);
   }
 
   /**
@@ -214,7 +225,7 @@ export class StreamingService {
                 this.checkForCompletedToolCall(currentTokens);
 
               // Check if we have a completed tool call
-              if (toolCallResult && typeof toolCallResult !== "boolean") {
+              if (toolCallResult && typeof toolCallResult !== "boolean" && toolCallResult.isComplete) {
                 log(
                   "Detected completed tool call, will truncate at position " +
                     toolCallResult.endIndex,
@@ -226,6 +237,14 @@ export class StreamingService {
                 try {
                   // Get the end index of the completed tool call
                   const { endIndex } = toolCallResult;
+                  const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
+                  
+                  // Check if auto-execute is disabled for this tool in this file
+                  const isAutoExecuteDisabled = isToolAutoExecuteDisabled(toolName, this.document.uri.fsPath);
+                  
+                  if (isAutoExecuteDisabled) {
+                    log(`Auto-execution is disabled for tool "${toolName}" in this file. Will not add tool_execute block.`);
+                  }
 
                   // Truncate existing tokens if needed
                   if (streamer.tokens.join("").length > endIndex) {
@@ -286,57 +305,60 @@ export class StreamingService {
                     }
                   }
 
-                  // Add tool_execute block after the last token
-                  const text = this.document.getText();
-                  const blockStart = this.findBlockStartPosition(
-                    text,
-                    streamer,
-                  );
-
-                  if (blockStart !== -1) {
-                    const currentText = streamer.tokens.join("");
-                    const insertPosition = this.document.positionAt(
-                      blockStart + currentText.length,
+                  // Only add tool_execute block if auto-execution is not disabled for this tool
+                  if (!isAutoExecuteDisabled) {
+                    // Add tool_execute block after the last token
+                    const text = this.document.getText();
+                    const blockStart = this.findBlockStartPosition(
+                      text,
+                      streamer,
                     );
 
-                    // Check for unbalanced fence blocks
-                    // Look for opening ``` before <tool_call> but no matching closing ```
-                    // Allow for any annotation after the triple backticks
-                    const openingFenceMatch =
-                      /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s.exec(
-                        currentText,
+                    if (blockStart !== -1) {
+                      const currentText = streamer.tokens.join("");
+                      const insertPosition = this.document.positionAt(
+                        blockStart + currentText.length,
                       );
 
-                    let textToInsert = "";
+                      // Check for unbalanced fence blocks
+                      // Look for opening ``` before <tool_call> but no matching closing ```
+                      // Allow for any annotation after the triple backticks
+                      const openingFenceMatch =
+                        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s.exec(
+                          currentText,
+                        );
 
-                    if (openingFenceMatch) {
-                      log(
-                        "Detected unbalanced fence block - adding closing fence before tool_execute block",
+                      let textToInsert = "";
+
+                      if (openingFenceMatch) {
+                        log(
+                          "Detected unbalanced fence block - adding closing fence before tool_execute block",
+                        );
+                        textToInsert = "\n```\n\n# %% tool_execute\n";
+                      } else {
+                        textToInsert = "\n\n# %% tool_execute\n";
+                      }
+
+                      const edit = new vscode.WorkspaceEdit();
+                      edit.insert(
+                        this.document.uri,
+                        insertPosition,
+                        textToInsert,
                       );
-                      textToInsert = "\n```\n\n# %% tool_execute\n";
+                      const applied = await vscode.workspace.applyEdit(edit);
+
+                      if (applied) {
+                        log(
+                          `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+                        );
+                      } else {
+                        log(
+                          `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+                        );
+                      }
                     } else {
-                      textToInsert = "\n\n# %% tool_execute\n";
+                      log("Could not find position to insert tool_execute block");
                     }
-
-                    const edit = new vscode.WorkspaceEdit();
-                    edit.insert(
-                      this.document.uri,
-                      insertPosition,
-                      textToInsert,
-                    );
-                    const applied = await vscode.workspace.applyEdit(edit);
-
-                    if (applied) {
-                      log(
-                        `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
-                      );
-                    } else {
-                      log(
-                        `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
-                      );
-                    }
-                  } else {
-                    log("Could not find position to insert tool_execute block");
                   }
 
                   // Mark streamer as inactive to stop streaming

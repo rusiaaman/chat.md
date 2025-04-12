@@ -364,6 +364,7 @@ export class McpClientManager {
     fullName: string,
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
+    signal?: AbortSignal,
   ): Promise<string> {
     log(`executeToolCall called with document=${document ? 'provided' : 'not provided'}`);
     
@@ -399,7 +400,7 @@ export class McpClientManager {
         `Warning: Tool name "${fullName}" does not follow the expected "serverName.toolName" format. Falling back to legacy lookup.`,
       );
       // Fallback: Use the old method of iterating through all servers
-      return this.executeToolCallLegacyFallback(fullName, params, document);
+      return this.executeToolCallLegacyFallback(fullName, params, document, signal);
     }
 
     // --- New Logic using parsed serverName and actualToolName ---
@@ -427,6 +428,7 @@ export class McpClientManager {
         tool,
         params,
         document,
+        signal,
       );
     } catch (error) {
       log(
@@ -446,6 +448,20 @@ export class McpClientManager {
           log(`CRITICAL: 'document is not defined' error detected for tool ${actualToolName}`);
           log(`This usually happens when trying to resolve file paths without document context`);
         }
+        
+        // Handle AbortError specifically
+        if (error.name === 'AbortError' || 
+            (error.message && (
+              error.message.includes('AbortError') ||
+              error.message.includes('cancelled') ||
+              error.message.includes('canceled') ||
+              error.message.includes('aborted')
+            ))
+        ) {
+          log(`Tool execution cancelled via AbortError: ${actualToolName}`);
+          // Special return value to indicate cancellation
+          return `CANCELLED:${Symbol('AbortError').toString()}`;
+        }
       }
       
       return `Error executing tool ${actualToolName}: ${error}`;
@@ -457,6 +473,7 @@ export class McpClientManager {
     name: string,
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
+    signal?: AbortSignal,
   ): Promise<string> {
     log(`Executing legacy fallback for tool "${name}"`);
     // Find which client has this tool and execute it
@@ -479,6 +496,7 @@ export class McpClientManager {
           tool,
           params,
           document,
+          signal,
         );
       } catch (error) {
         log(
@@ -796,6 +814,7 @@ export class McpClientManager {
     tool: Tool,
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
+    signal?: AbortSignal,
   ): Promise<string> {
     try {
       log(
@@ -837,10 +856,21 @@ export class McpClientManager {
         }
       }
 
-      const result = await client.callTool({
-        name: toolName, // Use the actual tool name here
-        arguments: processedParams,
-      });
+      // Listen for abort signal to log cancellation
+      if (signal) {
+        signal.addEventListener('abort', () => {
+          log(`Abort signal triggered for tool "${toolName}" on server "${serverId}"`);
+        });
+      }
+      
+      const result = await client.callTool(
+        {
+          name: toolName, // Use the actual tool name here
+          arguments: processedParams,
+        }, 
+        undefined, // Use default result schema
+        { signal } // Pass the abort signal in the options
+      );
 
       // Process result content which may include both text and images
       if (result && result.content && Array.isArray(result.content)) {

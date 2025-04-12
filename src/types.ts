@@ -67,3 +67,10 @@ export interface StreamerState {
    */
   cancel?: () => void;
 }
+
+/**
+ * Structure for storing tool auto-execute configuration for a file or globally
+ */
+export interface ToolAutoExecuteConfig {
+  disabledTools: string[]; // List of tools for which auto-execution is disabled
+}

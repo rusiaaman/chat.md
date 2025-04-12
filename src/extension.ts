@@ -14,10 +14,14 @@ import {
   setApiConfig,
   removeApiConfig,
   ApiConfig,
+  isToolAutoExecuteDisabled,
+  updateFileToolAutoExecuteSettings,
+  getDefaultSystemPrompt,
 } from "./config";
 import { getBlockInfoAtPosition } from "./parser";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
+import { cancelCurrentToolExecution } from "./tools/toolExecutor";
 import { getNewChatPaths } from "./utils/chatDirUtils";
 import {
   generateChatTemplate,
@@ -122,6 +126,22 @@ async function handleMcpConfigChange(
   }
 }
 
+/**
+ * Helper function to check if text contains a tool call
+ * @param text The text to check for tool calls
+ * @returns True if a tool call is found, false otherwise
+ */
+function checkForToolCallInText(text: string): boolean {
+  // Check for various tool call formats
+  const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
+  const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+  const nonFencedToolCallRegex = /<tool_call>[\s\S]*?<\/tool_call>/s;
+  
+  return properlyFencedToolCallRegex.test(text) || 
+         partiallyFencedToolCallRegex.test(text) || 
+         nonFencedToolCallRegex.test(text);
+}
+
 export function activate(context: vscode.ExtensionContext) {
   log("chat.md extension is now active");
 
@@ -180,9 +200,95 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-  // Register commands
+    // Register commands
   context.subscriptions.push(
+    vscode.commands.registerCommand("filechat.configureToolAutoExecute", async () => {
+      // Get available tools from all MCP servers
+      const mcpGroupedTools = mcpClientManager.getGroupedTools();
+      const toolNames: string[] = [];
+      
+      // Flatten the grouped tools structure to get all tool names
+      for (const [_, serverTools] of mcpGroupedTools.entries()) {
+        for (const [toolName, _] of serverTools.entries()) {
+          toolNames.push(toolName);
+        }
+      }
+      
+      if (toolNames.length === 0) {
+        vscode.window.showInformationMessage("No MCP tools are currently available.");
+        return;
+      }
+      
+      // This now only supports file-specific configuration
+      const activeEditor = vscode.window.activeTextEditor;
+      if (!activeEditor || !activeEditor.document.fileName.endsWith(".chat.md")) {
+        vscode.window.showErrorMessage("Please open a chat.md file first to configure settings.");
+        return;
+      }
+      
+      // Get the current configuration from the file
+      const document = activeEditor.document;
+      const parseResult = parseDocument(document.getText(), document);
+      
+      // Extract current disabled tools from settings
+      let currentDisabledTools: string[] = [];
+      if (parseResult.settings && 
+          parseResult.settings.tools && 
+          Array.isArray(parseResult.settings.tools.disabledAutoExecute)) {
+        currentDisabledTools = parseResult.settings.tools.disabledAutoExecute;
+      }
+      
+      log(`Found ${currentDisabledTools.length} currently disabled tools in file settings`);
+      
+      // Create checkboxes for each tool with current config applied
+      const toolItems = toolNames.map(toolName => ({
+        label: toolName,
+        picked: currentDisabledTools.includes(toolName)
+      }));
+      
+      // Display multi-select UI
+      const selectedItems = await vscode.window.showQuickPick(toolItems, {
+        placeHolder: "Select tools for which to disable auto-execute in this file",
+        canPickMany: true
+      });
+      
+      if (!selectedItems) {
+        return; // User cancelled
+      }
+      
+      // Update configuration in the file
+      const newDisabledTools = selectedItems.map(item => item.label);
+      
+      const success = await updateFileToolAutoExecuteSettings(document, newDisabledTools);
+      
+      if (success) {
+        vscode.window.showInformationMessage(
+          `Tool auto-execute configuration updated. Selected tools will not automatically add tool_execute blocks.`
+        );
+      } else {
+        vscode.window.showErrorMessage(
+          "Failed to update tool auto-execute configuration."
+        );
+      }
+    }),
+    
     vscode.commands.registerCommand("filechat.cancelStreaming", () => {
+      // Get current status to determine what to cancel
+      const currentStatus = statusManager.getCurrentStatus();
+      
+      // Cancel based on status
+      if (currentStatus === 'executing' || currentStatus === 'cancelling') {
+        // Try to cancel tool execution
+        const toolCancelled = cancelCurrentToolExecution();
+        
+        if (toolCancelled) {
+          log("Tool execution cancellation requested via command");
+          vscode.window.showInformationMessage("Cancelled tool execution, but it may still have gone through successfully");
+          return;
+        }
+      }
+      
+      // Otherwise, try to cancel streaming if it's happening
       const activeEditor = vscode.window.activeTextEditor;
       if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
         const streamer = getActiveStreamerForDocument(activeEditor.document);
@@ -880,10 +986,11 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
       vscode.commands.registerTextEditorCommand(
         "filechat.insertNextBlock",
-        (textEditor, edit) => {
+        async (textEditor, edit) => {
           const document = textEditor.document;
+          
           // Handle multiple selections, though primary focus is the active cursor
-          textEditor.selections.forEach((selection) => {
+          for (const selection of textEditor.selections) {
             const position = selection.active;
             log(
               `Shift+Enter pressed at Line: ${position.line}, Character: ${position.character}`,
@@ -892,6 +999,43 @@ export function activate(context: vscode.ExtensionContext) {
             const blockInfo = getBlockInfoAtPosition(document, position);
             log(`Current block type: ${blockInfo.type || "none"}`);
 
+            // Special case: If we're in an assistant block and it contains a tool call, add tool_execute
+            if (blockInfo.type === "assistant") {
+              // Check if the current assistant block contains a tool call
+              const text = document.getText();
+              
+              // Find the full content of the current assistant block
+              const blockStart = blockInfo.blockStartPosition?.line ?? 0;
+              let blockEndLine = position.line; // Default to current position
+              
+              // Look ahead for the next block marker or end of file
+              for (let i = blockStart + 1; i < document.lineCount; i++) {
+                const line = document.lineAt(i).text;
+                if (line.match(/^# %% (user|assistant|system|tool_execute)\s*$/i)) {
+                  blockEndLine = i - 1; // End of block is line before next marker
+                  break;
+                }
+              }
+              
+              // Get the content of the assistant block
+              const blockContent = document.getText(
+                new vscode.Range(
+                  new vscode.Position(blockStart + 1, 0), // Start after the marker line
+                  new vscode.Position(blockEndLine + 1, 0) // Include the full last line
+                )
+              );
+              
+              // Check for tool call patterns
+              const hasToolCall = checkForToolCallInText(blockContent);
+              
+              if (hasToolCall) {
+                log(`Detected tool call in current assistant block, inserting tool_execute block`);
+                edit.insert(position, "\n# %% tool_execute\n");
+                continue; // Skip to next selection
+              }
+            }
+
+            // Default behavior (no tool call detected)
             let textToInsert = "";
 
             switch (blockInfo.type) {
@@ -912,14 +1056,7 @@ export function activate(context: vscode.ExtensionContext) {
             log(`Inserting text: "${textToInsert.replace(/\n/g, "\\n")}"`);
             // Insert the text at the current cursor position
             edit.insert(position, textToInsert);
-          });
-
-          // Optional: Ensure the cursor moves to the end of the inserted text
-          // This happens automatically with simple inserts usually, but can be forced if needed.
-          // Example (might need adjustment based on exact behavior):
-          // const newPosition = textEditor.document.positionAt(textEditor.document.offsetAt(position) + textToInsert.length);
-          // textEditor.selection = new vscode.Selection(newPosition, newPosition);
-          // textEditor.revealRange(new vscode.Range(newPosition, newPosition));
+          }
         },
       ),
     ),

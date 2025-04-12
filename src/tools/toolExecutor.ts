@@ -3,6 +3,14 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { mcpClientManager } from "../mcpClientManager";
+import { statusManager } from "../extension";
+
+// Track active tool executions for cancellation
+const activeToolExecutions = new Map<string, AbortController>();
+// Track the current execution ID
+let currentToolExecution: string | null = null;
+// Track cancelled executions to ignore any late responses
+const cancelledExecutions = new Set<string>();
 
 /**
  * Saves the parsed tool call to a log file for debugging
@@ -56,6 +64,23 @@ export async function executeToolCall(
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
   log(`Document passed to executeToolCall: ${document ? 'yes' : 'no'}`);
   
+  // Create unique ID for this tool execution
+  const executionId = `${toolName}-${Date.now()}`;
+  currentToolExecution = executionId;
+  
+  // Check if this execution was previously cancelled (should never happen, but just to be safe)
+  if (cancelledExecutions.has(executionId)) {
+    log(`Tool execution ${executionId} was previously cancelled - skipping execution`);
+    return `CANCELLED:${Symbol('AlreadyCancelled').toString()}`;
+  }
+  
+  // Create AbortController for cancellation
+  const abortController = new AbortController();
+  activeToolExecutions.set(executionId, abortController);
+  
+  // Show tool execution status
+  statusManager.showToolExecutionStatus();
+  
   // Additional debug info for document
   if (document) {
     log(`Document details: fileName=${document.fileName}, languageId=${document.languageId}`);
@@ -87,7 +112,13 @@ export async function executeToolCall(
   // Execute through MCP
   try {
     log(`Calling mcpClientManager.executeToolCall with document=${document ? 'provided' : 'not provided'}`);
-    const result = await mcpClientManager.executeToolCall(toolName, params, document);
+    const result = await mcpClientManager.executeToolCall(
+      toolName, 
+      params, 
+      document, 
+      abortController.signal
+    );
+    
     if (
       result &&
       !result.startsWith("Error: Tool") &&
@@ -96,12 +127,77 @@ export async function executeToolCall(
       // If we got a successful result from MCP, return it
       return result;
     }
+    
     // Otherwise, return the error from MCP
     return result;
   } catch (mcpError) {
+    // Check if this is an AbortError from cancellation
+    if (mcpError.name === 'AbortError' || cancelledExecutions.has(executionId)) {
+      log(`Tool execution cancelled: ${toolName}`);
+      // Use a special format to indicate cancellation
+      return `CANCELLED:${Symbol('AbortError').toString()}`;
+    }
+    
+    // For other errors, check if the AbortError is mentioned in the error message
+    if (mcpError.message && mcpError.message.includes('AbortError')) {
+      log(`Tool execution cancelled (detected from error message): ${toolName}`);
+      return `CANCELLED:${Symbol('AbortError').toString()}`;
+    }
+    
     log(`MCP tool execution error: ${mcpError}`);
     return `Error executing tool ${toolName}: ${mcpError}`;
+  } finally {
+    // Clean up and restore status
+    activeToolExecutions.delete(executionId);
+    cancelledExecutions.delete(executionId);
+    
+    if (currentToolExecution === executionId) {
+      currentToolExecution = null;
+    }
+    
+    // Only change status back to idle if we're not already in another state
+    // due to cancellation, which would set its own status
+    if (statusManager.getCurrentStatus() !== 'cancelling') {
+      statusManager.hideStreamingStatus();
+    } else if (statusManager.getCurrentStatus() === 'cancelling' && activeToolExecutions.size === 0) {
+      // If we're in cancelling state and this was the last active execution, go back to idle
+      statusManager.hideStreamingStatus();
+    }
   }
+}
+
+/**
+ * Cancels the current tool execution if one is active
+ * @returns True if a tool execution was cancelled, false otherwise
+ */
+export function cancelCurrentToolExecution(): boolean {
+  // If we're already in cancellation state, don't do anything
+  if (statusManager.getCurrentStatus() === 'cancelling') {
+    log('Already in cancellation state - ignoring duplicate cancel request');
+    return false;
+  }
+  
+  if (currentToolExecution && activeToolExecutions.has(currentToolExecution)) {
+    const executionId = currentToolExecution;
+    log(`Cancelling tool execution: ${executionId}`);
+    
+    // Mark this execution as cancelled so any future responses will be ignored
+    cancelledExecutions.add(executionId);
+    
+    // Show cancellation status
+    statusManager.showToolCancellationStatus();
+    
+    // Abort the execution
+    const controller = activeToolExecutions.get(executionId);
+    controller?.abort();
+    
+    // Status is automatically restored to idle when the execution completes or errors out
+    // in the executeToolCall function's finally block
+    
+    return true;
+  }
+  
+  return false;
 }
 
 export function formatToolResult(result: string): string {

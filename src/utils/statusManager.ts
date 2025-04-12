@@ -9,6 +9,9 @@ export class StatusManager {
   private streamingStatusItem: vscode.StatusBarItem;
   private streamingDots: string = "";
   private animationInterval: NodeJS.Timeout | undefined;
+  
+  // Tracks current status to handle transitions
+  private currentStatus: 'idle' | 'streaming' | 'executing' | 'cancelling' = 'idle';
 
   private constructor() {
     // Create streaming status bar item with higher priority (lower number)
@@ -18,7 +21,7 @@ export class StatusManager {
     );
     this.streamingStatusItem.text = "$(check) chat.md: Idle";
     this.streamingStatusItem.tooltip =
-      "chat.md is ready. When streaming, click to cancel.";
+      "chat.md is ready. When streaming or executing a tool, click to cancel.";
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     // Always show the status bar item, even in idle state
     this.streamingStatusItem.show();
@@ -50,6 +53,7 @@ export class StatusManager {
       clearInterval(this.animationInterval);
     }
 
+    this.currentStatus = 'streaming';
     this.streamingDots = "";
     // Change to streaming state with animation
     this.streamingStatusItem.text = "$(loading~spin) chat.md: Streaming";
@@ -66,6 +70,63 @@ export class StatusManager {
       this.updateStreamingAnimation();
     }, 500);
   }
+  
+  /**
+   * Shows the tool execution status
+   */
+  public showToolExecutionStatus(): void {
+    if (this.animationInterval) {
+      clearInterval(this.animationInterval);
+    }
+
+    this.currentStatus = 'executing';
+    this.streamingDots = "";
+    // Change to tool execution state with animation
+    this.streamingStatusItem.text = "$(tools~spin) chat.md: Executing tool";
+    this.streamingStatusItem.tooltip =
+      "A tool is currently being executed. Click to cancel.";
+    this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
+      "statusBarItem.warningBackground",
+    );
+
+    log("Changed to tool execution status");
+    
+    // Start animation for the dots
+    this.animationInterval = setInterval(() => {
+      this.updateToolExecutionAnimation();
+    }, 500);
+  }
+  
+  /**
+   * Updates the animation for the tool execution status
+   */
+  private updateToolExecutionAnimation(): void {
+    // Cycle through 1, 2, and 3 dots
+    this.streamingDots =
+      this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool${this.streamingDots}`;
+  }
+  
+  /**
+   * Shows the tool cancellation status
+   */
+  public showToolCancellationStatus(): void {
+    if (this.animationInterval) {
+      clearInterval(this.animationInterval);
+    }
+
+    this.currentStatus = 'cancelling';
+    this.streamingDots = "";
+    // Change to cancelling state
+    this.streamingStatusItem.text = "$(stop-circle) chat.md: Cancelling tool execution";
+    this.streamingStatusItem.tooltip =
+      "Cancellation requested. The tool may still execute on the server side.";
+    this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
+      "statusBarItem.errorBackground",
+    );
+
+    log("Changed to tool cancellation status");
+  }
 
   /**
    * Switches to idle status and stops the animation
@@ -76,13 +137,21 @@ export class StatusManager {
       this.animationInterval = undefined;
     }
 
+    this.currentStatus = 'idle';
     // Change to idle state
     this.streamingStatusItem.text = "$(check) chat.md: Idle";
     this.streamingStatusItem.tooltip =
-      "chat.md is ready. When streaming, click to cancel.";
+      "chat.md is ready. When streaming or executing a tool, click to cancel.";
     this.streamingStatusItem.backgroundColor = undefined; // Remove background color
 
     log("Changed to idle status");
+  }
+  
+  /**
+   * Get the current status
+   */
+  public getCurrentStatus(): 'idle' | 'streaming' | 'executing' | 'cancelling' {
+    return this.currentStatus;
   }
 
   /**

@@ -17,6 +17,115 @@ export interface ParsedDocumentResult {
   messages: readonly MessageParam[];
   systemPrompt: string;
   hasImageInSystemBlock: boolean;
+  settings?: Record<string, any>; // Parsed settings from # %% settings block
+}
+
+/**
+ * Parses a TOML-like settings string from a settings block
+ * @param settingsText The text content of a settings block
+ * @returns Parsed settings object or null if parsing fails
+ */
+export function parseSettingsBlock(settingsText: string): Record<string, any> | null {
+  try {
+    const settings: Record<string, any> = {};
+    const lines = settingsText.split('\n');
+    
+    let currentSection = '';
+    let currentArray: any[] | null = null;
+    let currentArrayKey = '';
+    
+    for (const line of lines) {
+      const trimmedLine = line.trim();
+      
+      // Skip empty lines and comments
+      if (trimmedLine === '' || trimmedLine.startsWith('#')) {
+        continue;
+      }
+      
+      // Check for section headers [section]
+      const sectionMatch = trimmedLine.match(/^\[([^\]]+)\]$/);
+      if (sectionMatch) {
+        currentSection = sectionMatch[1];
+        if (!settings[currentSection]) {
+          settings[currentSection] = {};
+        }
+        currentArray = null; // Exit array mode when entering a new section
+        continue;
+      }
+      
+      // Check for array start
+      if (trimmedLine.match(/^[\w\-_]+ *= *\[$/)) {
+        const keyMatch = trimmedLine.match(/^([\w\-_]+) *= *\[$/);
+        if (keyMatch) {
+          currentArrayKey = keyMatch[1];
+          currentArray = [];
+          
+          // Store the array in the appropriate section or root
+          if (currentSection) {
+            settings[currentSection][currentArrayKey] = currentArray;
+          } else {
+            settings[currentArrayKey] = currentArray;
+          }
+        }
+        continue;
+      }
+      
+      // Check for array end
+      if (trimmedLine === ']' && currentArray !== null) {
+        currentArray = null;
+        continue;
+      }
+      
+      // Process array items
+      if (currentArray !== null) {
+        // Remove leading/trailing quotes if present
+        const valueMatch = trimmedLine.match(/^"([^"]*)"$/) || 
+                          trimmedLine.match(/^'([^']*)'$/) ||
+                          trimmedLine.match(/^([^,]*)$/);
+                          
+        if (valueMatch) {
+          const value = valueMatch[1].trim();
+          if (value.endsWith(',')) {
+            currentArray.push(value.slice(0, -1).trim());
+          } else {
+            currentArray.push(value.trim());
+          }
+        }
+        continue;
+      }
+      
+      // Key-value pairs
+      const kvMatch = trimmedLine.match(/^([\w\-_]+) *= *(.+)$/);
+      if (kvMatch) {
+        const key = kvMatch[1].trim();
+        let value = kvMatch[2].trim();
+        
+        // Parse value (string, number, boolean)
+        if (value.match(/^".*"$/) || value.match(/^'.*'$/)) {
+          // String value (remove quotes)
+          value = value.slice(1, -1);
+        } else if (value === 'true' || value === 'false') {
+          // Boolean value
+          value = value === 'true';
+        } else if (!isNaN(Number(value))) {
+          // Number value
+          value = Number(value);
+        }
+        
+        // Store in appropriate section or root
+        if (currentSection) {
+          settings[currentSection][key] = value;
+        } else {
+          settings[key] = value;
+        }
+      }
+    }
+    
+    return settings;
+  } catch (error) {
+    log(`Error parsing settings block: ${error}`);
+    return null;
+  }
 }
 
 /**
@@ -32,9 +141,10 @@ export function parseDocument(
   const messages: MessageParam[] = [];
   let systemPromptParts: string[] = [];
   let hasImageInSystemBlock = false;
+  let settingsBlock: string | null = null;
 
-  // Regex to split document on # %% markers, now including 'system'
-  const regex = /^# %% (user|assistant|system|tool_execute)\s*$/im;
+  // Regex to split document on # %% markers, now including 'system' and 'settings'
+  const regex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
   const blocks = text.split(regex);
 
   // Debug logging
@@ -84,8 +194,15 @@ export function parseDocument(
 
     // Empty assistant/tool_execute blocks are handled by the endIdx logic above,
     // so no need to explicitly skip them here.
+    // Detect settings block
+    if (role === "settings") {
+      if (content) {
+        settingsBlock = content;
+        log(`Found settings block: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+      }
+    }
     // Detect system block
-    if (role === "system") {
+    else if (role === "system") {
       if (content) { // Only add non-empty system blocks
         systemPromptParts.push(rawContent); // Add raw content including original formatting
         // Check for images within this system block only if we haven't found one yet
@@ -139,12 +256,16 @@ export function parseDocument(
   // Combine system prompts separated by newline
   const finalSystemPrompt = systemPromptParts.join("\n").trim();
 
-  log(`Parsed document. Messages: ${messages.length}, System Prompt Length: ${finalSystemPrompt.length}, Has Image in System: ${hasImageInSystemBlock}`);
+  // Parse settings block if found
+  const settings = settingsBlock ? parseSettingsBlock(settingsBlock) : undefined;
+  
+  log(`Parsed document. Messages: ${messages.length}, System Prompt Length: ${finalSystemPrompt.length}, Has Image in System: ${hasImageInSystemBlock}, Has Settings: ${settings ? 'yes' : 'no'}`);
 
   return Object.freeze({
     messages: Object.freeze(messages),
     systemPrompt: finalSystemPrompt,
     hasImageInSystemBlock: hasImageInSystemBlock,
+    settings: settings,
   });
 }
 

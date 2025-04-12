@@ -422,6 +422,25 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         toolCallXml, // Pass the raw XML for logging
       );
 
+      // Check if this is a cancellation result
+      if (typeof rawResult === 'string' && rawResult.startsWith('CANCELLED:')) {
+        log(`Tool execution was cancelled - not inserting any result`);
+        
+        // Remove the empty tool_execute block
+        this.removeLastEmptyBlock("tool_execute");
+        
+        // Log cancellation in the execution log file
+        executionLog += `## Tool Execution Cancelled\n\nTool execution was cancelled by user.\n`;
+        fs.writeFileSync(executionLogPath, executionLog);
+        log(`Tool cancellation recorded in log: ${executionLogPath}`);
+        
+        // Set status back to idle
+        vscode.window.showInformationMessage("Tool execution cancelled, but it may still have gone through successfully");
+        
+        // Don't insert anything into the document
+        return;
+      }
+
       // Append the result to the execution log
       executionLog += `## Tool Execution Result\n\n\`\`\`\n${rawResult}\n\`\`\`\n`;
       fs.writeFileSync(executionLogPath, executionLog);
@@ -430,6 +449,20 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       // Insert the raw result (insertToolResult will handle formatting/linking)
       await this.insertToolResult(rawResult);
     } catch (error) {
+      // Check if this is a cancellation-related error
+      if (error.name === 'AbortError' || 
+          (error.message && (
+            error.message.includes('AbortError') || 
+            error.message.includes('cancelled') || 
+            error.message.includes('canceled')
+          ))
+      ) {
+        log(`Tool execution cancelled (caught in error handler): ${error}`);
+        // Remove the empty tool_execute block without inserting any error
+        this.removeLastEmptyBlock("tool_execute");
+        return;
+      }
+      
       log(`Error executing tool: ${error}`);
       // Format and insert the error message directly
       const formattedError = formatToolResult(`Error executing tool: ${error}`);
@@ -449,6 +482,16 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     rawResult: string,
     isPreformattedError = false,
   ): Promise<void> {
+    // Extra safety check - if we somehow got a cancellation string or AbortError, ignore it
+    if (typeof rawResult === 'string' && (
+        rawResult.startsWith('CANCELLED:') || 
+        rawResult.includes('AbortError') ||
+        rawResult.includes('This operation was aborted')
+      )) {
+      log(`Caught cancelled result in insertToolResult - no action needed`);
+      return;
+    }
+    
     const text = this.document.getText();
     let contentToInsert = "";
     const lineCountThreshold = 30;

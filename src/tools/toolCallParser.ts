@@ -413,9 +413,9 @@ export function findToolCallPatterns(
  * Checks if text contains a complete tool call
  * Handles CDATA sections in parameters
  * @param text The text to check for completed tool calls
- * @returns A result indicating if a complete tool call was found and its position
+ * @returns A result indicating if a complete tool call was found and its position, and optionally the tool name
  */
-export function checkForCompletedToolCall(text: string): ToolCallCheckResult {
+export function checkForCompletedToolCall(text: string): ToolCallCheckResult | { isComplete: true; endIndex: number; toolName: string } {
   // Log for debugging
   log(`Checking for completed tool call in text of length ${text.length}`);
 
@@ -460,11 +460,15 @@ export function checkForCompletedToolCall(text: string): ToolCallCheckResult {
     return { isComplete: false };
   }
 
+  // Extract the tool name from the completed tool call
+  const toolNameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(originalTextPortion);
+  const toolName = toolNameMatch ? toolNameMatch[1].trim() : '';
+
   // Log the finding
   log(
-    `Found completed tool call (${type}): "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? "..." : ""}"`,
+    `Found completed tool call (${type}) for tool "${toolName}": "${fullMatch.substring(0, 50)}${fullMatch.length > 50 ? "..." : ""}"`,
   );
   log("Stopping streaming at completed tool call");
 
-  return { isComplete: true, endIndex: matchEndIndex };
+  return { isComplete: true, endIndex: matchEndIndex, toolName };
 }

@@ -116,10 +116,33 @@ Access these settings through VS Code's settings UI or settings.json:
 - `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
+- `chatmd.disabledToolAutoExecute`: List of MCP tools for which auto-execution is globally disabled
+
+### Tool Auto-Execute Configuration
+
+You can configure which tools automatically trigger tool execution blocks:
+
+1. **File-specific Configuration**: Run the "chat.md: Configure Tool Auto-Execute Settings" command while a .chat.md file is open to configure which tools will not automatically emit tool_execute blocks.
+
+2. **Settings Block**: Settings are stored directly in your chat.md file in a special `# %% settings` block at the top of the file in TOML format:
+
+```
+# %% settings
+[tools]
+disabledAutoExecute = [
+  "filesystem.writeFile",
+  "shell.execute",
+]
+
+```
+
+3. **Manual Tool Execution**: For tools that don't auto-execute, you can still trigger execution by:
+   - Pressing Shift+Enter while positioned at the end of an assistant response containing a tool call
+   - This will insert a tool_execute block and execute the tool
 
 ## Keyboard Shortcuts
 
-- `Shift+Enter`: Insert next block (alternates between user/assistant)
+- `Shift+Enter`: Insert next block (alternates between user/assistant) or inserts a tool_execute block if the cursor is at the end of an assistant block containing a tool call
 - `Opt+Cmd+'` (Mac) / `Ctrl+k Ctrl+c'` (Windows/Linux): Create new context chat or cancel existing streaming
 
 ## MCP Tool Integration
