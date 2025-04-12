@@ -5,7 +5,7 @@ import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
 import { log, statusManager } from "./extension";
-import { generateToolCallingSystemPrompt, isToolAutoExecuteDisabled } from "./config";
+import { generateToolCallingSystemPrompt } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
 import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser";
@@ -240,19 +240,13 @@ export class StreamingService {
                   const { endIndex } = toolCallResult;
                   const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
                   
-                  // Check if auto-execute is disabled for this tool in this file
-                  log(`Found complete tool call for tool "${toolName}" - checking auto-execute status`);
-                  
-                  // Always show the status bar initially when a tool call is detected
+                  // Always show the status bar when a tool call is detected
                   statusManager.showToolExecutionStatus();
                   log(`Showing 'executing tool' status for detected tool "${toolName}"`);
                   
-                  const isAutoExecuteDisabled = isToolAutoExecuteDisabled(toolName, this.document.uri.fsPath);
-                  log(`Auto-execute ${isAutoExecuteDisabled ? 'IS' : 'is NOT'} disabled for tool "${toolName}"`);
-                  
-                  if (isAutoExecuteDisabled) {
-                    log(`Auto-execution is disabled for tool "${toolName}" in this file. Will not add tool_execute block.`);
-                  }
+                  // All tools are always auto-executed since the feature to disable auto-execution has been removed
+                  const isAutoExecuteDisabled = false; 
+                  log(`Auto-execute is always enabled for all tools`);
 
                   // Truncate existing tokens if needed
                   if (streamer.tokens.join("").length > endIndex) {
@@ -313,14 +307,15 @@ export class StreamingService {
                     }
                   }
 
-                  // Only add tool_execute block if auto-execution is not disabled for this tool
-                  if (!isAutoExecuteDisabled) {
-                    // Add tool_execute block after the last token
-                    const text = this.document.getText();
-                    const blockStart = this.findBlockStartPosition(
-                      text,
-                      streamer,
-                    );
+                  // Always add tool_execute block (auto-execution is always enabled)
+                  // Add tool_execute block after the last token
+                  const text = this.document.getText();
+                  const blockStart = this.findBlockStartPosition(
+                    text,
+                    streamer,
+                  );
+
+                  if (blockStart !== -1) {
 
                     if (blockStart !== -1) {
                       const currentText = streamer.tokens.join("");

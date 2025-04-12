@@ -116,29 +116,19 @@ Access these settings through VS Code's settings UI or settings.json:
 - `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
-- `chatmd.disabledToolAutoExecute`: List of MCP tools for which auto-execution is globally disabled
 
-### Tool Auto-Execute Configuration
+### Tool Execution
 
-You can configure which tools automatically trigger tool execution blocks:
+When an AI response includes a tool call, the extension will automatically:
 
-1. **File-specific Configuration**: Run the "chat.md: Configure Tool Auto-Execute Settings" command while a .chat.md file is open to configure which tools will not automatically emit tool_execute blocks.
+1. Add a tool_execute block after the assistant's response
+2. Execute the tool with the specified parameters
+3. Insert the tool's result back into the document
+4. Add a new assistant block for the AI to continue
 
-2. **Settings Block**: Settings are stored directly in your chat.md file in a special `# %% settings` block at the top of the file in TOML format:
-
-```
-# %% settings
-[tools]
-disabledAutoExecute = [
-  "filesystem.writeFile",
-  "shell.execute",
-]
-
-```
-
-3. **Manual Tool Execution**: For tools that don't auto-execute, you can still trigger execution by:
-   - Pressing Shift+Enter while positioned at the end of an assistant response containing a tool call
-   - This will insert a tool_execute block and execute the tool
+You can also trigger tool execution manually by:
+- Pressing Shift+Enter while positioned at the end of an assistant response containing a tool call
+- This will insert a tool_execute block and execute the tool
 
 ## Keyboard Shortcuts
 

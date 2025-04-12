@@ -25,10 +25,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "filechat.configureToolAutoExecute",
-        "title": "chat.md: Configure Tool Auto-Execute Settings"
-      },
-      {
         "command": "filechat.newChat",
         "title": "chat.md: New chat.md"
       },

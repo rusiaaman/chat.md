@@ -14,8 +14,6 @@ import {
   setApiConfig,
   removeApiConfig,
   ApiConfig,
-  isToolAutoExecuteDisabled,
-  updateFileToolAutoExecuteSettings,
   getDefaultSystemPrompt,
 } from "./config";
 import { getBlockInfoAtPosition } from "./parser";
@@ -202,75 +200,6 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Register commands
   context.subscriptions.push(
-    vscode.commands.registerCommand("filechat.configureToolAutoExecute", async () => {
-      // Get available tools from all MCP servers
-      const mcpGroupedTools = mcpClientManager.getGroupedTools();
-      const toolNames: string[] = [];
-      
-      // Flatten the grouped tools structure to get all tool names
-      for (const [_, serverTools] of mcpGroupedTools.entries()) {
-        for (const [toolName, _] of serverTools.entries()) {
-          toolNames.push(toolName);
-        }
-      }
-      
-      if (toolNames.length === 0) {
-        vscode.window.showInformationMessage("No MCP tools are currently available.");
-        return;
-      }
-      
-      // This now only supports file-specific configuration
-      const activeEditor = vscode.window.activeTextEditor;
-      if (!activeEditor || !activeEditor.document.fileName.endsWith(".chat.md")) {
-        vscode.window.showErrorMessage("Please open a chat.md file first to configure settings.");
-        return;
-      }
-      
-      // Get the current configuration from the file
-      const document = activeEditor.document;
-      const parseResult = parseDocument(document.getText(), document);
-      
-      // Extract current disabled tools from settings
-      let currentDisabledTools: string[] = [];
-      if (parseResult.settings && 
-          parseResult.settings.tools && 
-          Array.isArray(parseResult.settings.tools.disabledAutoExecute)) {
-        currentDisabledTools = parseResult.settings.tools.disabledAutoExecute;
-      }
-      
-      log(`Found ${currentDisabledTools.length} currently disabled tools in file settings`);
-      
-      // Create checkboxes for each tool with current config applied
-      const toolItems = toolNames.map(toolName => ({
-        label: toolName,
-        picked: currentDisabledTools.includes(toolName)
-      }));
-      
-      // Display multi-select UI
-      const selectedItems = await vscode.window.showQuickPick(toolItems, {
-        placeHolder: "Select tools for which to disable auto-execute in this file",
-        canPickMany: true
-      });
-      
-      if (!selectedItems) {
-        return; // User cancelled
-      }
-      
-      // Update configuration in the file
-      const newDisabledTools = selectedItems.map(item => item.label);
-      
-      const success = await updateFileToolAutoExecuteSettings(document, newDisabledTools);
-      
-      if (success) {
-        vscode.window.showInformationMessage(
-          `Tool auto-execute configuration updated. Selected tools will not automatically add tool_execute blocks.`
-        );
-      } else {
-        vscode.window.showErrorMessage(
-          "Failed to update tool auto-execute configuration."
-        );
-      }
-    }),
     
     vscode.commands.registerCommand("filechat.cancelStreaming", () => {
       // Get current status to determine what to cancel
