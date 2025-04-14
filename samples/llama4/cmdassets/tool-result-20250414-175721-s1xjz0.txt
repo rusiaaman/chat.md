@@ -1,0 +1,33 @@
+added 150 packages, and audited 151 packages in 7s
+
+30 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+
+added 6 packages, and audited 157 packages in 1s
+
+32 packages are looking for funding
+  run `npm fund` for details
+
+found 0 vulnerabilities
+≈ tailwindcss v4.0.14
+
+Invalid command: init
+
+Usage:
+  tailwindcss [options]
+
+Options:
+  -i, --input ··········· Input file
+  -o, --output ·········· Output file [default: `-`]
+  -w, --watch ··········· Watch for changes and rebuild as needed
+  -m, --minify ·········· Optimize and minify the output
+      --optimize ········ Optimize the output without minifying
+      --cwd ············· The current working directory [default: `.`]
+  -h, --help ············ Display usage information
+
+---
+
+status = process exited
+cwd = /private/tmp/app-react-vite-91y

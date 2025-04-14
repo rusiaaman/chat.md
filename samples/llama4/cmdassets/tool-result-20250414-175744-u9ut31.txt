@@ -1,0 +1,67 @@
+
+/tmp/app-react-vite-91y/src/components/TodoList.jsx
+```
+import React, { useState } from 'react';
+
+const TodoList = () => {
+  const [todos, setTodos] = useState([]);
+  const [newTodo, setNewTodo] = useState('');
+
+  const handleAddTodo = () => {
+    if (newTodo.trim() !== '') {
+      setTodos([...todos, { text: newTodo, completed: false }]);
+      setNewTodo('');
+    }
+  };
+
+  const handleDeleteTodo = (index) => {
+    setTodos(todos.filter((todo, i) => i !== index));
+  };
+
+  const handleToggleCompleted = (index) => {
+    setTodos(todos.map((todo, i) => i === index ? { ...todo, completed: !todo.completed } : todo));
+  };
+
+  return (
+    <div className="max-w-md mx-auto p-4">
+      <h1 className="text-3xl font-bold mb-4">Todo List</h1>
+      <input
+        type="text"
+        value={newTodo}
+        onChange={(e) => setNewTodo(e.target.value)}
+        className="w-full p-2 mb-4 border border-gray-300 rounded"
+        placeholder="Add new todo"
+      />
+      <button
+        onClick={handleAddTodo}
+        className="w-full p-2 mb-4 bg-blue-500 text-white rounded hover:bg-blue-700"
+      >
+        Add Todo
+      </button>
+      <ul>
+        {todos.map((todo, index) => (
+          <li key="index" className="flex items-center mb-2">
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => handleToggleCompleted(index)}
+              className="mr-2"
+            />
+            <span className={`flex-1 ${todo.completed ? 'line-through' : ''}`}>{todo.text}</span>
+            <button
+              onClick={() => handleDeleteTodo(index)}
+              className="ml-2 bg-red-500 text-white rounded hover:bg-red-700 p-1"
+            >
+              Delete
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+};
+
+`;
+
+export default TodoList;
+```

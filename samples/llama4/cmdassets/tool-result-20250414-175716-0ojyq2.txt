@@ -1,0 +1,34 @@
+11 validation errors for BashCommand
+action_json.Command.status_check
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.StatusCheck.command
+  Extra inputs are not permitted [type=extra_forbidden, input_value='status_check', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendText.send_text
+  Field required [type=missing, input_value={'command': 'status_check', 'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendText.command
+  Extra inputs are not permitted [type=extra_forbidden, input_value='status_check', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendText.status_check
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendSpecials.send_specials
+  Field required [type=missing, input_value={'command': 'status_check', 'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendSpecials.command
+  Extra inputs are not permitted [type=extra_forbidden, input_value='status_check', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendSpecials.status_check
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendAscii.send_ascii
+  Field required [type=missing, input_value={'command': 'status_check', 'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendAscii.command
+  Extra inputs are not permitted [type=extra_forbidden, input_value='status_check', input_type=str]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendAscii.status_check
+  Extra inputs are not permitted [type=extra_forbidden, input_value=True, input_type=bool]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
