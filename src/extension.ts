@@ -728,7 +728,7 @@ export function activate(context: vscode.ExtensionContext) {
           {
             label: "Azure OpenAI API",
             detail:
-              "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME",
+              "https://YOUR_RESOURCE_NAME.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT_NAME/chat/completions?api-version=2024-06-01",
           },
           {
             label: "Google Gemini API",

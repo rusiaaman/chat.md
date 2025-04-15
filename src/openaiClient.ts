@@ -24,9 +24,12 @@ export class OpenAIClient {
   ) {
     // Use custom base URL if provided directly
     if (this.customBaseUrl) {
-      // Construct the full URL by joining the base URL with the chat completions endpoint
-      this.apiUrl = this.joinUrl(this.customBaseUrl, "/chat/completions");
-      log(`Using custom OpenAI base URL: ${this.customBaseUrl}`);
+      if (!this.customBaseUrl.includes("/chat/completions")) {
+        this.apiUrl = this.joinUrl(this.customBaseUrl, "/chat/completions");
+      } else {
+        this.apiUrl = this.customBaseUrl;
+      }
+      log(`Using custom OpenAI base URL: ${this.apiUrl}`);
     } else {
       this.apiUrl = "https://api.openai.com/v1/chat/completions";
       log("Using default OpenAI API URL");
