@@ -140,8 +140,14 @@ export class DocumentListener {
     if (event.document.uri.toString() !== this.document.uri.toString() || !this.document.fileName.endsWith(".chat.md")) {
       return;
     }
+    
+    // Check if there are actual content changes (not just file save or metadata changes)
+    if (event.contentChanges.length === 0) {
+      log(`Document saved without content changes: ${this.document.fileName} - ignoring`);
+      return;
+    }
 
-    log(`Document changed: ${this.document.fileName}`);
+    log(`Document content changed: ${this.document.fileName}`);
     const text = this.document.getText();
 
     try {
