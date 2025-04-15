@@ -492,16 +492,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     rawResult: string,
     isPreformattedError = false,
   ): Promise<void> {
-    // Extra safety check - if we somehow got a cancellation string or AbortError, ignore it
-    if (typeof rawResult === 'string' && (
-        rawResult.startsWith('CANCELLED:') || 
-        rawResult.includes('AbortError') ||
-        rawResult.includes('This operation was aborted')
-      )) {
-      log(`Caught cancelled result in insertToolResult - no action needed`);
-      return;
-    }
-    
+
     const text = this.document.getText();
     let contentToInsert = "";
     const lineCountThreshold = 30;
