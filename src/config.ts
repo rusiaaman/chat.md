@@ -283,6 +283,28 @@ export function getBaseUrl(): string | undefined {
     : undefined;
 }
 
+/**
+ * Gets the maximum number of thinking tokens to use
+ * Used for O-series models (o1, o2) that require max_completion_tokens instead of max_tokens
+ * @returns The number of thinking tokens to use (default: 16000)
+ */
+export function getMaxThinkingTokens(): number {
+  // Get from configuration if available, otherwise use default
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get("maxThinkingTokens") || 16000; // Default to 16k tokens
+}
+
+/**
+ * Gets the maximum number of tokens to generate
+ * This is used as max_tokens for non-O-series models and as part of max_completion_tokens for O-series
+ * @returns The number of max tokens to use (default: 8000)
+ */
+export function getMaxTokens(): number {
+  // Get from configuration if available, otherwise use default
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get("maxTokens") || 8000; // Default to 8k tokens
+}
+
 import { parseDocument } from "./parser";
 import * as fs from "fs";
 

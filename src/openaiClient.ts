@@ -83,12 +83,32 @@ export class OpenAIClient {
       // Use fallback if needed
       modelName = modelName || "gpt-3.5-turbo";
 
-      const requestBody = {
+      // Get the max tokens value from configuration
+      const { getMaxTokens, getMaxThinkingTokens } = require("./config");
+      const maxTokens = getMaxTokens();
+      
+      // Initial request body
+      const requestBody: any = {
         model: modelName,
         messages: allMessages,
         stream: true,
-        max_tokens: 4000,
       };
+
+      // Check if this is an O-series model (o1, o2, etc.)
+      const isOSeriesModel = modelName && /^o\d+-/.test(modelName);
+
+      if (isOSeriesModel) {
+        // For O-series models, use max_completion_tokens instead of max_tokens
+        const maxThinkingTokens = getMaxThinkingTokens();
+        const maxCompletionTokens = maxTokens + maxThinkingTokens;
+        
+        log(`Detected O-series model (${modelName}), using max_completion_tokens: ${maxCompletionTokens} (${maxTokens} + ${maxThinkingTokens} thinking tokens)`);
+        requestBody.max_completion_tokens = maxCompletionTokens;
+      } else {
+        // For all other models, use standard max_tokens
+        log(`Using standard max_tokens: ${maxTokens} for model ${modelName}`);
+        requestBody.max_tokens = maxTokens;
+      }
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,

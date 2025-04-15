@@ -262,7 +262,13 @@ vscode json settings
     }
   },
   "chatmd.selectedConfig": "gemini-2.5pro",
+  "chatmd.maxTokens": 8000,
+  "chatmd.maxThinkingTokens": 16000
 ```
+
+Note: `maxTokens` (default: 8000) controls the maximum number of tokens generated in model responses.
+For OpenAI O-series models (like o1, o2) that require `max_completion_tokens` instead of `max_tokens`, 
+the extension automatically detects them and uses `maxThinkingTokens` (default: 16000) as additional thinking tokens.
 ## License
 
 MIT License - see the LICENSE file for details.

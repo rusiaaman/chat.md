@@ -130,20 +130,25 @@ export class StreamingService {
     messages: readonly MessageParam[],
     streamer: StreamerState,
     systemPrompt: string, // Added systemPrompt parameter
+    currentRetryAttempt: number = 0, // Add parameter to track retry attempts across recursive calls
+    maxTokenRetryAttempt: number = 0 // Add parameter to track max token retries
   ): Promise<void> {
     // Flag to track if we need to restart due to max tokens
     let maxTokensReached = false;
-    // Track retry attempts for server errors
-    let retryAttempt = 0;
+    // Track retry attempts for server errors - initialize from passed parameter
+    let retryAttempt = currentRetryAttempt;
+    // Track max token retry attempts separately
+    let tokenRetryAttempt = maxTokenRetryAttempt;
     const maxRetries = 5;
+    const maxTokenRetries = 10; // Maximum number of retries for max token errors
 
     try {
       log(
-        `streamResponse called for ${messages.length} messages, provider: ${this.provider}`,
+        `streamResponse called for ${messages.length} messages, provider: ${this.provider}, max retries allowed: ${maxRetries}, current retry: ${retryAttempt}, max token retries: ${maxTokenRetries}, current token retry: ${tokenRetryAttempt}`,
       );
 
       // Start streaming with retry logic for server errors
-      while (retryAttempt <= maxRetries) {
+      while (retryAttempt < maxRetries) {  // Changed <= to < to enforce max retry limit correctly
         try {
           log(
             `Starting to stream response for ${messages.length} messages${retryAttempt > 0 ? ` (retry ${retryAttempt})` : ""}`,
@@ -419,8 +424,11 @@ export class StreamingService {
         } catch (error) {
           // Check if this is a server error or rate limit error that we should retry
           if (this.isServerError(error)) {
+            // Increment retry attempt before checking limits
+            retryAttempt++;
+            log(`Server error encountered, incrementing retry attempt to ${retryAttempt} of ${maxRetries} max`);
+            
             if (retryAttempt < maxRetries && streamer.isActive) {
-              retryAttempt++;
               const backoffDelay = Math.min(
                 1000 * Math.pow(2, retryAttempt),
                 32000,
@@ -443,37 +451,27 @@ export class StreamingService {
                 message + " (Click 'Cancel Streaming' to abort)",
               );
               
-              // Use a cancellable timeout instead of Promise
-              let timeoutCancelled = false;
-              const timeoutPromise = new Promise<void>((resolve) => {
-                const timeout = setTimeout(() => {
-                  if (!timeoutCancelled) {
-                    resolve();
-                  }
-                }, backoffDelay);
-                
-                // Set up a watcher that checks if streaming was cancelled during wait
-                const checkInterval = setInterval(() => {
-                  if (!streamer.isActive) {
-                    clearTimeout(timeout);
-                    clearInterval(checkInterval);
-                    timeoutCancelled = true;
-                    resolve(); // Resolve immediately to continue execution flow
-                  }
-                }, 100); // Check every 100ms
-                
-                // Clean up interval when timeout completes
-                timeout.unref(); // Allow Node.js to exit if this is the only active timer
-                timeout.ref();   // Ensure the timer runs
-                
-                // Cleanup function
-                return () => {
-                  clearTimeout(timeout);
-                  clearInterval(checkInterval);
-                };
-              });
+              // Simpler implementation for backoff with better cancellation handling
+              let isCancelled = false;
+              const checkIntervalId = setInterval(() => {
+                if (!streamer.isActive) {
+                  isCancelled = true;
+                }
+              }, 100);
               
-              await timeoutPromise;
+              try {
+                log(`Starting backoff wait for ${backoffDelay}ms at ${new Date().toISOString()}`);
+                // Wait for the backoff delay, but allow for early cancellation
+                const startTime = Date.now();
+                while (!isCancelled && (Date.now() - startTime) < backoffDelay) {
+                  // Wait in small chunks to allow for more responsive cancellation
+                  await new Promise(resolve => setTimeout(resolve, 100));
+                }
+                log(`Completed backoff wait at ${new Date().toISOString()}, waited for ${Date.now() - startTime}ms, cancelled=${isCancelled}`);
+              } finally {
+                // Always clean up the interval
+                clearInterval(checkIntervalId);
+              }
               
               // Check if streaming was cancelled during the timeout
               if (!streamer.isActive) {
@@ -481,18 +479,44 @@ export class StreamingService {
                 break; // Exit the retry loop
               }
               
+              log(`Retry attempt ${retryAttempt} of ${maxRetries} starting now after ${backoffDelay}ms backoff`);
               continue; // Try again with backoff
-            } else if (!streamer.isActive) {
-              log("Streaming is no longer active, aborting retry attempts");
+            } else {
+              // Handle max retries reached or streamer no longer active
+              if (retryAttempt >= maxRetries) {
+                // We've reached or exceeded the maximum number of retries
+                log(`Maximum retry attempts (${maxRetries}) reached, giving up`);
+                vscode.window.showErrorMessage(
+                  `Reached maximum retry attempts (${maxRetries}). Unable to connect to LLM service.`
+                );
+              } else {
+                log("Streaming is no longer active, aborting retry attempts");
+              }
               break; // Exit the retry loop
             }
           }
 
           // Check if it's a max tokens error
           if (this.isMaxTokensError(error) && streamer.isActive) {
+            // Increment the token retry counter
+            tokenRetryAttempt++;
+            
+            // Check if we've reached the maximum token retries
+            if (tokenRetryAttempt >= maxTokenRetries) {
+              log(
+                `🛑 Max token retry limit (${maxTokenRetries}) reached. Stopping stream.`,
+              );
+              vscode.window.showErrorMessage(
+                `Maximum token retry limit (${maxTokenRetries}) reached. Unable to complete response.`
+              );
+              maxTokensReached = false; // Force cleanup in finally block
+              streamer.isActive = false;
+              break;
+            }
+            
             maxTokensReached = true;
             log(
-              `🚨 Max tokens reached: ${error}. Will restart stream automatically.`,
+              `🚨 Max tokens reached: ${error}. Will restart stream automatically (token retry ${tokenRetryAttempt}/${maxTokenRetries}).`,
             );
 
             // For debugging purposes, log additional info about the current state
@@ -502,7 +526,7 @@ export class StreamingService {
 
             // Show notification to user
             vscode.window.showInformationMessage(
-              "Maximum token limit reached. Restarting stream automatically... (Click 'Cancel Streaming' to abort)",
+              `Maximum token limit reached. Restarting stream automatically (retry ${tokenRetryAttempt}/${maxTokenRetries})... (Click 'Cancel Streaming' to abort)`,
             );
             
             // Check if streaming was cancelled while showing the notification
@@ -570,12 +594,14 @@ export class StreamingService {
             if (streamer.isActive) {
               try {
                 log(
-                  `🔄 RESTARTING STREAM after max tokens error with updated context`,
+                  `🔄 RESTARTING STREAM after max tokens error with updated context (server retry: ${retryAttempt}, token retry: ${tokenRetryAttempt}/${maxTokenRetries})`,
                 );
                 await this.streamResponse(
                   updatedMessages,
                   streamer,
                   systemPrompt,
+                  retryAttempt, // Pass the current retry count to maintain it across calls
+                  tokenRetryAttempt // Pass the token retry count
                 );
                 return; // If successful, exit this function
               } catch (retryError) {

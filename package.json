@@ -2,7 +2,7 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files. Features include tool integration, auto-execution control, and customizable behavior.",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "publisher": "AmanRusia",
   "license": "MIT",
   "icon": "./images/icon.png",
@@ -156,6 +156,18 @@
             ]
           },
           "default": {},
+          "scope": "application"
+        },
+        "chatmd.maxThinkingTokens": {
+          "type": "number",
+          "description": "Maximum number of thinking tokens for O-series models (o1, o2) that use max_completion_tokens",
+          "default": 16000,
+          "scope": "application"
+        },
+        "chatmd.maxTokens": {
+          "type": "number",
+          "description": "Maximum number of tokens to generate in responses (applies to all models)",
+          "default": 8000,
           "scope": "application"
         }
       }
