@@ -95,7 +95,7 @@ export class OpenAIClient {
       };
 
       // Check if this is an O-series model (o1, o2, etc.)
-      const isOSeriesModel = modelName && /^o\d+-/.test(modelName);
+      const isOSeriesModel = modelName && /^o\d+/.test(modelName);
 
       if (isOSeriesModel) {
         // For O-series models, use max_completion_tokens instead of max_tokens
