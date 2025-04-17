@@ -1,0 +1,32 @@
+{
+  "cSpell.words": [
+    "Aman",
+    "Rusia"
+  ],
+  // Enable ESLint validation
+  "eslint.validate": [
+    "javascript",
+    "javascriptreact",
+    "typescript",
+    "typescriptreact"
+  ],
+  // Set Prettier as the default formatter for relevant languages
+  "[typescript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[typescriptreact]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[javascript]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  // Automatically format files on save
+  "editor.formatOnSave": true,
+  // Optional: Run ESLint autofix on save
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit" // Or true if you prefer implicit fix on save
+  }
+}
