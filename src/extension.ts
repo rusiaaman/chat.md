@@ -48,21 +48,80 @@ export function log(message: string): void {
   // Logging happens without showing the output channel automatically
 }
 
+// --- Helper Function to Select Config by Index ---
+/**
+ * Selects and activates the API configuration at the specified index.
+ * @param index The zero-based index of the configuration to select based on settings.json order.
+ */
+async function selectApiConfigByIndex(index: number): Promise<void> {
+  log(`COMMAND TRIGGERED: selectApiConfigByIndex.${index}`);
+  const configs = getApiConfigs();
+  const configNames = Object.keys(configs); // Order should reflect settings.json
+
+  if (index >= 0 && index < configNames.length) {
+    const targetConfigName = configNames[index];
+    try {
+      await setSelectedConfig(targetConfigName);
+      statusManager.updateConfigName(targetConfigName);
+      updateStreamingStatusBar(); // Refresh the status bar display
+      vscode.window.showInformationMessage(
+        `Switched to API config: "${targetConfigName}"`, // Provide feedback
+      );
+      log(
+        `Successfully switched to config index ${index}: "${targetConfigName}"`,
+      );
+    } catch (error) {
+      log(
+        `Error setting config index ${index} ("${targetConfigName}"): ${error}`,
+      );
+      vscode.window.showErrorMessage(
+        `Failed to switch to API config "${targetConfigName}".`,
+      );
+    }
+  } else {
+    log(
+      `No API configuration found at index ${index}. Total configs: ${configNames.length}`,
+    );
+    vscode.window.showWarningMessage(
+      `No API configuration defined at position ${index + 1}.`,
+    );
+  }
+}
+
 /**
  * Updates the streaming status bar based on active document and streaming state
  */
 export function updateStreamingStatusBar(): void {
   const activeEditor = vscode.window.activeTextEditor;
+  let isActive = false;
   if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
-    const streamer = getActiveStreamerForDocument(activeEditor.document);
-    if (streamer && streamer.isActive) {
-      statusManager.showStreamingStatus();
-    } else {
-      statusManager.hideStreamingStatus();
+    const streamer = getActiveStreamerForDocument(activeEditor.document); // Assuming this helper exists
+    isActive = !!(streamer && streamer.isActive);
+  }
+
+  // Check the actual current status from StatusManager too
+  const currentManagerStatus = statusManager.getCurrentStatus();
+
+  if (
+    currentManagerStatus === "executing" ||
+    currentManagerStatus === "cancelling"
+  ) {
+    // Don't change if executing or cancelling, let those states manage themselves
+    // But we might still need to refresh the text if the config name changed via the background update
+    // A simpler way is to just re-call the current state's method
+    switch (currentManagerStatus) {
+      case "executing":
+        statusManager.showToolExecutionStatus();
+        break;
+      case "cancelling":
+        statusManager.showToolCancellationStatus();
+        break;
+      // Add other cases if needed
     }
+  } else if (isActive) {
+    statusManager.showStreamingStatus();
   } else {
-    // Still show idle status even when not in a chat document
-    statusManager.hideStreamingStatus();
+    statusManager.hideStreamingStatus(); // This will set the idle text with the correct config name
   }
 }
 
@@ -80,7 +139,9 @@ async function initializeMcpClients(): Promise<void> {
         McpServerConfig
       >) || {};
     log(
-      `Initializing ${Object.keys(mcpServers).length} MCP servers from configuration`,
+      `Initializing ${
+        Object.keys(mcpServers).length
+      } MCP servers from configuration`,
     );
 
     for (const [serverId, config] of Object.entries(mcpServers)) {
@@ -131,17 +192,22 @@ async function handleMcpConfigChange(
  */
 function checkForToolCallInText(text: string): boolean {
   // Check for various tool call formats
-  const properlyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
-  const partiallyFencedToolCallRegex = /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
+  const properlyFencedToolCallRegex =
+    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
+  const partiallyFencedToolCallRegex =
+    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
   const nonFencedToolCallRegex = /<tool_call>[\s\S]*?<\/tool_call>/s;
-  
-  return properlyFencedToolCallRegex.test(text) || 
-         partiallyFencedToolCallRegex.test(text) || 
-         nonFencedToolCallRegex.test(text);
+
+  return (
+    properlyFencedToolCallRegex.test(text) ||
+    partiallyFencedToolCallRegex.test(text) ||
+    nonFencedToolCallRegex.test(text)
+  );
 }
 
 export function activate(context: vscode.ExtensionContext) {
   log("chat.md extension is now active");
+  console.log(">>> RUNNING MY LOCAL CODE - ", new Date());
 
   // Initialize MCP clients
   void initializeMcpClients();
@@ -151,6 +217,13 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Check if an API configuration is selected, prompt to configure if not
   checkApiConfiguration();
+
+  // Set initial config name in StatusManager
+  const initialConfigName = getSelectedConfigName();
+  statusManager.updateConfigName(initialConfigName);
+
+  // Call the function that updates the status bar display
+  updateStreamingStatusBar(); // Ensure this runs after setting the name
 
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: "**/*.chat.md" };
@@ -177,12 +250,78 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
+  // --- Register API Config Switching Commands ---
+  const maxIndexCommands = 5; // Match the number defined in package.json
+  for (let i = 0; i < maxIndexCommands; i++) {
+    context.subscriptions.push(
+      vscode.commands.registerCommand(
+        `filechat.selectApiConfigByIndex.${i}`,
+        () => {
+          // Pass the index 'i' to the helper function
+          void selectApiConfigByIndex(i); // Use void as we don't need to wait here
+        },
+      ),
+    );
+  }
+
   // Listen for configuration changes to update MCP servers
   context.subscriptions.push(
-    vscode.workspace.onDidChangeConfiguration((event) => {
-      handleMcpConfigChange(event).catch((error) => {
-        log(`Error handling configuration change: ${error}`);
-      });
+    vscode.workspace.onDidChangeConfiguration(async (event) => {
+      // Make the handler async
+      let configNameNeedsUpdate = false;
+      let newConfigName: string | undefined;
+
+      // 1. Check if the selected API configuration itself has changed
+      if (event.affectsConfiguration("chatmd.selectedConfig")) {
+        log("Configuration Change: Selected API config changed.");
+        newConfigName = getSelectedConfigName(); // Assuming this function exists
+        configNameNeedsUpdate = true;
+      }
+
+      // 2. Check if the list of API configurations changed (in case the active one was deleted)
+      if (event.affectsConfiguration("chatmd.apiConfigs")) {
+        log("Configuration Change: API config list changed.");
+        const currentSelected = getSelectedConfigName(); // Assuming this function exists
+        const allConfigs = getApiConfigs(); // Assuming this function exists
+
+        // If a config was selected but it no longer exists in the list
+        if (currentSelected && !allConfigs[currentSelected]) {
+          log(
+            `Configuration Change: Active API config "${currentSelected}" was removed.`,
+          );
+          // Clear the selection in settings
+          await setSelectedConfig(undefined); // Assuming this function exists
+          newConfigName = undefined; // Update internal state
+          configNameNeedsUpdate = true;
+          vscode.window.showWarningMessage(
+            `Active API configuration "${currentSelected}" was removed. Please select another.`,
+          );
+        }
+      }
+
+      // 3. If the config name needs updating, update the StatusManager and refresh the UI
+      if (configNameNeedsUpdate) {
+        // If newConfigName wasn't explicitly set above (only list changed, active one still exists),
+        // fetch the current name again just in case. Usually not needed but safe.
+        if (
+          newConfigName === undefined &&
+          !event.affectsConfiguration("chatmd.selectedConfig")
+        ) {
+          newConfigName = getSelectedConfigName();
+        }
+        statusManager.updateConfigName(newConfigName); // Assuming statusManager is accessible
+        updateStreamingStatusBar(); // Assuming this function exists and updates the display
+      }
+
+      // 4. Handle MCP server configuration changes (keep existing logic)
+      if (event.affectsConfiguration("chatmd.mcpServers")) {
+        log("Configuration Change: MCP server config changed.");
+        // Using void to explicitly ignore the promise here if not needed
+        void handleMcpConfigChange(event).catch((error) => {
+          // Assuming this function exists
+          log(`Error handling MCP configuration change: ${error}`);
+        });
+      }
     }),
   );
 
@@ -198,25 +337,28 @@ export function activate(context: vscode.ExtensionContext) {
     }),
   );
 
-    // Register commands
+  // Register commands
   context.subscriptions.push(
-    
     vscode.commands.registerCommand("filechat.cancelStreaming", () => {
+      log("COMMAND TRIGGERED: filechat.cancelStreaming"); // <-- ADD THIS
+
       // Get current status to determine what to cancel
       const currentStatus = statusManager.getCurrentStatus();
-      
+
       // Cancel based on status
-      if (currentStatus === 'executing' || currentStatus === 'cancelling') {
+      if (currentStatus === "executing" || currentStatus === "cancelling") {
         // Try to cancel tool execution
         const toolCancelled = cancelCurrentToolExecution();
-        
+
         if (toolCancelled) {
           log("Tool execution cancellation requested via command");
-          vscode.window.showInformationMessage("Cancelled tool execution, but it may still have gone through successfully");
+          vscode.window.showInformationMessage(
+            "Cancelled tool execution, but it may still have gone through successfully",
+          );
           return;
         }
       }
-      
+
       // Otherwise, try to cancel streaming if it's happening
       const activeEditor = vscode.window.activeTextEditor;
       if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
@@ -646,7 +788,6 @@ export function activate(context: vscode.ExtensionContext) {
           placeHolder: "Select AI provider",
           title: "Configure API Type",
           canPickMany: false,
-          ignoreFocusOut: true,
         },
       );
 
@@ -696,7 +837,6 @@ export function activate(context: vscode.ExtensionContext) {
         {
           placeHolder: "Select or enter a model name",
           title: "Configure Model",
-          ignoreFocusOut: true,
         },
       );
 
@@ -742,7 +882,6 @@ export function activate(context: vscode.ExtensionContext) {
           {
             placeHolder: "Select or enter base URL for OpenAI-compatible API",
             title: "Configure Base URL",
-            ignoreFocusOut: true,
           },
         );
 
@@ -779,7 +918,6 @@ export function activate(context: vscode.ExtensionContext) {
       const makeActive = await vscode.window.showQuickPick(["Yes", "No"], {
         placeHolder: "Make this the active configuration?",
         title: "Set Active Configuration",
-        ignoreFocusOut: true,
       });
 
       if (makeActive === "Yes") {
@@ -795,6 +933,8 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("filechat.selectApiConfig", async () => {
+      log("COMMAND TRIGGERED: filechat.selectApiConfig"); // <-- ADD THIS
+
       const configs = getApiConfigs();
       const configNames = Object.keys(configs);
 
@@ -816,7 +956,9 @@ export function activate(context: vscode.ExtensionContext) {
         const config = configs[name];
         return {
           label: name,
-          description: `${config.type} - ${config.model_name || "default model"}`,
+          description: `${config.type} - ${
+            config.model_name || "default model"
+          }`,
           detail: config.base_url ? `Base URL: ${config.base_url}` : undefined,
         };
       });
@@ -824,10 +966,18 @@ export function activate(context: vscode.ExtensionContext) {
       const selectedItem = await vscode.window.showQuickPick(configItems, {
         placeHolder: "Select API configuration",
         title: "Select Active Configuration",
-        ignoreFocusOut: true,
       });
 
-      if (!selectedItem) {
+      // Inside the filechat.selectApiConfig command handler, after successful selection
+      if (selectedItem) {
+        await setSelectedConfig(selectedItem.label);
+        vscode.window.showInformationMessage(
+          `Configuration "${selectedItem.label}" is now active`,
+        );
+        // Update StatusManager and refresh the display
+        statusManager.updateConfigName(selectedItem.label);
+        updateStreamingStatusBar(); // Refresh the status bar text
+      } else {
         return; // User cancelled
       }
 
@@ -856,7 +1006,9 @@ export function activate(context: vscode.ExtensionContext) {
 
         return {
           label: name,
-          description: `${config.type} - ${config.model_name || "default model"}${isSelected ? " (active)" : ""}`,
+          description: `${config.type} - ${
+            config.model_name || "default model"
+          }${isSelected ? " (active)" : ""}`,
           detail: config.base_url ? `Base URL: ${config.base_url}` : undefined,
         };
       });
@@ -864,7 +1016,6 @@ export function activate(context: vscode.ExtensionContext) {
       const selectedItem = await vscode.window.showQuickPick(configItems, {
         placeHolder: "Select API configuration to remove",
         title: "Remove Configuration",
-        ignoreFocusOut: true,
       });
 
       if (!selectedItem) {
@@ -917,7 +1068,7 @@ export function activate(context: vscode.ExtensionContext) {
         "filechat.insertNextBlock",
         async (textEditor, edit) => {
           const document = textEditor.document;
-          
+
           // Handle multiple selections, though primary focus is the active cursor
           for (const selection of textEditor.selections) {
             const position = selection.active;
@@ -932,33 +1083,37 @@ export function activate(context: vscode.ExtensionContext) {
             if (blockInfo.type === "assistant") {
               // Check if the current assistant block contains a tool call
               const text = document.getText();
-              
+
               // Find the full content of the current assistant block
               const blockStart = blockInfo.blockStartPosition?.line ?? 0;
               let blockEndLine = position.line; // Default to current position
-              
+
               // Look ahead for the next block marker or end of file
               for (let i = blockStart + 1; i < document.lineCount; i++) {
                 const line = document.lineAt(i).text;
-                if (line.match(/^# %% (user|assistant|system|tool_execute)\s*$/i)) {
+                if (
+                  line.match(/^# %% (user|assistant|system|tool_execute)\s*$/i)
+                ) {
                   blockEndLine = i - 1; // End of block is line before next marker
                   break;
                 }
               }
-              
+
               // Get the content of the assistant block
               const blockContent = document.getText(
                 new vscode.Range(
                   new vscode.Position(blockStart + 1, 0), // Start after the marker line
-                  new vscode.Position(blockEndLine + 1, 0) // Include the full last line
-                )
+                  new vscode.Position(blockEndLine + 1, 0), // Include the full last line
+                ),
               );
-              
+
               // Check for tool call patterns
               const hasToolCall = checkForToolCallInText(blockContent);
-              
+
               if (hasToolCall) {
-                log(`Detected tool call in current assistant block, inserting tool_execute block`);
+                log(
+                  `Detected tool call in current assistant block, inserting tool_execute block`,
+                );
                 edit.insert(position, "\n# %% tool_execute\n");
                 continue; // Skip to next selection
               }

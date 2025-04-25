@@ -67,6 +67,26 @@
       {
         "command": "filechat.cancelStreaming",
         "title": "chat.md: Cancel Streaming"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.0",
+        "title": "chat.md: Select API Config 1"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.1",
+        "title": "chat.md: Select API Config 2"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.2",
+        "title": "chat.md: Select API Config 3"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.3",
+        "title": "chat.md: Select API Config 4"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.4",
+        "title": "chat.md: Select API Config 5"
       }
     ],
     "configuration": {
@@ -182,6 +202,36 @@
         "command": "filechat.newContextChat",
         "key": "ctrl+k ctrl+c",
         "mac": "alt+cmd+'"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.0",
+        "key": "alt+m 1",
+        "mac": "alt+m 1",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.1",
+        "key": "alt+m 2",
+        "mac": "alt+m 2",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.2",
+        "key": "alt+m 3",
+        "mac": "alt+m 3",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.3",
+        "key": "alt+m 4",
+        "mac": "alt+m 4",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "filechat.selectApiConfigByIndex.4",
+        "key": "alt+m 5",
+        "mac": "alt+m 5",
+        "when": "editorTextFocus && editorLangId == markdown"
       }
     ]
   },
