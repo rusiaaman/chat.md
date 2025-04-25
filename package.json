@@ -206,31 +206,31 @@
       {
         "command": "filechat.selectApiConfigByIndex.0",
         "key": "alt+m 1",
-        "mac": "alt+m 1",
+        "mac": "ctrl+alt+1",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
         "command": "filechat.selectApiConfigByIndex.1",
         "key": "alt+m 2",
-        "mac": "alt+m 2",
+        "mac": "ctrl+alt+2",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
         "command": "filechat.selectApiConfigByIndex.2",
         "key": "alt+m 3",
-        "mac": "alt+m 3",
+        "mac": "ctrl+alt+3",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
         "command": "filechat.selectApiConfigByIndex.3",
         "key": "alt+m 4",
-        "mac": "alt+m 4",
+        "mac": "ctrl+alt+4",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {
         "command": "filechat.selectApiConfigByIndex.4",
         "key": "alt+m 5",
-        "mac": "alt+m 5",
+        "mac": "ctrl+alt+5",
         "when": "editorTextFocus && editorLangId == markdown"
       }
     ]
