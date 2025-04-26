@@ -179,22 +179,39 @@ export class StatusManager {
    * @param count The number of available prompts
    */
   public setupPromptHover(count: number): void {
-    // Only update if there are prompts available
-    if (count > 0) {
-      try {
-        // Create a rich markdown tooltip
-        const tooltipMarkdown = new vscode.MarkdownString();
-        tooltipMarkdown.isTrusted = true; // Enable command URIs
-        tooltipMarkdown.supportHtml = true; // Enable HTML for better formatting
-        
-        // Add the standard tooltip text
-        tooltipMarkdown.appendMarkdown(`**${this.IDLE_TOOLTIP}**\n\n`);
+    try {
+      // Create a rich markdown tooltip
+      const tooltipMarkdown = new vscode.MarkdownString();
+      tooltipMarkdown.isTrusted = true; // Enable command URIs
+      tooltipMarkdown.supportHtml = true; // Enable HTML for better formatting
+      
+      // Add the standard tooltip text
+      tooltipMarkdown.appendMarkdown(`**${this.IDLE_TOOLTIP}**\n\n`);
+      tooltipMarkdown.appendMarkdown(`---\n\n`);
+      
+      // Get all connected MCP servers and their prompts
+      const groupedPrompts = mcpClientManager.getGroupedPrompts();
+      const connectedServers = mcpClientManager.getConnectedServers();
+      
+      // Add header showing connected servers
+      tooltipMarkdown.appendMarkdown(`**Connected MCP Servers:**\n\n`);
+      
+      // List all connected servers
+      if (connectedServers.length > 0) {
+        for (const serverId of connectedServers) {
+          tooltipMarkdown.appendMarkdown(`- **${serverId}**\n`);
+        }
+        tooltipMarkdown.appendMarkdown(`\n`);
+      } else {
+        tooltipMarkdown.appendMarkdown(`*No servers currently connected*\n\n`);
+      }
+      
+      // Add header for available prompts
+      if (count > 0) {
         tooltipMarkdown.appendMarkdown(`---\n\n`);
         tooltipMarkdown.appendMarkdown(`**${count} MCP Prompts Available:**\n\n`);
         
         // Add prompts from each server
-        const groupedPrompts = mcpClientManager.getGroupedPrompts();
-        
         for (const [serverId, promptMap] of groupedPrompts.entries()) {
           if (promptMap.size === 0) continue;
           
@@ -222,21 +239,23 @@ export class StatusManager {
           
           tooltipMarkdown.appendMarkdown(`\n`);
         }
-        
-        // Add a link to show all prompts
-        tooltipMarkdown.appendMarkdown(`---\n\n`);
-        tooltipMarkdown.appendMarkdown(`[Show All Prompts](command:filechat.showPromptsHover)`);
-        
-        // Set the tooltip
-        this.streamingStatusItem.tooltip = tooltipMarkdown;
-        
-        log(`Created rich tooltip with ${count} prompts`);
-      } catch (error) {
-        log(`Error creating prompt tooltip: ${error}`);
-        // Fallback to simple text tooltip
-        const currentTooltip = this.IDLE_TOOLTIP;
-        this.streamingStatusItem.tooltip = `${currentTooltip}\nHover to see ${count} available MCP prompts.`;
+      } else {
+        tooltipMarkdown.appendMarkdown(`*No prompts available*\n\n`);
       }
+        
+      // Add a link to show all prompts
+      tooltipMarkdown.appendMarkdown(`---\n\n`);
+      tooltipMarkdown.appendMarkdown(`[Show All Prompts](command:filechat.showPromptsHover)`);
+      
+      // Set the tooltip
+      this.streamingStatusItem.tooltip = tooltipMarkdown;
+      
+      log(`Created rich tooltip with server list and ${count} prompts`);
+    } catch (error) {
+      log(`Error creating prompt tooltip: ${error}`);
+      // Fallback to simple text tooltip
+      const currentTooltip = this.IDLE_TOOLTIP;
+      this.streamingStatusItem.tooltip = `${currentTooltip}\nHover to see connected servers and available MCP prompts.`;
     }
   }
 

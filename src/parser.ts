@@ -379,18 +379,34 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
   while ((match = markdownLinkRegex.exec(text)) !== null) {
     const linkText = match[1];
     const filePath = match[2];
-    // Heuristic: Treat as file if linkText is '#file' or path has common extension
-    // This might capture non-file links, but resolving path confirms later.
-    const isLikelyFile = linkText.toLowerCase() === '#file' || /\.\w{2,5}$/.test(filePath);
-    if (isLikelyFile) {
+    
+    // Check for MCP prompt links first
+    if (linkText.startsWith('MCP Prompt:')) {
+      log(`Found MCP prompt link: ${linkText} -> ${filePath}`);
       fileRefs.push({
         path: filePath,
-        isImage: isImageFile(filePath), // Check based on extension
+        isImage: false, // MCP prompts are text
         fullMatch: match[0],
         startIndex: match.index,
         endIndex: match.index + match[0].length,
-        type: 'markdown'
+        type: 'mcp_prompt' // New type for MCP prompts
       });
+    } 
+    // Then check for file references
+    else {
+      // Heuristic: Treat as file if linkText is '#file' or path has common extension
+      // This might capture non-file links, but resolving path confirms later.
+      const isLikelyFile = linkText.toLowerCase() === '#file' || /\.\w{2,5}$/.test(filePath);
+      if (isLikelyFile) {
+        fileRefs.push({
+          path: filePath,
+          isImage: isImageFile(filePath), // Check based on extension
+          fullMatch: match[0],
+          startIndex: match.index,
+          endIndex: match.index + match[0].length,
+          type: 'markdown'
+        });
+      }
     }
   }
   // Reset regex lastIndex before using the next one
@@ -424,7 +440,19 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
     try {
       const resolvedPath = resolveFilePath(ref.path, document); // Resolve path (handles ~)
       if (fileExists(resolvedPath)) {
-        if (ref.isImage) {
+        if (ref.type === 'mcp_prompt') {
+          // For MCP prompt links, read content and add as plain text
+          const fileContent = readFileAsText(resolvedPath);
+          // Extract prompt name from the link text (format: "MCP Prompt: name")
+          const promptName = ref.fullMatch.match(/MCP Prompt:\s*([^)]+)]/)?.[1] || "Unknown prompt";
+          
+          // Add the file content directly without wrapping
+          content.push({
+            type: "text",
+            value: fileContent || `[Error: Could not read MCP prompt file: ${ref.path}]`
+          });
+          log(`Added MCP prompt content from: ${ref.path} (resolved: ${resolvedPath})`);
+        } else if (ref.isImage) {
           // For images, add an image block using the *original* path provided by the user
           content.push({ type: "image", path: ref.path });
           log(`Added image reference: ${ref.path} (resolved: ${resolvedPath})`);
@@ -592,12 +620,13 @@ function processToolResultContent(
   const linkText = linkMatch[1];
   const linkTarget = linkMatch[2];
 
-  // Only process "Tool Result" links which are our auto-generated ones
-  if (linkText !== "Tool Result") {
+  // Process both "Tool Result" and "MCP Prompt" links
+  if (!linkText.startsWith("Tool Result") && !linkText.startsWith("MCP Prompt:")) {
     return content;
   }
 
-  log(`Found a tool result with single markdown link to: ${linkTarget}`);
+  const linkType = linkText.startsWith("Tool Result") ? "tool result" : "MCP prompt";
+  log(`Found a ${linkType} with single markdown link to: ${linkTarget}`);
 
   // Resolve the path and read the file
   const resolvedPath = resolveFilePath(linkTarget, document);
@@ -613,13 +642,19 @@ function processToolResultContent(
     return content;
   }
 
-  log(`Successfully loaded content from tool result file: ${linkTarget}`);
+  log(`Successfully loaded content from ${linkType} file: ${linkTarget}`);
 
-  // Replace the markdown link with the actual content
-  return content.replace(
-    /<tool_result>[\s\S]*?<\/tool_result>/,
-    `<tool_result>\n${fileContent}\n</tool_result>`,
-  );
+  // For tool results, they're wrapped in tool_result tags
+  if (linkText.startsWith("Tool Result")) {
+    return content.replace(
+      /<tool_result>[\s\S]*?<\/tool_result>/,
+      `<tool_result>\n${fileContent}\n</tool_result>`,
+    );
+  }
+  
+  // For MCP prompts, we just replace the link with the content directly
+  // Since they're already in the user's document as regular text
+  return fileContent;
 }
 
 /**

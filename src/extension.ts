@@ -338,6 +338,11 @@ export function activate(context: vscode.ExtensionContext) {
         void handleMcpConfigChange(event).catch((error) => {
           // Assuming this function exists
           log(`Error handling MCP configuration change: ${error}`);
+        }).then(() => {
+          // After updating servers, refresh the status bar to show new server list
+          const promptCount = mcpClientManager.getAllPrompts().length;
+          statusManager.setupPromptHover(promptCount);
+          log("Refreshed status bar after MCP server configuration change");
         });
       }
     }),

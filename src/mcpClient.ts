@@ -404,6 +404,11 @@ export class McpClientManager {
   public getGroupedPrompts(): Map<string, Map<string, Prompt>> {
     return this.serverPrompts;
   }
+  
+  // Get a list of all connected server IDs
+  public getConnectedServers(): string[] {
+    return Array.from(this.clients.keys());
+  }
   // Execute a tool through the appropriate MCP client
   // Tool name is expected in the format "serverName.toolName"
   public async executeToolCall(
@@ -664,10 +669,11 @@ export class McpClientManager {
     // Update the prompt count in the status bar if available
     try {
       const promptCount = this.prompts.size;
+      const connectedServers = this.getConnectedServers();
       // Import the status manager here to avoid circular dependencies
       const { statusManager } = await import("./extension");
       statusManager.setupPromptHover(promptCount);
-      log(`Updated prompt count in status bar: ${promptCount} prompts available`);
+      log(`Updated status bar: ${connectedServers.length} servers, ${promptCount} prompts available`);
     } catch (error) {
       log(`Error updating prompt count: ${error}`);
     }
