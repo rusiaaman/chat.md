@@ -2,7 +2,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { Tool } from "@modelcontextprotocol/sdk/types.js";
+import { Tool, Prompt } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
 import * as path from "path";
 import * as fs from "fs";
@@ -23,7 +23,9 @@ export interface McpServerConfig {
 export class McpClientManager {
   private clients: Map<string, Client> = new Map();
   private tools: Map<string, Tool> = new Map();
+  private prompts: Map<string, Prompt> = new Map(); // Store prompts by name
   private serverTools: Map<string, Map<string, Tool>> = new Map();
+  private serverPrompts: Map<string, Map<string, Prompt>> = new Map(); // Store prompts by server
   private transports: Map<string, Transport> = new Map();
   private sseRetryIntervals: Map<string, NodeJS.Timeout> = new Map();
   private sseMaxRetries: number = 5;
@@ -42,10 +44,12 @@ export class McpClientManager {
     // Store the current configs for comparison later
     this.lastKnownConfigs = JSON.parse(JSON.stringify(mcpServers));
 
-    // Clear existing clients and tools
+    // Clear existing clients, tools, and prompts
     this.clients.clear();
     this.tools.clear();
+    this.prompts.clear();
     this.serverTools.clear();
+    this.serverPrompts.clear();
 
     // Initialize each configured server
     for (const [serverId, config] of Object.entries(mcpServers)) {
@@ -283,7 +287,8 @@ export class McpClientManager {
       },
       {
         capabilities: {
-          tools: {}, // Only request tools capability
+          tools: {}, // Request tools capability
+          prompts: {}, // Also request prompts capability
         },
       },
     );
@@ -313,6 +318,37 @@ export class McpClientManager {
         log(
           `Tool schema for ${tool.name}:\n${JSON.stringify(tool.inputSchema, null, 2)}`,
         );
+      }
+      
+      // Check if server supports prompts
+      const serverCapabilities = client.getServerCapabilities();
+      if (serverCapabilities?.prompts) {
+        try {
+          // Get available prompts
+          log(`Requesting prompt list from server ${serverId}...`);
+          const promptsResult = await client.listPrompts();
+          log(`Received ${promptsResult.prompts.length} prompts from server ${serverId}`);
+          
+          // Store prompts by server
+          const serverPromptMap = new Map<string, Prompt>();
+          this.serverPrompts.set(serverId, serverPromptMap);
+          
+          // Register each prompt
+          for (const prompt of promptsResult.prompts) {
+            this.prompts.set(`${serverId}.${prompt.name}`, prompt);
+            serverPromptMap.set(prompt.name, prompt);
+            log(`Registered prompt: ${prompt.name} from server ${serverId}`);
+            if (prompt.arguments) {
+              log(`Prompt arguments for ${prompt.name}:\n${JSON.stringify(prompt.arguments, null, 2)}`);
+            }
+          }
+        } catch (promptError) {
+          // Don't fail connection if prompts fail
+          log(`Error fetching prompts from server ${serverId}: ${promptError}`);
+          log(`Continuing with only tools support for server ${serverId}`);
+        }
+      } else {
+        log(`Server ${serverId} does not support prompts capability`);
       }
     } catch (error) {
       log(`Error connecting to MCP server ${serverId}: ${error}`);
@@ -354,9 +390,19 @@ export class McpClientManager {
     return Array.from(this.tools.values());
   }
 
+  // Get all prompt objects (flat list)
+  public getAllPrompts(): Prompt[] {
+    return Array.from(this.prompts.values());
+  }
+
   // Get tools grouped by server ID
   public getGroupedTools(): Map<string, Map<string, Tool>> {
     return this.serverTools;
+  }
+
+  // Get prompts grouped by server ID
+  public getGroupedPrompts(): Map<string, Map<string, Prompt>> {
+    return this.serverPrompts;
   }
   // Execute a tool through the appropriate MCP client
   // Tool name is expected in the format "serverName.toolName"
@@ -596,22 +642,34 @@ export class McpClientManager {
   }
 
   /**
-   * Refreshes tool lists for all connected servers
+   * Refreshes tool lists and prompt lists for all connected servers
    */
   public async refreshAllToolLists(): Promise<void> {
     // Track successes and failures
     let successCount = 0;
     let failCount = 0;
 
-    // Refresh each server's tools
+    // Refresh each server's tools and prompts
     for (const [serverId, client] of this.clients.entries()) {
       try {
         await this.refreshServerTools(serverId, client);
+        await this.refreshServerPrompts(serverId, client);
         successCount++;
       } catch (error) {
         failCount++;
-        log(`Failed to refresh tools for server ${serverId}: ${error}`);
+        log(`Failed to refresh tools/prompts for server ${serverId}: ${error}`);
       }
+    }
+    
+    // Update the prompt count in the status bar if available
+    try {
+      const promptCount = this.prompts.size;
+      // Import the status manager here to avoid circular dependencies
+      const { statusManager } = await import("./extension");
+      statusManager.setupPromptHover(promptCount);
+      log(`Updated prompt count in status bar: ${promptCount} prompts available`);
+    } catch (error) {
+      log(`Error updating prompt count: ${error}`);
     }
   }
 
@@ -685,6 +743,72 @@ export class McpClientManager {
   }
 
   /**
+   * Refreshes the prompts list for a specific server
+   */
+  private async refreshServerPrompts(
+    serverId: string,
+    client: Client,
+  ): Promise<void> {
+    try {
+      // Check if the server has prompts capability before trying to access it
+      const serverCapabilities = client.getServerCapabilities();
+      if (!serverCapabilities?.prompts) {
+        log(`Server ${serverId} does not support prompts, skipping prompt refresh`);
+        return;
+      }
+
+      // Get available prompts
+      log(`Requesting prompt list from server ${serverId}...`);
+      const promptsResult = await client.listPrompts();
+      log(`Received ${promptsResult.prompts.length} prompts from server ${serverId}`);
+
+      // Create or get the server's prompt map
+      let serverPromptMap = this.serverPrompts.get(serverId);
+      if (!serverPromptMap) {
+        serverPromptMap = new Map<string, Prompt>();
+        this.serverPrompts.set(serverId, serverPromptMap);
+      }
+
+      // Keep track of which prompts were updated
+      const currentPrompts = new Set(serverPromptMap.keys());
+      const updatedPrompts = new Set<string>();
+
+      // Process each prompt in the result
+      for (const prompt of promptsResult.prompts) {
+        updatedPrompts.add(prompt.name);
+
+        // Check if the prompt exists and needs updating
+        const existingPrompt = serverPromptMap.get(prompt.name);
+        if (
+          !existingPrompt ||
+          JSON.stringify(existingPrompt) !== JSON.stringify(prompt)
+        ) {
+          // Update or add the prompt
+          this.prompts.set(`${serverId}.${prompt.name}`, prompt);
+          serverPromptMap.set(prompt.name, prompt);
+          // Keep logs for prompt changes
+          log(`Updated prompt: ${prompt.name} from server ${serverId}`);
+        }
+      }
+
+      // Remove prompts that no longer exist
+      for (const promptName of currentPrompts) {
+        if (!updatedPrompts.has(promptName)) {
+          serverPromptMap.delete(promptName);
+          // Remove from global prompts map
+          this.prompts.delete(`${serverId}.${promptName}`);
+          // Keep logs for prompt removals
+          log(`Removed prompt: ${promptName} from server ${serverId}`);
+        }
+      }
+    } catch (error) {
+      log(`Error refreshing prompts for server ${serverId}: ${error}`);
+      // Don't throw here, since prompt failures shouldn't block tool updates
+      // This allows servers without prompt support to still work
+    }
+  }
+
+  /**
    * Disconnects and cleans up resources for a specific server
    */
   private async disconnectServer(serverId: string): Promise<void> {
@@ -742,8 +866,85 @@ export class McpClientManager {
       // Remove the server's tool map
       this.serverTools.delete(serverId);
     }
+    
+    // Remove prompts for this server
+    const serverPromptMap = this.serverPrompts.get(serverId);
+    if (serverPromptMap) {
+      // For each prompt in this server
+      for (const [promptName, _] of serverPromptMap.entries()) {
+        // Remove from global prompts map
+        this.prompts.delete(`${serverId}.${promptName}`);
+      }
+      
+      // Remove the server's prompt map
+      this.serverPrompts.delete(serverId);
+    }
 
     log(`Server ${serverId} disconnected`);
+  }
+
+  /**
+   * Retrieves a prompt from a server and returns the formatted content
+   * @param fullName The full prompt name (serverName.promptName)
+   * @param args The arguments for the prompt (if any)
+   * @returns The prompt content as a string
+   */
+  public async getPrompt(
+    fullName: string,
+    args?: Record<string, string>,
+  ): Promise<string> {
+    log(`getPrompt called for ${fullName} with args: ${JSON.stringify(args || {})}`);
+    
+    // Parse the fullName to get serverName and actualPromptName
+    const dotIndex = fullName.indexOf(".");
+    if (dotIndex <= 0 || dotIndex >= fullName.length - 1) {
+      return `Error: Prompt name "${fullName}" does not follow the expected "serverName.promptName" format.`;
+    }
+    
+    const serverName = fullName.substring(0, dotIndex);
+    const promptName = fullName.substring(dotIndex + 1);
+    log(`Parsed prompt name: server="${serverName}", prompt="${promptName}"`);
+    
+    // Get the specific client for the server
+    const client = this.clients.get(serverName);
+    if (!client) {
+      return `Error: MCP server "${serverName}" not found or not connected.`;
+    }
+    
+    // Check if the server supports prompts
+    const serverCapabilities = client.getServerCapabilities();
+    if (!serverCapabilities?.prompts) {
+      return `Error: Server "${serverName}" does not support prompts.`;
+    }
+    
+    try {
+      // Get the prompt from the server
+      log(`Requesting prompt "${promptName}" from server "${serverName}"`);
+      const promptResult = await client.getPrompt({
+        name: promptName,
+        arguments: args
+      });
+      
+      // Extract and format the prompt content
+      if (promptResult && promptResult.messages) {
+        // Format messages into a string
+        let result = '';
+        for (const message of promptResult.messages) {
+          // Don't add "# %% user" block, just use the content directly
+          if (message.role === 'user') {
+            result += `${message.content.text}\n\n`;
+          } else if (message.role === 'assistant') {
+            result += `# %% assistant\n${message.content.text}\n\n`;
+          }
+        }
+        return result.trim();
+      }
+      
+      return `Error: Invalid prompt result format from server "${serverName}"`;
+    } catch (error) {
+      log(`Error getting prompt ${promptName} from server ${serverName}: ${error}`);
+      return `Error: Failed to get prompt "${promptName}" from server "${serverName}": ${error}`;
+    }
   }
 
   /**
@@ -760,7 +961,9 @@ export class McpClientManager {
 
     this.clients.clear();
     this.tools.clear();
+    this.prompts.clear();
     this.serverTools.clear();
+    this.serverPrompts.clear();
     this.transports.clear();
     this.sseRetryCount.clear();
   }
@@ -773,6 +976,7 @@ export class McpClientManager {
 
     lines.push(`Total MCP servers: ${this.clients.size}`);
     lines.push(`Total registered tools: ${this.tools.size}`);
+    lines.push(`Total registered prompts: ${this.prompts.size}`);
     lines.push("");
 
     for (const [serverId, client] of this.clients.entries()) {
@@ -784,11 +988,21 @@ export class McpClientManager {
       lines.push(`Server: ${serverId}`);
       lines.push(`  Transport type: ${transportType}`);
       lines.push(`  Tools: ${toolCount}`);
+      
+      const promptCount = this.serverPrompts.get(serverId)?.size || 0;
+      lines.push(`  Prompts: ${promptCount}`);
 
       if (toolCount > 0) {
         lines.push("  Tool list:");
         for (const toolName of this.serverTools.get(serverId)?.keys() || []) {
           lines.push(`    - ${toolName}`);
+        }
+      }
+      
+      if (promptCount > 0) {
+        lines.push("  Prompt list:");
+        for (const promptName of this.serverPrompts.get(serverId)?.keys() || []) {
+          lines.push(`    - ${promptName}`);
         }
       }
 

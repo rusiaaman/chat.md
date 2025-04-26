@@ -25,6 +25,18 @@
   "contributes": {
     "commands": [
       {
+        "command": "filechat.showPromptsHover",
+        "title": "chat.md: Show Available Prompts"
+      },
+      {
+        "command": "filechat.insertPrompt",
+        "title": "chat.md: Insert MCP Prompt"
+      },
+      {
+        "command": "filechat.statusBarPromptClick",
+        "title": "chat.md: Status Bar Prompt Click"
+      },
+      {
         "command": "filechat.newChat",
         "title": "chat.md: New chat.md"
       },

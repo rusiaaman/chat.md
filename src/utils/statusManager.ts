@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import { log } from "../extension";
+import { mcpClientManager } from "../extension";
 
 /**
  * Manages status bar items for the chat.md extension.
@@ -11,6 +12,7 @@ export class StatusManager {
   private streamingStatusItem: vscode.StatusBarItem;
   private streamingDots: string = "";
   private animationInterval: NodeJS.Timeout | undefined;
+  private hoverDisposables: vscode.Disposable[] = [];
 
   private currentConfigName: string | undefined;
   private currentStatus: "idle" | "streaming" | "executing" | "cancelling" =
@@ -20,6 +22,7 @@ export class StatusManager {
   private readonly BUSY_TOOLTIP = "Click to cancel the current operation.";
 
   private constructor() {
+    // Create streaming status item
     this.streamingStatusItem = vscode.window.createStatusBarItem(
       vscode.StatusBarAlignment.Right,
       10,
@@ -172,10 +175,82 @@ export class StatusManager {
   }
 
   /**
+   * Sets up tooltip and hover handler for MCP prompts
+   * @param count The number of available prompts
+   */
+  public setupPromptHover(count: number): void {
+    // Only update if there are prompts available
+    if (count > 0) {
+      try {
+        // Create a rich markdown tooltip
+        const tooltipMarkdown = new vscode.MarkdownString();
+        tooltipMarkdown.isTrusted = true; // Enable command URIs
+        tooltipMarkdown.supportHtml = true; // Enable HTML for better formatting
+        
+        // Add the standard tooltip text
+        tooltipMarkdown.appendMarkdown(`**${this.IDLE_TOOLTIP}**\n\n`);
+        tooltipMarkdown.appendMarkdown(`---\n\n`);
+        tooltipMarkdown.appendMarkdown(`**${count} MCP Prompts Available:**\n\n`);
+        
+        // Add prompts from each server
+        const groupedPrompts = mcpClientManager.getGroupedPrompts();
+        
+        for (const [serverId, promptMap] of groupedPrompts.entries()) {
+          if (promptMap.size === 0) continue;
+          
+          tooltipMarkdown.appendMarkdown(`**${serverId}**\n\n`);
+          
+          // Show up to 5 prompts per server in the tooltip
+          const promptEntries = Array.from(promptMap.entries()).slice(0, 5);
+          for (const [promptName, prompt] of promptEntries) {
+            const fullPromptId = `${serverId}.${promptName}`;
+            // Create a command URI that will insert this prompt
+            tooltipMarkdown.appendMarkdown(`- [${promptName}](command:filechat.insertPrompt?${encodeURIComponent(JSON.stringify({promptId: fullPromptId}))})`);
+            
+            // Show a short description if available
+            if (prompt.description) {
+              tooltipMarkdown.appendMarkdown(` - ${prompt.description.substring(0, 30)}${prompt.description.length > 30 ? '...' : ''}`);
+            }
+            
+            tooltipMarkdown.appendMarkdown(`\n`);
+          }
+          
+          // If there are more prompts than we're showing
+          if (promptMap.size > 5) {
+            tooltipMarkdown.appendMarkdown(`- *${promptMap.size - 5} more prompts...*\n`);
+          }
+          
+          tooltipMarkdown.appendMarkdown(`\n`);
+        }
+        
+        // Add a link to show all prompts
+        tooltipMarkdown.appendMarkdown(`---\n\n`);
+        tooltipMarkdown.appendMarkdown(`[Show All Prompts](command:filechat.showPromptsHover)`);
+        
+        // Set the tooltip
+        this.streamingStatusItem.tooltip = tooltipMarkdown;
+        
+        log(`Created rich tooltip with ${count} prompts`);
+      } catch (error) {
+        log(`Error creating prompt tooltip: ${error}`);
+        // Fallback to simple text tooltip
+        const currentTooltip = this.IDLE_TOOLTIP;
+        this.streamingStatusItem.tooltip = `${currentTooltip}\nHover to see ${count} available MCP prompts.`;
+      }
+    }
+  }
+
+  /**
    * Disposes of resources.
    */
   public dispose(): void {
     this.clearAnimation();
     this.streamingStatusItem.dispose();
+    
+    // Dispose of any hover-related disposables
+    for (const disposable of this.hoverDisposables) {
+      disposable.dispose();
+    }
+    this.hoverDisposables = [];
   }
 }

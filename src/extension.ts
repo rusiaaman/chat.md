@@ -2,6 +2,8 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { DocumentListener } from "./listener";
+import { PromptHoverHandler } from "./prompts/promptHover";
+import { insertPrompt } from "./prompts/promptExecutor";
 import {
   getApiKey,
   getProvider,
@@ -154,6 +156,22 @@ async function initializeMcpClients(): Promise<void> {
 
     await mcpClientManager.initializeClients(mcpServers);
     log("MCP clients initialized successfully");
+    
+    // Update the prompt count and setup hover handler
+    const promptCount = mcpClientManager.getAllPrompts().length;
+    statusManager.setupPromptHover(promptCount);
+    log(`Found ${promptCount} prompts available for hover display`);
+    
+    // Register the hover handler without immediately registering commands
+    // Pass the context so PromptHoverHandler can register commands properly
+    try {
+      const hoverDisposables = PromptHoverHandler.register(context);
+      for (const disposable of hoverDisposables) {
+        context.subscriptions.push(disposable);
+      }
+    } catch (error) {
+      log(`Error registering prompt hover handler: ${error}`);
+    }
   } catch (error) {
     log(`Error initializing MCP clients: ${error}`);
     vscode.window.showErrorMessage(
@@ -339,6 +357,29 @@ export function activate(context: vscode.ExtensionContext) {
 
   // Register commands
   context.subscriptions.push(
+    vscode.commands.registerCommand("filechat.insertPrompt", async (args) => {
+      log(`COMMAND TRIGGERED: filechat.insertPrompt with args: ${JSON.stringify(args)}`);
+      if (args && args.promptId) {
+        const promptId = args.promptId;
+        const [serverId, promptName] = promptId.split('.');
+        const groupedPrompts = mcpClientManager.getGroupedPrompts();
+        const serverPrompts = groupedPrompts.get(serverId);
+        
+        if (serverPrompts) {
+          const prompt = serverPrompts.get(promptName);
+          if (prompt) {
+            await insertPrompt(promptId, prompt);
+          } else {
+            vscode.window.showErrorMessage(`Prompt ${promptName} not found on server ${serverId}`);
+          }
+        } else {
+          vscode.window.showErrorMessage(`Server ${serverId} not found`);
+        }
+      } else {
+        vscode.window.showErrorMessage("No prompt specified");
+      }
+    }),
+    
     vscode.commands.registerCommand("filechat.cancelStreaming", () => {
       log("COMMAND TRIGGERED: filechat.cancelStreaming"); // <-- ADD THIS
 
