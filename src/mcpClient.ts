@@ -1045,33 +1045,30 @@ export class McpClientManager {
       const processedParams: Record<string, any> = {};
       const toolSchema = tool.inputSchema?.properties || {};
 
-      // Process each parameter based on its declared type in the schema
+      // Process each parameter - try JSON parsing for all string values first
       for (const [paramName, paramValue] of Object.entries(params)) {
         const paramSchema = toolSchema[paramName] as
           | { type?: string }
           | undefined;
 
-        // For parameters that are declared as objects or arrays in the schema,
-        // we might need to parse the JSON string to match the expected type
-        if (
-          paramSchema?.type &&
-          (paramSchema.type === "object" || paramSchema.type === "array")
-        ) {
-          try {
-            // Log that we're parsing the JSON string
+        // Try to parse JSON for all string parameters first
+        try {
+          const parsedValue = JSON.parse(paramValue);
+          log(
+            `Parameter "${paramName}" for tool "${toolName}" successfully parsed as JSON`,
+          );
+          processedParams[paramName] = parsedValue;
+        } catch (e) {
+          // If JSON parsing fails, check if schema expects object/array types
+          if (
+            paramSchema?.type &&
+            (paramSchema.type === "object" || paramSchema.type === "array")
+          ) {
             log(
-              `Parameter "${paramName}" for tool "${toolName}" has type ${paramSchema.type} in schema, attempting to parse JSON`,
+              `Parameter "${paramName}" for tool "${toolName}" has type ${paramSchema.type} in schema but failed JSON parsing, keeping as string: ${e}`,
             );
-            processedParams[paramName] = JSON.parse(paramValue);
-          } catch (e) {
-            // If parsing fails, keep as string
-            log(
-              `Failed to parse JSON for parameter "${paramName}" of tool "${toolName}", keeping as string: ${e}`,
-            );
-            processedParams[paramName] = paramValue;
           }
-        } else {
-          // Keep as string for all other types
+          // Keep as string for all parsing failures
           processedParams[paramName] = paramValue;
         }
       }
