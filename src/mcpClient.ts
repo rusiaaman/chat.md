@@ -258,7 +258,7 @@ export class McpClientManager {
           `Invalid URL format: "${config.url}". URLs must include protocol (http:// or https://)`,
         );
         throw new Error(
-          `Invalid URL format for SSE server ${serverId}: ${error.message}`,
+          `Invalid URL format for SSE server ${serverId}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     } else if (config.command) {

@@ -87,7 +87,7 @@ export function createMcpLogStream(
       // Convert chunk to string (assuming utf8)
       const message = chunk instanceof Buffer ? chunk.toString("utf8") : chunk;
       // Append message line by line to avoid partial lines in the log
-      message.split("\n").forEach((line) => {
+      message.split("\n").forEach((line: string) => {
         if (line.trim().length > 0) {
           // Avoid logging empty lines
           appendToMcpLog(logBasePath, serverId, `[STDERR/STDOUT] ${line}`);

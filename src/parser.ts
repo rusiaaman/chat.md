@@ -106,10 +106,10 @@ export function parseSettingsBlock(settingsText: string): Record<string, any> | 
           value = value.slice(1, -1);
         } else if (value === 'true' || value === 'false') {
           // Boolean value
-          value = value === 'true';
+          (value as any) = value === 'true';
         } else if (!isNaN(Number(value))) {
           // Number value
-          value = Number(value);
+          (value as any) = Number(value);
         }
         
         // Store in appropriate section or root
@@ -265,7 +265,7 @@ export function parseDocument(
     messages: Object.freeze(messages),
     systemPrompt: finalSystemPrompt,
     hasImageInSystemBlock: hasImageInSystemBlock,
-    settings: settings,
+    settings: settings || undefined,
   });
 }
 
@@ -369,9 +369,9 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
     isImage: boolean;
     fullMatch: string;
     startIndex: number;
-    endIndex: number; // Add end index
-    type: 'markdown' | 'attached';
-  } // <--- Added missing closing brace
+    endIndex: number;
+    type: 'markdown' | 'attached' | 'mcp_prompt';
+  }
   const fileRefs: FileRef[] = [];
 
   // 1. Find all potential file references and store their details
@@ -389,7 +389,7 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
         fullMatch: match[0],
         startIndex: match.index,
         endIndex: match.index + match[0].length,
-        type: 'mcp_prompt' // New type for MCP prompts
+        type: 'mcp_prompt' as const
       });
     } 
     // Then check for file references

@@ -460,11 +460,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       await this.insertToolResult(rawResult);
     } catch (error) {
       // Check if this is a cancellation-related error
-      if (error.name === 'AbortError' || 
-          (error.message && (
-            error.message.includes('AbortError') || 
-            error.message.includes('cancelled') || 
-            error.message.includes('canceled')
+      if ((error as any).name === 'AbortError' || 
+          ((error as any).message && (
+            (error as any).message.includes('AbortError') || 
+            (error as any).message.includes('cancelled') || 
+            (error as any).message.includes('canceled')
           ))
       ) {
         log(`Tool execution cancelled (caught in error handler): ${error}`);
@@ -611,7 +611,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     // 1. If it contains multiple images, we need special handling to ensure proper rendering
     // 2. If it's a markdown link or contains image markdown, don't wrap in code fences
     // 3. Otherwise, wrap in code fences for better display of code/text content
-    const hasMultipleImages = contentToInsert.match(/!\[Tool generated image \d+\]/g)?.length > 1;
+    const hasMultipleImages = (contentToInsert.match(/!\[Tool generated image \d+\]/g)?.length || 0) > 1;
     
     let textToInsert;
     if (hasMultipleImages) {

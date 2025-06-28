@@ -133,14 +133,14 @@ export async function executeToolCall(
     return result;
   } catch (mcpError) {
     // Check if this is an AbortError from cancellation
-    if (mcpError.name === 'AbortError' || cancelledExecutions.has(executionId)) {
+    if ((mcpError as any).name === 'AbortError' || cancelledExecutions.has(executionId)) {
       log(`Tool execution cancelled: ${toolName}`);
       // Use a special format to indicate cancellation
       return `CANCELLED:${Symbol('AbortError').toString()}`;
     }
     
     // For other errors, check if the AbortError is mentioned in the error message
-    if (mcpError.message && mcpError.message.includes('AbortError')) {
+    if ((mcpError as any).message && (mcpError as any).message.includes('AbortError')) {
       log(`Tool execution cancelled (detected from error message): ${toolName}`);
       return `CANCELLED:${Symbol('AbortError').toString()}`;
     }

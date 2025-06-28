@@ -10,7 +10,7 @@ import { insertPrompt } from './promptExecutor';
 export class PromptHoverHandler {
   private static hoverProvider: vscode.Disposable | undefined;
   private static hoverPanel: vscode.WebviewPanel | undefined;
-  private static statusBarElement: HTMLElement | undefined;
+  private static statusBarElement: any | undefined;
   private static isHovering = false;
   private static timeoutHandle: NodeJS.Timeout | undefined;
 
@@ -344,8 +344,15 @@ export class PromptHoverHandler {
     }
     
     if (this.statusBarElement) {
-      this.statusBarElement.removeEventListener('mouseover', this.onStatusBarHover);
-      this.statusBarElement.removeEventListener('mouseout', this.onStatusBarLeave);
+      // Remove event listeners if they exist
+      if (this.statusBarElement.removeEventListener) {
+        try {
+          this.statusBarElement.removeEventListener('mouseover', (this as any).onStatusBarHover);
+          this.statusBarElement.removeEventListener('mouseout', (this as any).onStatusBarLeave);
+        } catch (error) {
+          // Ignore errors during cleanup
+        }
+      }
       this.statusBarElement = undefined;
     }
     

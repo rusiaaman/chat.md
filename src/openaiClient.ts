@@ -128,7 +128,7 @@ export class OpenAIClient {
 
       // Parse URL to determine whether to use HTTP or HTTPS
       const parsedUrl = new URL(this.apiUrl);
-      let req;
+      let req: http.ClientRequest;
 
       if (parsedUrl.protocol === "http:") {
         log("Using HTTP protocol for request");
@@ -170,7 +170,7 @@ export class OpenAIClient {
         const errorMessage = `OpenAI API request failed with status ${response.statusCode}: ${errorData}`;
         log(errorMessage);
         
-        if (response.statusCode >= 500) {
+        if (response.statusCode! >= 500) {
           // 5xx errors will be retried by the streamer
           vscode.window.showErrorMessage(
             `OpenAI API Server Error (${response.statusCode}): Will automatically retry`,

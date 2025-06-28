@@ -107,7 +107,7 @@ export class AnthropicClient {
         const errorMessage = `${response.statusCode} - API request failed: ${errorData}`;
         log(errorMessage);
 
-        if (response.statusCode >= 500) {
+        if (response.statusCode! >= 500) {
           // 5xx errors will be retried by the streamer
           vscode.window.showErrorMessage(
             `Anthropic API Server Error (${response.statusCode}): Will automatically retry`,

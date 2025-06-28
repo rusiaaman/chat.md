@@ -223,7 +223,11 @@ function checkForToolCallInText(text: string): boolean {
   );
 }
 
-export function activate(context: vscode.ExtensionContext) {
+// Declare context at module level to make it available in initializeMcpClients
+let context: vscode.ExtensionContext;
+
+export function activate(contextParam: vscode.ExtensionContext) {
+  context = contextParam; // Store context globally
   log("chat.md extension is now active");
   console.log(">>> RUNNING MY LOCAL CODE - ", new Date());
 
@@ -308,7 +312,7 @@ export function activate(context: vscode.ExtensionContext) {
             `Configuration Change: Active API config "${currentSelected}" was removed.`,
           );
           // Clear the selection in settings
-          await setSelectedConfig(undefined); // Assuming this function exists
+          await setSelectedConfig(""); // Use empty string instead of undefined
           newConfigName = undefined; // Update internal state
           configNameNeedsUpdate = true;
           vscode.window.showWarningMessage(
@@ -498,7 +502,7 @@ export function activate(context: vscode.ExtensionContext) {
             `HTTP connection successful: ${response.status} ${response.statusText}`,
           );
         } catch (error) {
-          outputChannel.appendLine(`HTTP connection failed: ${error.message}`);
+          outputChannel.appendLine(`HTTP connection failed: ${error instanceof Error ? error.message : String(error)}`);
           outputChannel.appendLine(
             "This indicates the server might not be running or not accessible.",
           );
@@ -510,8 +514,9 @@ export function activate(context: vscode.ExtensionContext) {
         outputChannel.appendLine(`Testing SSE endpoint specifically...`);
 
         // Use the EventSource directly for testing (bypassing the MCP protocol)
-        const EventSource = (await import("eventsource")).default;
-        const eventSource = new EventSource(url.href);
+        const EventSourceModule = (await import("eventsource"));
+        const EventSource = EventSourceModule.default || EventSourceModule;
+        const eventSource = new (EventSource as any)(url.href);
 
         // Set up a timeout
         const timeoutPromise = new Promise((_, reject) => {
@@ -523,18 +528,18 @@ export function activate(context: vscode.ExtensionContext) {
 
         // Set up event handlers
         const connectionPromise = new Promise((resolve, reject) => {
-          eventSource.onopen = (event) => {
+          eventSource.onopen = (event: any) => {
             outputChannel.appendLine("SSE connection opened successfully!");
             resolve("Connection successful");
           };
 
-          eventSource.onerror = (event) => {
+          eventSource.onerror = (event: any) => {
             const errorMsg = event.message || "Unknown error";
             outputChannel.appendLine(`SSE connection error: ${errorMsg}`);
             reject(new Error(`SSE Error: ${errorMsg}`));
           };
 
-          eventSource.onmessage = (event) => {
+          eventSource.onmessage = (event: any) => {
             outputChannel.appendLine(
               `Received message from SSE server: ${event.data}`,
             );
@@ -557,7 +562,7 @@ export function activate(context: vscode.ExtensionContext) {
         } catch (error) {
           outputChannel.appendLine("");
           outputChannel.appendLine(
-            `SSE connection test failed: ${error.message}`,
+            `SSE connection test failed: ${error instanceof Error ? error.message : String(error)}`,
           );
           outputChannel.appendLine("Troubleshooting tips:");
           outputChannel.appendLine(
@@ -578,7 +583,7 @@ export function activate(context: vscode.ExtensionContext) {
         }
       } catch (error) {
         outputChannel.appendLine(
-          `Error during connection test: ${error.message}`,
+          `Error during connection test: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
 
@@ -1109,10 +1114,9 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     // Register command for Shift+Enter handling
-    context.subscriptions.push(
-      vscode.commands.registerTextEditorCommand(
-        "filechat.insertNextBlock",
-        async (textEditor, edit) => {
+    vscode.commands.registerTextEditorCommand(
+      "filechat.insertNextBlock",
+      async (textEditor, edit) => {
           const document = textEditor.document;
 
           // Handle multiple selections, though primary focus is the active cursor
@@ -1188,7 +1192,6 @@ export function activate(context: vscode.ExtensionContext) {
             edit.insert(position, textToInsert);
           }
         },
-      ),
     ),
   );
 }

@@ -198,3 +198,13 @@ export function appendToChatHistory(
     // Don't throw - we want this to be non-blocking
   }
 }
+
+/**
+ * Get the log file path for a specific MCP server
+ * @param logBasePath The base path for MCP logs
+ * @param serverId The ID of the MCP server
+ * @returns The full path to the log file for the server
+ */
+export function getMcpServerLogPath(logBasePath: string, serverId: string): string {
+  return path.join(logBasePath, `${serverId}.log`);
+}
