@@ -33,35 +33,70 @@ export class McpClientManager {
   private refreshInterval: NodeJS.Timeout | null = null;
   private refreshIntervalMs: number = 5000; // 5 seconds
   private lastKnownConfigs: Record<string, McpServerConfig> = {};
+  
+  // Lazy loading state management
+  private serverConfigs: Record<string, McpServerConfig> = {};
+  private lazyServerStates: Map<string, 'not-started' | 'connecting' | 'connected'> = new Map();
+  private pendingConnections: Map<string, Promise<void>> = new Map();
 
-  // Initialize MCP clients from configuration
+  // Initialize MCP clients from configuration with lazy loading
   public async initializeClients(
     mcpServers: Record<string, McpServerConfig>,
   ): Promise<void> {
     // Stop any existing refresh interval
     this.stopBackgroundRefresh();
 
-    // Store the current configs for comparison later
+    // Store the current configs for comparison later and for lazy loading
     this.lastKnownConfigs = JSON.parse(JSON.stringify(mcpServers));
+    this.serverConfigs = JSON.parse(JSON.stringify(mcpServers));
 
-    // Clear existing clients, tools, and prompts
+    // Clear existing state
     this.clients.clear();
     this.tools.clear();
     this.prompts.clear();
     this.serverTools.clear();
     this.serverPrompts.clear();
+    this.lazyServerStates.clear();
+    this.pendingConnections.clear();
 
-    // Initialize each configured server
-    for (const [serverId, config] of Object.entries(mcpServers)) {
-      try {
-        await this.connectServer(serverId, config);
-      } catch (error) {
-        log(`Failed to connect to MCP server ${serverId}: ${error}`);
-      }
+    // Initialize lazy loading state for each server
+    for (const serverId of Object.keys(mcpServers)) {
+      this.lazyServerStates.set(serverId, 'not-started');
     }
 
-    // Start background refresh for tool lists
+    // Fetch tools and prompts from each server but disconnect immediately
+    await this.initializeLazyServers(mcpServers);
+
+    // Start background refresh for tool lists (only for connected servers)
     this.startBackgroundRefresh();
+  }
+
+  /**
+   * Initialize servers in lazy mode - connect, fetch tools/prompts, then disconnect
+   */
+  private async initializeLazyServers(
+    mcpServers: Record<string, McpServerConfig>,
+  ): Promise<void> {
+    for (const [serverId, config] of Object.entries(mcpServers)) {
+      try {
+        log(`Initializing server ${serverId} in lazy mode - fetching tools and disconnecting`);
+        
+        // Connect temporarily
+        await this.connectServer(serverId, config);
+        
+        // Tools and prompts are already fetched in connectServer
+        log(`Server ${serverId}: fetched ${this.serverTools.get(serverId)?.size || 0} tools and ${this.serverPrompts.get(serverId)?.size || 0} prompts`);
+        
+        // Disconnect immediately to implement lazy loading
+        await this.disconnectServerKeepingToolInfo(serverId);
+        
+        log(`Server ${serverId} disconnected - will be started on first tool use`);
+      } catch (error) {
+        log(`Failed to initialize lazy server ${serverId}: ${error}`);
+        // Keep the server in not-started state for potential retry later
+        this.lazyServerStates.set(serverId, 'not-started');
+      }
+    }
   }
 
   /**
@@ -409,6 +444,60 @@ export class McpClientManager {
   public getConnectedServers(): string[] {
     return Array.from(this.clients.keys());
   }
+  /**
+   * Ensures a server is connected, starting it lazily if needed
+   */
+  private async ensureServerConnected(serverId: string): Promise<void> {
+    const state = this.lazyServerStates.get(serverId);
+    
+    if (state === 'connected') {
+      // Already connected
+      return;
+    }
+    
+    if (state === 'connecting') {
+      // Connection in progress, wait for it
+      const pendingConnection = this.pendingConnections.get(serverId);
+      if (pendingConnection) {
+        await pendingConnection;
+        return;
+      }
+    }
+    
+    if (state === 'not-started') {
+      // Start the connection
+      this.lazyServerStates.set(serverId, 'connecting');
+      
+      const connectionPromise = this.connectLazyServer(serverId);
+      this.pendingConnections.set(serverId, connectionPromise);
+      
+      try {
+        await connectionPromise;
+        this.lazyServerStates.set(serverId, 'connected');
+        log(`Server ${serverId} successfully connected on demand`);
+      } catch (error) {
+        this.lazyServerStates.set(serverId, 'not-started');
+        log(`Failed to connect server ${serverId} on demand: ${error}`);
+        throw error;
+      } finally {
+        this.pendingConnections.delete(serverId);
+      }
+    }
+  }
+
+  /**
+   * Connects a server that was previously initialized in lazy mode
+   */
+  private async connectLazyServer(serverId: string): Promise<void> {
+    const config = this.serverConfigs[serverId];
+    if (!config) {
+      throw new Error(`No configuration found for server ${serverId}`);
+    }
+    
+    log(`Connecting lazy server ${serverId} for first tool use`);
+    await this.connectServer(serverId, config);
+  }
+
   // Execute a tool through the appropriate MCP client
   // Tool name is expected in the format "serverName.toolName"
   public async executeToolCall(
@@ -454,7 +543,12 @@ export class McpClientManager {
       return this.executeToolCallLegacyFallback(fullName, params, document, signal);
     }
 
-    // --- New Logic using parsed serverName and actualToolName ---
+    // --- Lazy loading: Ensure server is connected before executing tool ---
+    try {
+      await this.ensureServerConnected(serverName);
+    } catch (error) {
+      return `Error: Failed to connect to MCP server "${serverName}": ${error}`;
+    }
 
     // Get the specific client for the server
     const client = this.clients.get(serverName);
@@ -527,11 +621,19 @@ export class McpClientManager {
     signal?: AbortSignal,
   ): Promise<string> {
     log(`Executing legacy fallback for tool "${name}"`);
-    // Find which client has this tool and execute it
+    // Find which server has this tool and execute it
     for (const [serverId, serverToolMap] of this.serverTools.entries()) {
       const tool = serverToolMap.get(name);
       if (!tool) {
         continue; // This server doesn't have this tool
+      }
+
+      // Ensure server is connected before attempting to execute
+      try {
+        await this.ensureServerConnected(serverId);
+      } catch (error) {
+        log(`Failed to connect server ${serverId} for tool ${name}: ${error}`);
+        continue; // Try next server
       }
 
       const client = this.clients.get(serverId);
@@ -560,7 +662,7 @@ export class McpClientManager {
     }
 
     // If loop completes without finding the tool
-    return `Error: Tool "${name}" not found on any connected server.`;
+    return `Error: Tool "${name}" not found on any server.`;
   }
 
   /**
@@ -654,26 +756,31 @@ export class McpClientManager {
     let successCount = 0;
     let failCount = 0;
 
-    // Refresh each server's tools and prompts
+    // Only refresh actually connected servers (not lazy ones)
     for (const [serverId, client] of this.clients.entries()) {
-      try {
-        await this.refreshServerTools(serverId, client);
-        await this.refreshServerPrompts(serverId, client);
-        successCount++;
-      } catch (error) {
-        failCount++;
-        log(`Failed to refresh tools/prompts for server ${serverId}: ${error}`);
+      const state = this.lazyServerStates.get(serverId);
+      if (state === 'connected') {
+        try {
+          await this.refreshServerTools(serverId, client);
+          await this.refreshServerPrompts(serverId, client);
+          successCount++;
+        } catch (error) {
+          failCount++;
+          log(`Failed to refresh tools/prompts for server ${serverId}: ${error}`);
+        }
       }
     }
     
     // Update the prompt count in the status bar if available
     try {
       const promptCount = this.prompts.size;
-      const connectedServers = this.getConnectedServers();
+      const connectedServers = Array.from(this.lazyServerStates.entries())
+        .filter(([_, state]) => state === 'connected')
+        .map(([serverId, _]) => serverId);
       // Import the status manager here to avoid circular dependencies
       const { statusManager } = await import("./extension");
       statusManager.setupPromptHover(promptCount);
-      log(`Updated status bar: ${connectedServers.length} servers, ${promptCount} prompts available`);
+      log(`Updated status bar: ${connectedServers.length} connected servers, ${promptCount} prompts available`);
     } catch (error) {
       log(`Error updating prompt count: ${error}`);
     }
@@ -815,6 +922,45 @@ export class McpClientManager {
   }
 
   /**
+   * Disconnects server while keeping tool and prompt information for lazy loading
+   */
+  private async disconnectServerKeepingToolInfo(serverId: string): Promise<void> {
+    log(`Disconnecting server ${serverId} while keeping tool info for lazy loading`);
+
+    const client = this.clients.get(serverId);
+    if (client) {
+      try {
+        await client.close();
+      } catch (error) {
+        log(`Error closing client for server ${serverId}: ${error}`);
+      }
+
+      this.clients.delete(serverId);
+    }
+
+    // Clean up transport
+    const transport = this.transports.get(serverId);
+    if (transport) {
+      this.transports.delete(serverId);
+    }
+
+    // Clear any reconnection timers
+    if (this.sseRetryIntervals.has(serverId)) {
+      clearInterval(this.sseRetryIntervals.get(serverId)!);
+      this.sseRetryIntervals.delete(serverId);
+    }
+
+    // Clear retry counts
+    this.sseRetryCount.delete(serverId);
+
+    // DO NOT remove tools and prompts - keep them for lazy loading
+    // Just update the server state
+    this.lazyServerStates.set(serverId, 'not-started');
+
+    log(`Server ${serverId} disconnected but tools/prompts retained for lazy loading`);
+  }
+
+  /**
    * Disconnects and cleans up resources for a specific server
    */
   private async disconnectServer(serverId: string): Promise<void> {
@@ -886,6 +1032,9 @@ export class McpClientManager {
       this.serverPrompts.delete(serverId);
     }
 
+    // Clear lazy loading state
+    this.lazyServerStates.delete(serverId);
+
     log(`Server ${serverId} disconnected`);
   }
 
@@ -910,6 +1059,13 @@ export class McpClientManager {
     const serverName = fullName.substring(0, dotIndex);
     const promptName = fullName.substring(dotIndex + 1);
     log(`Parsed prompt name: server="${serverName}", prompt="${promptName}"`);
+    
+    // Ensure server is connected for prompt execution
+    try {
+      await this.ensureServerConnected(serverName);
+    } catch (error) {
+      return `Error: Failed to connect to MCP server "${serverName}": ${error}`;
+    }
     
     // Get the specific client for the server
     const client = this.clients.get(serverName);
@@ -972,6 +1128,9 @@ export class McpClientManager {
     this.serverPrompts.clear();
     this.transports.clear();
     this.sseRetryCount.clear();
+    this.lazyServerStates.clear();
+    this.pendingConnections.clear();
+    this.serverConfigs = {};
   }
 
   /**
@@ -980,22 +1139,34 @@ export class McpClientManager {
   public async generateDiagnosticsReport(): Promise<string> {
     const lines: string[] = [];
 
-    lines.push(`Total MCP servers: ${this.clients.size}`);
+    const totalConfiguredServers = Object.keys(this.serverConfigs).length;
+    const connectedServers = Array.from(this.lazyServerStates.entries())
+      .filter(([_, state]) => state === 'connected').length;
+    const lazyServers = Array.from(this.lazyServerStates.entries())
+      .filter(([_, state]) => state === 'not-started').length;
+
+    lines.push(`Total configured MCP servers: ${totalConfiguredServers}`);
+    lines.push(`Currently connected servers: ${connectedServers}`);
+    lines.push(`Lazy (not yet started) servers: ${lazyServers}`);
     lines.push(`Total registered tools: ${this.tools.size}`);
     lines.push(`Total registered prompts: ${this.prompts.size}`);
     lines.push("");
 
-    for (const [serverId, client] of this.clients.entries()) {
+    // Show all configured servers with their state
+    for (const serverId of Object.keys(this.serverConfigs)) {
+      const state = this.lazyServerStates.get(serverId) || 'unknown';
+      const client = this.clients.get(serverId);
       const transport = this.transports.get(serverId);
-      const transportType =
-        transport instanceof StdioClientTransport ? "stdio" : "sse";
+      const transportType = transport instanceof StdioClientTransport ? "stdio" : "sse";
       const toolCount = this.serverTools.get(serverId)?.size || 0;
+      const promptCount = this.serverPrompts.get(serverId)?.size || 0;
 
       lines.push(`Server: ${serverId}`);
-      lines.push(`  Transport type: ${transportType}`);
+      lines.push(`  State: ${state}`);
+      if (client) {
+        lines.push(`  Transport type: ${transportType}`);
+      }
       lines.push(`  Tools: ${toolCount}`);
-      
-      const promptCount = this.serverPrompts.get(serverId)?.size || 0;
       lines.push(`  Prompts: ${promptCount}`);
 
       if (toolCount > 0) {
@@ -1012,7 +1183,7 @@ export class McpClientManager {
         }
       }
 
-      if (transportType === "sse") {
+      if (state === 'connected' && transportType === "sse") {
         const retryCount = this.sseRetryCount.get(serverId) || 0;
         lines.push(`  SSE retry count: ${retryCount}`);
         lines.push(
