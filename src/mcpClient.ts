@@ -570,7 +570,6 @@ export class McpClientManager {
         client,
         serverName,
         actualToolName,
-        tool,
         params,
         document,
         signal,
@@ -646,7 +645,6 @@ export class McpClientManager {
           client,
           serverId,
           name,
-          tool,
           params,
           document,
           signal,
@@ -1202,7 +1200,6 @@ export class McpClientManager {
     client: Client,
     serverId: string,
     toolName: string,
-    tool: Tool,
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
     signal?: AbortSignal,
@@ -1212,37 +1209,8 @@ export class McpClientManager {
         `Executing tool "${toolName}" on server "${serverId}" with string parameters: ${JSON.stringify(params)}`,
       );
 
-      // Process parameters according to the tool's schema
-      const processedParams: Record<string, any> = {};
-      const toolSchema = tool.inputSchema?.properties || {};
-
-      // Process each parameter - try JSON parsing for all string values first
-      for (const [paramName, paramValue] of Object.entries(params)) {
-        const paramSchema = toolSchema[paramName] as
-          | { type?: string }
-          | undefined;
-
-        // Try to parse JSON for all string parameters first
-        try {
-          const parsedValue = JSON.parse(paramValue);
-          log(
-            `Parameter "${paramName}" for tool "${toolName}" successfully parsed as JSON`,
-          );
-          processedParams[paramName] = parsedValue;
-        } catch (e) {
-          // If JSON parsing fails, check if schema expects object/array types
-          if (
-            paramSchema?.type &&
-            (paramSchema.type === "object" || paramSchema.type === "array")
-          ) {
-            log(
-              `Parameter "${paramName}" for tool "${toolName}" has type ${paramSchema.type} in schema but failed JSON parsing, keeping as string: ${e}`,
-            );
-          }
-          // Keep as string for all parsing failures
-          processedParams[paramName] = paramValue;
-        }
-      }
+      // Process parameters according to schema-aware parsing
+      const processedParams = this._parseFinalValue(toolName, Object.entries(params));
 
       // Listen for abort signal to log cancellation
       if (signal) {
@@ -1419,5 +1387,152 @@ export class McpClientManager {
         log(`Error processing mixed tool result: ${error}`);
         return `Error processing tool result: ${error}`;
       }
+    }
+
+    // Schema-aware JSON parsing methods
+    private _schemaAllows(schema: any, type: "string" | "number" | "integer" | "boolean" | "null"): boolean {
+      if (!schema) {
+        return true;
+      }
+
+      // Direct "type" check
+      const t = schema.type;
+      if ((typeof t === "string" && t === type) || (Array.isArray(t) && t.includes(type))) {
+        return true;
+      }
+
+      // enum check
+      if (schema.enum && schema.enum.some((v: any) => this._typeCheckers[type](v))) {
+        return true;
+      }
+
+      // const check
+      if ("const" in schema && this._typeCheckers[type](schema.const)) {
+        return true;
+      }
+
+      // composites: anyOf | oneOf | allOf
+      for (const key of ["anyOf", "oneOf", "allOf"]) {
+        if (schema[key] && Array.isArray(schema[key])) {
+          if (schema[key].some((sub: any) => this._schemaAllows(sub, type))) {
+            return true;
+          }
+        }
+      }
+
+      return false;
+    }
+
+    private _typeCheckers = {
+      string: (x: any): boolean => typeof x === "string",
+      integer: (x: any): boolean => typeof x === "number" && Number.isInteger(x),
+      number: (x: any): boolean => typeof x === "number",
+      boolean: (x: any): boolean => typeof x === "boolean",
+      null: (x: any): boolean => x === null,
+    };
+
+    private _conversionCheckers = {
+      string: (x: any): boolean => typeof x === "string",
+      integer: (x: any): boolean => this._isInteger(x),
+      number: (x: any): boolean => this._isNumber(x),
+      boolean: (x: any): boolean => x === "true" || x === "false" || !x,
+      null: (x: any): boolean => x === "null" || !x,
+    };
+
+    private _isNumber(x: string): boolean {
+      try {
+        parseFloat(x);
+        return !isNaN(parseFloat(x));
+      } catch {
+        return false;
+      }
+    }
+
+    private _isInteger(x: string): boolean {
+      try {
+        const num = parseInt(x, 10);
+        return !isNaN(num) && num.toString() === x;
+      } catch {
+        return false;
+      }
+    }
+
+    private _isJsonSchemaType(paramName: string, jsonSchema: any, type: "string" | "number" | "integer" | "boolean" | "null"): boolean {
+      if (!jsonSchema || !jsonSchema.properties) {
+        return true;
+      }
+      
+      const propSchema = jsonSchema.properties[paramName];
+      if (!propSchema) {
+        return true;
+      }
+
+      return this._schemaAllows(propSchema, type);
+    }
+
+    private _convertWithPrecedence(value: any, paramName: string, jsonSchema: any): any {
+      // Try with null first
+      if (this._conversionCheckers.null(value) && this._isJsonSchemaType(paramName, jsonSchema, "null")) {
+        return null;
+      }
+      
+      if (this._conversionCheckers.boolean(value) && this._isJsonSchemaType(paramName, jsonSchema, "boolean")) {
+        if (!value) {
+          return false;
+        }
+        return value === "true" || value === true;
+      }
+      
+      if (this._conversionCheckers.integer(value) && this._isJsonSchemaType(paramName, jsonSchema, "integer")) {
+        return parseInt(value, 10);
+      }
+      
+      if (this._conversionCheckers.number(value) && this._isJsonSchemaType(paramName, jsonSchema, "number")) {
+        return parseFloat(value);
+      }
+
+      if (this._isJsonSchemaType(paramName, jsonSchema, "string")) {
+        return JSON.stringify(value);
+      }
+
+      return value;
+    }
+
+    private _parseFinalValue(toolName: string, params: Array<[string, string]>): Record<string, any> {
+      const tool = this.tools.get(toolName);
+      
+      if (tool) {
+        const jsonSchema = tool.inputSchema;
+        const output: Record<string, any> = {};
+        
+        for (const [paramName, paramValue] of params) {
+          const convertedValue = this._convertWithPrecedence(paramValue, paramName, jsonSchema);
+          try {
+            // Try to parse the converted value as JSON
+            const wrappedJson = `{"key": ${convertedValue}}`;
+            output[paramName] = JSON.parse(wrappedJson).key;
+          } catch (error) {
+            log(`Object/Array is malformed, using string. Value=${convertedValue}`);
+            output[paramName] = convertedValue;
+          }
+        }
+        
+        return output;
+      }
+      
+      log(`tool_name not in list of tools, ${toolName}`);
+      const output: Record<string, any> = {};
+      
+      for (const [paramName, paramValue] of params) {
+        try {
+          const wrappedJson = `{"${paramName}": ${paramValue}}`;
+          output[paramName] = JSON.parse(wrappedJson)[paramName];
+        } catch (error) {
+          log(`Failed to parse JSON in _parseFinalValue with invalid JSON format for param ${paramName}=${paramValue}`);
+          output[paramName] = paramValue;
+        }
+      }
+      
+      return output;
     }
   }
