@@ -444,6 +444,14 @@ export class McpClientManager {
   public getConnectedServers(): string[] {
     return Array.from(this.clients.keys());
   }
+
+  // Get all configured servers with their connection states
+  public getAllConfiguredServers(): Array<{id: string, state: 'not-started' | 'connecting' | 'connected'}> {
+    return Object.keys(this.serverConfigs).map(serverId => ({
+      id: serverId,
+      state: this.lazyServerStates.get(serverId) || 'not-started'
+    }));
+  }
   /**
    * Ensures a server is connected, starting it lazily if needed
    */

@@ -189,21 +189,25 @@ export class StatusManager {
       tooltipMarkdown.appendMarkdown(`**${this.IDLE_TOOLTIP}**\n\n`);
       tooltipMarkdown.appendMarkdown(`---\n\n`);
       
-      // Get all connected MCP servers and their prompts
+      // Get all configured MCP servers and their prompts
       const groupedPrompts = mcpClientManager.getGroupedPrompts();
-      const connectedServers = mcpClientManager.getConnectedServers();
+      const allServers = mcpClientManager.getAllConfiguredServers();
       
-      // Add header showing connected servers
-      tooltipMarkdown.appendMarkdown(`**Connected MCP Servers:**\n\n`);
+      // Add header showing all configured servers
+      tooltipMarkdown.appendMarkdown(`**MCP Servers:**\n\n`);
       
-      // List all connected servers
-      if (connectedServers.length > 0) {
-        for (const serverId of connectedServers) {
-          tooltipMarkdown.appendMarkdown(`- **${serverId}**\n`);
+      // List all configured servers with their connection status
+      if (allServers.length > 0) {
+        for (const server of allServers) {
+          const statusIcon = server.state === 'connected' ? '🟢' : 
+                           server.state === 'connecting' ? '🟡' : '⚪';
+          const statusText = server.state === 'connected' ? 'Connected' :
+                           server.state === 'connecting' ? 'Connecting' : 'Lazy loaded';
+          tooltipMarkdown.appendMarkdown(`- ${statusIcon} **${server.id}** (${statusText})\n`);
         }
         tooltipMarkdown.appendMarkdown(`\n`);
       } else {
-        tooltipMarkdown.appendMarkdown(`*No servers currently connected*\n\n`);
+        tooltipMarkdown.appendMarkdown(`*No MCP servers configured*\n\n`);
       }
       
       // Add header for available prompts
