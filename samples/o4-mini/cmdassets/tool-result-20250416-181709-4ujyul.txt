@@ -1,0 +1,31 @@
+10 validation errors for BashCommand
+action_json.Command.command
+  Field required [type=missing, input_value={'action_json': {'status_check': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.Command.action_json
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.StatusCheck.status_check
+  Field required [type=missing, input_value={'action_json': {'status_check': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.StatusCheck.action_json
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendText.send_text
+  Field required [type=missing, input_value={'action_json': {'status_check': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendText.action_json
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendSpecials.send_specials
+  Field required [type=missing, input_value={'action_json': {'status_check': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendSpecials.action_json
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden
+action_json.SendAscii.send_ascii
+  Field required [type=missing, input_value={'action_json': {'status_check': True}}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/missing
+action_json.SendAscii.action_json
+  Extra inputs are not permitted [type=extra_forbidden, input_value={'status_check': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.11/v/extra_forbidden

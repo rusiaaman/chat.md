@@ -1,0 +1,123 @@
+
+/private/tmp/counterstrike-mcz2/main.js
+```
+
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.146.0/build/three.module.js';
+import { PointerLockControls } from 'https://cdn.jsdelivr.net/npm/three@0.146.0/examples/jsm/controls/PointerLockControls.js';
+
+let camera, scene, renderer, controls;
+let objects = [], raycaster, killCount = 0;
+const info = document.getElementById('info');
+
+init();
+animate();
+
+function init() {
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 1, 1000);
+  renderer = new THREE.WebGLRenderer();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  document.body.appendChild(renderer.domElement);
+
+  controls = new PointerLockControls(camera, document.body);
+  document.body.addEventListener('click', () => controls.lock());
+  scene.add(controls.getObject());
+
+  raycaster = new THREE.Raycaster();
+
+  const light = new THREE.HemisphereLight(0xffffff, 0x444444);
+  light.position.set(0, 200, 0);
+  scene.add(light);
+
+  const dirLight = new THREE.DirectionalLight(0xffffff);
+  dirLight.position.set(0, 200, 100);
+  scene.add(dirLight);
+
+  const floor = new THREE.Mesh(
+    new THREE.PlaneGeometry(200, 200),
+    new THREE.MeshBasicMaterial({ color: 0x228B22 })
+  );
+  floor.rotation.x = -Math.PI/2;
+  scene.add(floor);
+
+  spawnEnemies(15);
+
+  window.addEventListener('resize', onWindowResize);
+  document.addEventListener('mousedown', onShoot);
+  setupMovement();
+}
+
+function spawnEnemies(count) {
+  for (let i = 0; i < count; i++) {
+    const box = new THREE.Mesh(
+      new THREE.BoxGeometry(2, 2, 2),
+      new THREE.MeshLambertMaterial({ color: 0xff0000 })
+    );
+    box.position.set((Math.random()-0.5)*100, 1, (Math.random()-0.5)*100);
+    scene.add(box);
+    objects.push(box);
+  }
+}
+
+function setupMovement() {
+  const velocity = new THREE.Vector3();
+  const direction = new THREE.Vector3();
+  let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+  const onKey = (e, flag) => {
+    switch (e.code) {
+      case 'KeyW': moveForward = flag; break;
+      case 'KeyS': moveBackward = flag; break;
+      case 'KeyA': moveLeft = flag; break;
+      case 'KeyD': moveRight = flag; break;
+    }
+  };
+  document.addEventListener('keydown', e => onKey(e, true));
+  document.addEventListener('keyup', e => onKey(e, false));
+
+  let prevTime = performance.now();
+  controls.addEventListener('lock', () => info.style.display = 'none');
+
+  function moveLoop() {
+    requestAnimationFrame(moveLoop);
+    if (controls.isLocked) {
+      const time = performance.now();
+      const delta = (time - prevTime) / 1000;
+      velocity.x -= velocity.x * 10.0 * delta;
+      velocity.z -= velocity.z * 10.0 * delta;
+      direction.z = (moveForward ? -1 : moveBackward ? 1 : 0);
+      direction.x = (moveLeft ? -1 : moveRight ? 1 : 0);
+      if (direction.length() !== 0) {
+        velocity.addScaledVector(direction.normalize().multiplyScalar(400.0), delta);
+      }
+      controls.moveRight(velocity.x * delta);
+      controls.moveForward(velocity.z * delta);
+      prevTime = time;
+    }
+  }
+  moveLoop();
+}
+
+function onShoot() {
+  if (!controls.isLocked) return;
+  raycaster.setFromCamera({ x: 0, y: 0 }, camera);
+  const hits = raycaster.intersectObjects(objects);
+  if (hits.length > 0) {
+    const target = hits[0].object;
+    scene.remove(target);
+    objects = objects.filter(o => o !== target);
+    killCount++;
+    info.innerText = `Kills: ${killCount}`;
+  }
+}
+
+function onWindowResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  renderer.render(scene, camera);
+}
+```

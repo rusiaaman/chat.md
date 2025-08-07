@@ -1,0 +1,14 @@
+{
+  "language": "TypeScript",
+  "cssFramework": "Inline",
+  "styleVariant": "Inline only",
+  "styledComponentsLibrary": "Emotion",
+  "buildFramework": "Vite",
+  "componentLibrary": "MUI v5",
+  "globalStore": "None",
+  "apiFramework": "None",
+  "componentBreakdown": "Blocks",
+  "iconPack": "Material-UI",
+  "useTheme": false,
+  "useLayoutComponent": false
+}
