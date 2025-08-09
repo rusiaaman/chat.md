@@ -142,6 +142,10 @@ export class StreamingService {
     let tokenRetryAttempt = maxTokenRetryAttempt;
     const maxRetries = 5;
     const maxTokenRetries = 10; // Maximum number of retries for max token errors
+    
+    // Capture the success state early to avoid race conditions with isActive flag
+    let streamCompletedSuccessfully = false;
+    let shouldAutoSaveOnCompletion = false;
 
     try {
       log(
@@ -417,6 +421,15 @@ export class StreamingService {
           log(
             `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}`,
           );
+          
+          // Capture success state immediately to avoid race conditions
+          streamCompletedSuccessfully = true;
+          shouldAutoSaveOnCompletion = getAutoSaveAfterStreaming() && 
+                                      streamer.tokens.length > 0 && 
+                                      streamer.isActive && 
+                                      !streamer.isHandlingToolCall;
+          
+          log(`Auto-save decision captured: ${shouldAutoSaveOnCompletion} (tokens: ${streamer.tokens.length}, active: ${streamer.isActive}, toolCall: ${streamer.isHandlingToolCall})`);
 
           // Log information about completed stream
           if (tokenCount < 100) {
@@ -640,6 +653,27 @@ export class StreamingService {
         maxTokensReached = true; // Ensure we mark this for proper handling
       }
     } finally {
+      // Auto-save using captured success state to avoid race conditions
+      try {
+        if (shouldAutoSaveOnCompletion) {
+          log(`Auto-saving document using captured success state (streamCompletedSuccessfully: ${streamCompletedSuccessfully})`);
+          const saved = await this.document.save();
+          if (saved) {
+            log("Document auto-saved successfully");
+          } else {
+            log("Document auto-save failed - save() returned false");
+            // Could consider showing a subtle notification to user here if desired
+          }
+        } else if (streamCompletedSuccessfully) {
+          log("Stream completed successfully but auto-save was not needed (captured at completion time)");
+        } else {
+          log("Auto-save skipped - stream did not complete successfully or conditions not met");
+        }
+      } catch (error) {
+        log(`Error during auto-save: ${error}`);
+        // Don't show error to user as auto-save is a convenience feature
+      }
+      
       // Only mark as inactive if not interrupted due to max tokens
       if (!maxTokensReached) {
         log(
@@ -665,39 +699,6 @@ export class StreamingService {
           }
         } catch (error) {
           log(`Error adding new user block: ${error}`);
-        }
-        
-        // Auto-save the document if enabled and streaming completed successfully
-        try {
-          const shouldAutoSave = getAutoSaveAfterStreaming() && 
-                                streamer.tokens.length > 0 && 
-                                streamer.isActive && 
-                                !streamer.isHandlingToolCall;
-          
-          if (shouldAutoSave) {
-            log("Auto-saving document after successful streaming completion");
-            const saved = await this.document.save();
-            if (saved) {
-              log("Document auto-saved successfully");
-            } else {
-              log("Document auto-save failed");
-              // Could consider showing a subtle notification to user here if desired
-            }
-          } else {
-            // Log the reason for not auto-saving
-            if (!getAutoSaveAfterStreaming()) {
-              log("Auto-save disabled by configuration");
-            } else if (streamer.tokens.length === 0) {
-              log("Not auto-saving: no tokens were written to document");
-            } else if (!streamer.isActive) {
-              log("Not auto-saving: streaming was cancelled or failed");
-            } else if (streamer.isHandlingToolCall) {
-              log("Not auto-saving: streaming completed due to tool call");
-            }
-          }
-        } catch (error) {
-          log(`Error during auto-save: ${error}`);
-          // Don't show error to user as auto-save is a convenience feature
         }
         
         streamer.isActive = false;
