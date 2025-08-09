@@ -305,5 +305,14 @@ export function getMaxTokens(): number {
   return config.get("maxTokens") || 8000; // Default to 8k tokens
 }
 
+/**
+ * Gets whether to automatically save the file after streaming completes
+ * @returns True if auto-save is enabled (default: true)
+ */
+export function getAutoSaveAfterStreaming(): boolean {
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get("autoSaveAfterStreaming") ?? true; // Default to true
+}
+
 import { parseDocument } from "./parser";
 import * as fs from "fs";

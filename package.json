@@ -201,6 +201,12 @@
           "description": "Maximum number of tokens to generate in responses (applies to all models)",
           "default": 8000,
           "scope": "application"
+        },
+        "chatmd.autoSaveAfterStreaming": {
+          "type": "boolean",
+          "description": "Automatically save the file when streaming completes successfully",
+          "default": true,
+          "scope": "application"
         }
       }
     },

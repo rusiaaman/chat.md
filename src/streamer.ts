@@ -5,7 +5,7 @@ import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
 import { log, statusManager } from "./extension";
-import { generateToolCallingSystemPrompt } from "./config";
+import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
 import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser";
@@ -418,6 +418,28 @@ export class StreamingService {
             `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}`,
           );
 
+          // Auto-save the document if enabled and streaming completed successfully
+          try {
+            if (getAutoSaveAfterStreaming() && streamer.isActive && tokenCount > 0) {
+              log("Auto-saving document after successful stream completion");
+              const saved = await this.document.save();
+              if (saved) {
+                log("Document auto-saved successfully");
+              } else {
+                log("Document auto-save failed");
+              }
+            } else if (!getAutoSaveAfterStreaming()) {
+              log("Auto-save disabled by configuration");
+            } else if (!streamer.isActive) {
+              log("Not auto-saving because streamer was cancelled");
+            } else if (tokenCount === 0) {
+              log("Not auto-saving because no tokens were processed");
+            }
+          } catch (error) {
+            log(`Error during auto-save: ${error}`);
+            // Don't show error to user as auto-save is a convenience feature
+          }
+
           // Log information about completed stream
           if (tokenCount < 100) {
             log(`Note: Low token count (${tokenCount}) for completed stream`);
@@ -665,6 +687,30 @@ export class StreamingService {
           }
         } catch (error) {
           log(`Error adding new user block: ${error}`);
+        }
+        
+        // Auto-save the document if enabled and streaming completed successfully
+        try {
+          if (getAutoSaveAfterStreaming() && streamer.tokens.length > 0 && streamer.isActive && !streamer.isHandlingToolCall) {
+            log("Auto-saving document after successful streaming completion");
+            const saved = await this.document.save();
+            if (saved) {
+              log("Document auto-saved successfully in finally block");
+            } else {
+              log("Document auto-save failed in finally block");
+            }
+          } else if (!getAutoSaveAfterStreaming()) {
+            log("Auto-save disabled by configuration");
+          } else if (streamer.isHandlingToolCall) {
+            log("Not auto-saving because streaming completed due to tool call");
+          } else if (streamer.tokens.length === 0) {
+            log("Not auto-saving because no tokens were written to document");
+          } else if (!streamer.isActive) {
+            log("Not auto-saving because streaming was cancelled or failed");
+          }
+        } catch (error) {
+          log(`Error during auto-save in finally block: ${error}`);
+          // Don't show error to user as auto-save is a convenience feature
         }
         
         streamer.isActive = false;
