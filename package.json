@@ -82,7 +82,7 @@
       },
       {
         "command": "filechat.resumeStreaming",
-        "title": "chat.md: Resume Assistant Stream"
+        "title": "chat.md: Resume Assistant Stream (Continue in Same Block)"
       },
       {
         "command": "filechat.selectApiConfigByIndex.0",

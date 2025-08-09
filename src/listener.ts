@@ -8,7 +8,7 @@ import {
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
-import { StreamerState, MessageParam } from "./types"; // Added MessageParam
+import { StreamerState, MessageParam } from "./types"; // Added MessageParam and StreamerState
 import {
   getApiKey, // Keep existing config functions
   // getAnthropicApiKey, // No longer directly used in startStreaming based on latest snippet
@@ -657,7 +657,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
   } // <--- Added missing closing brace for insertToolResult
 
   /**
-   * Resume streaming from the last assistant block by adding an empty assistant block
+   * Resume streaming from the last assistant block, continuing in the same block
+   * This mimics the behavior when max tokens is reached and streaming continues
    */
   public async resumeStreaming(): Promise<void> {
     const text = this.document.getText();
@@ -675,34 +676,117 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     const lastMarker = assistantMarkers[assistantMarkers.length - 1];
     log(`Found last assistant block at position ${lastMarker.markerStart}`);
     
-    // Check if the last assistant block is already empty (ready for streaming)
+    // Get the content of the last assistant block (from contentStart to end of document)
     const nextMarkerStart = text.length; // End of document since it's the last block
-    const content = text.substring(lastMarker.contentStart, nextMarkerStart).trim();
+    const existingContent = text.substring(lastMarker.contentStart, nextMarkerStart);
     
-    if (content === "") {
-      log("Last assistant block is already empty, starting streaming directly");
-      // The block is already empty, just start streaming
-      await this.startStreaming();
+    log(`Resuming streaming in existing assistant block with ${existingContent.length} characters of existing content`);
+    
+    // Parse the document to get messages, treating the existing content as partial assistant response
+    const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
+    
+    if (parseResult.hasImageInSystemBlock) {
+      log("Error: Image found in system block during resumeStreaming. Aborting.");
+      vscode.window.showErrorMessage("Images are not allowed in system blocks. Please remove image references.");
       return;
     }
     
-    // Add a new empty assistant block after the last assistant block content
-    const insertPosition = this.document.positionAt(lastMarker.contentStart + content.length);
+    const messages: readonly MessageParam[] = parseResult.messages;
+    const customSystemPrompt: string = parseResult.systemPrompt;
     
-    // Create edit to insert new assistant block
-    const textToInsert = "\n\n# %% assistant\n";
-    const edit = new vscode.WorkspaceEdit();
-    edit.insert(this.document.uri, insertPosition, textToInsert);
-    
-    const applied = await vscode.workspace.applyEdit(edit);
-    
-    if (applied) {
-      log("Successfully added new assistant block for resuming stream");
-      // The DocumentListener will automatically detect the new empty assistant block and start streaming
-    } else {
-      log("Failed to add new assistant block for resuming stream");
-      vscode.window.showErrorMessage("Failed to resume streaming - could not add assistant block");
+    if (messages.length === 0) {
+      log("No valid messages found to resume streaming.");
+      vscode.window.showWarningMessage("No valid conversation found to resume from");
+      return;
     }
+    
+    // Create updated messages that include the existing partial assistant response
+    const updatedMessages = [...messages];
+    
+    // If there's existing content in the last assistant block, we need to include it in the context
+    if (existingContent.trim()) {
+      log(`Including existing assistant content (${existingContent.trim().length} chars) in context for resumption`);
+      
+      // Check if the last message is from the assistant
+      if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
+        // Append to existing assistant message
+        const existingAssistantContent = updatedMessages[updatedMessages.length - 1].content
+          .filter((c) => c.type === "text")
+          .map((c) => (c as any).value)
+          .join("\n\n");
+        
+        // Replace the content with combined text
+        const newContent = updatedMessages[updatedMessages.length - 1].content.filter(c => c.type !== "text");
+        newContent.push({
+          type: "text",
+          value: existingAssistantContent + existingContent.trim()
+        });
+        
+        updatedMessages[updatedMessages.length - 1].content = newContent;
+      } else {
+        // Add new assistant message with the partial response
+        updatedMessages.push({
+          role: "assistant",
+          content: [{ type: "text", value: existingContent.trim() }]
+        });
+      }
+    }
+    
+    // Get API key and validate config
+    let apiKey: string;
+    try {
+      const { getApiKey } = require("./config");
+      apiKey = getApiKey();
+      if (!apiKey) {
+        throw new Error("API key not configured");
+      }
+    } catch (error) {
+      const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}`;
+      log(message);
+      vscode.window.showErrorMessage(message);
+      return;
+    }
+    
+    // Build final system prompt
+    const { getDefaultSystemPrompt, generateToolCallingSystemPrompt } = require("./config");
+    const defaultSystemPrompt = getDefaultSystemPrompt();
+    const mcpGroupedTools = mcpClientManager.getGroupedTools();
+    const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools);
+    
+    const finalSystemPrompt = [
+      defaultSystemPrompt,
+      customSystemPrompt,
+      toolSystemPrompt
+    ].filter(p => p && p.trim() !== '').join('\n\n');
+    
+    // Create StreamingService
+    const StreamingService = require("./streamer").StreamingService;
+    const streamingService = new StreamingService(apiKey, this.document, this.lock);
+    
+    // Create a streamer state that will resume in the existing assistant block
+    const messageIndex = updatedMessages.length - 1;
+    const streamer: StreamerState = {
+      messageIndex,
+      tokens: existingContent ? [existingContent] : [], // Initialize with existing content as tokens
+      isActive: true,
+      historyFilePath: undefined, // Will be set by streaming service if needed
+      isHandlingToolCall: false,
+      cancel: () => streamingService.cancelStreaming(streamer),
+    };
+    
+    // Store the streamer
+    this.streamers.set(messageIndex, streamer);
+    log(`Created streamer for resuming in message index ${messageIndex} with ${streamer.tokens.length} existing tokens`);
+    
+    // Start streaming, which will continue from where the last response left off
+    streamingService
+      .streamResponse(updatedMessages, streamer, finalSystemPrompt)
+      .catch((err: any) => {
+        log(`Resume streaming error for index ${messageIndex}: ${err}`);
+      })
+      .finally(() => {
+        log(`Resume streamer ${messageIndex} promise finally block reached.`);
+      });
   }
 
   /**
