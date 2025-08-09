@@ -653,27 +653,6 @@ export class StreamingService {
         maxTokensReached = true; // Ensure we mark this for proper handling
       }
     } finally {
-      // Auto-save using captured success state to avoid race conditions
-      try {
-        if (shouldAutoSaveOnCompletion) {
-          log(`Auto-saving document using captured success state (streamCompletedSuccessfully: ${streamCompletedSuccessfully})`);
-          const saved = await this.document.save();
-          if (saved) {
-            log("Document auto-saved successfully");
-          } else {
-            log("Document auto-save failed - save() returned false");
-            // Could consider showing a subtle notification to user here if desired
-          }
-        } else if (streamCompletedSuccessfully) {
-          log("Stream completed successfully but auto-save was not needed (captured at completion time)");
-        } else {
-          log("Auto-save skipped - stream did not complete successfully or conditions not met");
-        }
-      } catch (error) {
-        log(`Error during auto-save: ${error}`);
-        // Don't show error to user as auto-save is a convenience feature
-      }
-      
       // Only mark as inactive if not interrupted due to max tokens
       if (!maxTokensReached) {
         log(
@@ -682,6 +661,7 @@ export class StreamingService {
         
         // Add a new user block after the assistant response completes successfully
         // But only if tokens were successfully added to document (check tokens length and streamer state)
+        let userBlockAdded = false;
         try {
           // Only add user block if:
           // 1. The streaming finished naturally (not due to a tool call)
@@ -689,7 +669,8 @@ export class StreamingService {
           // 3. The streamer wasn't cancelled or failed due to other errors
           if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
             log('Adding new user block after completed assistant response');
-            this.appendNewUserBlock(streamer);
+            await this.appendNewUserBlock(streamer);
+            userBlockAdded = true;
           } else if (streamer.isHandlingToolCall) {
             log('Not adding user block since streaming completed due to tool call');
           } else if (streamer.tokens.length === 0) {
@@ -699,6 +680,37 @@ export class StreamingService {
           }
         } catch (error) {
           log(`Error adding new user block: ${error}`);
+        }
+        
+        // Auto-save AFTER user block is added (correct order)
+        try {
+          if (shouldAutoSaveOnCompletion) {
+            log(`Auto-saving document after user block added (userBlockAdded: ${userBlockAdded})`);
+            
+            // Brief delay to ensure user block addition is processed by VS Code
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            log(`Document state before save: isDirty=${this.document.isDirty}, version=${this.document.version}`);
+            
+            const saved = await this.document.save();
+            
+            log(`Auto-save result: ${saved}, final isDirty=${this.document.isDirty}`);
+            
+            if (saved && !this.document.isDirty) {
+              log("Document auto-saved successfully");
+            } else if (saved && this.document.isDirty) {
+              log("Document save returned true but document is still dirty - this may indicate a problem");
+            } else {
+              log("Document auto-save failed - save() returned false");
+            }
+          } else if (streamCompletedSuccessfully) {
+            log("Stream completed successfully but auto-save was not needed (captured at completion time)");
+          } else {
+            log("Auto-save skipped - stream did not complete successfully or conditions not met");
+          }
+        } catch (error) {
+          log(`Error during auto-save: ${error}`);
+          // Don't show error to user as auto-save is a convenience feature
         }
         
         streamer.isActive = false;
