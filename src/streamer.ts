@@ -982,11 +982,22 @@ export class StreamingService {
         `Inserting at position: line ${insertPosition.line}, character ${insertPosition.character}`,
       );
 
+      // Check if we need to add a newline before the first token
+      let textToInsert = newTokens.join("");
+      if (isFirstStreamingEvent && tokensSoFar.length === 0) {
+        // Check if there's no newline between the heading and where we're about to insert
+        // blockStart points to where content should start, check the character before it
+        if (blockStart > 0 && text[blockStart - 1] !== '\n') {
+          log("No newline after assistant heading, adding one before first token");
+          textToInsert = '\n' + textToInsert;
+        }
+      }
+
       // Insert text using a workspace edit as per original design
-      log(`Inserting text: "${newTokens.join("")}"`);
+      log(`Inserting text: "${textToInsert}"`);
 
       const edit = new vscode.WorkspaceEdit();
-      edit.insert(this.document.uri, insertPosition, newTokens.join(""));
+      edit.insert(this.document.uri, insertPosition, textToInsert);
 
       // Log before applying edit
       log(
