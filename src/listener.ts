@@ -4,6 +4,7 @@ import {
   hasEmptyAssistantBlock,
   hasEmptyToolExecuteBlock,
   ParsedDocumentResult, // Import the return type interface
+  findAllAssistantBlocks, // Add this import for resumeStreaming
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
@@ -654,6 +655,55 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       // Auto-scrolling disabled - users can scroll manually if needed
     }
   } // <--- Added missing closing brace for insertToolResult
+
+  /**
+   * Resume streaming from the last assistant block by adding an empty assistant block
+   */
+  public async resumeStreaming(): Promise<void> {
+    const text = this.document.getText();
+    
+    // Find the last assistant block
+    const assistantMarkers = findAllAssistantBlocks(text);
+    
+    if (assistantMarkers.length === 0) {
+      log("No assistant blocks found, cannot resume streaming");
+      vscode.window.showWarningMessage("No assistant blocks found to resume from");
+      return;
+    }
+    
+    // Get the last assistant block
+    const lastMarker = assistantMarkers[assistantMarkers.length - 1];
+    log(`Found last assistant block at position ${lastMarker.markerStart}`);
+    
+    // Check if the last assistant block is already empty (ready for streaming)
+    const nextMarkerStart = text.length; // End of document since it's the last block
+    const content = text.substring(lastMarker.contentStart, nextMarkerStart).trim();
+    
+    if (content === "") {
+      log("Last assistant block is already empty, starting streaming directly");
+      // The block is already empty, just start streaming
+      await this.startStreaming();
+      return;
+    }
+    
+    // Add a new empty assistant block after the last assistant block content
+    const insertPosition = this.document.positionAt(lastMarker.contentStart + content.length);
+    
+    // Create edit to insert new assistant block
+    const textToInsert = "\n\n# %% assistant\n";
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(this.document.uri, insertPosition, textToInsert);
+    
+    const applied = await vscode.workspace.applyEdit(edit);
+    
+    if (applied) {
+      log("Successfully added new assistant block for resuming stream");
+      // The DocumentListener will automatically detect the new empty assistant block and start streaming
+    } else {
+      log("Failed to add new assistant block for resuming stream");
+      vscode.window.showErrorMessage("Failed to resume streaming - could not add assistant block");
+    }
+  }
 
   /**
    * Start streaming response from LLM. Handles parsing, errors, prompt assembly, and initiation.

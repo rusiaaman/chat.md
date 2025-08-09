@@ -81,6 +81,10 @@
         "title": "chat.md: Cancel Streaming"
       },
       {
+        "command": "filechat.resumeStreaming",
+        "title": "chat.md: Resume Assistant Stream"
+      },
+      {
         "command": "filechat.selectApiConfigByIndex.0",
         "title": "chat.md: Select API Config 1"
       },
@@ -214,6 +218,12 @@
       {
         "command": "filechat.insertNextBlock",
         "key": "shift+enter",
+        "when": "editorTextFocus && editorLangId == markdown"
+      },
+      {
+        "command": "filechat.resumeStreaming",
+        "key": "ctrl+shift+enter",
+        "mac": "cmd+shift+enter",
         "when": "editorTextFocus && editorLangId == markdown"
       },
       {

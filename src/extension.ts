@@ -204,6 +204,13 @@ async function handleMcpConfigChange(
 }
 
 /**
+ * Helper function to get the document listener instance for a document
+ */
+function getDocumentListenerForDocument(document: vscode.TextDocument): DocumentListener | undefined {
+  return documentListenerInstances.get(document.uri.toString());
+}
+
+/**
  * Helper function to check if text contains a tool call
  * @param text The text to check for tool calls
  * @returns True if a tool call is found, false otherwise
@@ -418,6 +425,42 @@ export function activate(contextParam: vscode.ExtensionContext) {
           vscode.window.showInformationMessage("chat.md streaming cancelled");
           updateStreamingStatusBar();
         }
+      }
+    }),
+
+    vscode.commands.registerCommand("filechat.resumeStreaming", async () => {
+      log("COMMAND TRIGGERED: filechat.resumeStreaming");
+      
+      const activeEditor = vscode.window.activeTextEditor;
+      if (!activeEditor) {
+        vscode.window.showWarningMessage("No active editor found");
+        return;
+      }
+      
+      if (!activeEditor.document.fileName.endsWith(".chat.md")) {
+        vscode.window.showWarningMessage("Resume streaming is only available for .chat.md files");
+        return;
+      }
+      
+      // Check if streaming is already active
+      const activeStreamer = getActiveStreamerForDocument(activeEditor.document);
+      if (activeStreamer && activeStreamer.isActive) {
+        vscode.window.showWarningMessage("Streaming is already active for this document");
+        return;
+      }
+      
+      // Get the document listener and call resumeStreaming
+      const documentListener = getDocumentListenerForDocument(activeEditor.document);
+      if (!documentListener) {
+        vscode.window.showErrorMessage("Document listener not found - try reopening the file");
+        return;
+      }
+      
+      try {
+        await documentListener.resumeStreaming();
+      } catch (error) {
+        log(`Error resuming streaming: ${error}`);
+        vscode.window.showErrorMessage(`Failed to resume streaming: ${error}`);
       }
     }),
 
