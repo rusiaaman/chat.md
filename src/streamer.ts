@@ -418,28 +418,6 @@ export class StreamingService {
             `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}`,
           );
 
-          // Auto-save the document if enabled and streaming completed successfully
-          try {
-            if (getAutoSaveAfterStreaming() && streamer.isActive && tokenCount > 0) {
-              log("Auto-saving document after successful stream completion");
-              const saved = await this.document.save();
-              if (saved) {
-                log("Document auto-saved successfully");
-              } else {
-                log("Document auto-save failed");
-              }
-            } else if (!getAutoSaveAfterStreaming()) {
-              log("Auto-save disabled by configuration");
-            } else if (!streamer.isActive) {
-              log("Not auto-saving because streamer was cancelled");
-            } else if (tokenCount === 0) {
-              log("Not auto-saving because no tokens were processed");
-            }
-          } catch (error) {
-            log(`Error during auto-save: ${error}`);
-            // Don't show error to user as auto-save is a convenience feature
-          }
-
           // Log information about completed stream
           if (tokenCount < 100) {
             log(`Note: Low token count (${tokenCount}) for completed stream`);
@@ -691,25 +669,34 @@ export class StreamingService {
         
         // Auto-save the document if enabled and streaming completed successfully
         try {
-          if (getAutoSaveAfterStreaming() && streamer.tokens.length > 0 && streamer.isActive && !streamer.isHandlingToolCall) {
+          const shouldAutoSave = getAutoSaveAfterStreaming() && 
+                                streamer.tokens.length > 0 && 
+                                streamer.isActive && 
+                                !streamer.isHandlingToolCall;
+          
+          if (shouldAutoSave) {
             log("Auto-saving document after successful streaming completion");
             const saved = await this.document.save();
             if (saved) {
-              log("Document auto-saved successfully in finally block");
+              log("Document auto-saved successfully");
             } else {
-              log("Document auto-save failed in finally block");
+              log("Document auto-save failed");
+              // Could consider showing a subtle notification to user here if desired
             }
-          } else if (!getAutoSaveAfterStreaming()) {
-            log("Auto-save disabled by configuration");
-          } else if (streamer.isHandlingToolCall) {
-            log("Not auto-saving because streaming completed due to tool call");
-          } else if (streamer.tokens.length === 0) {
-            log("Not auto-saving because no tokens were written to document");
-          } else if (!streamer.isActive) {
-            log("Not auto-saving because streaming was cancelled or failed");
+          } else {
+            // Log the reason for not auto-saving
+            if (!getAutoSaveAfterStreaming()) {
+              log("Auto-save disabled by configuration");
+            } else if (streamer.tokens.length === 0) {
+              log("Not auto-saving: no tokens were written to document");
+            } else if (!streamer.isActive) {
+              log("Not auto-saving: streaming was cancelled or failed");
+            } else if (streamer.isHandlingToolCall) {
+              log("Not auto-saving: streaming completed due to tool call");
+            }
           }
         } catch (error) {
-          log(`Error during auto-save in finally block: ${error}`);
+          log(`Error during auto-save: ${error}`);
           // Don't show error to user as auto-save is a convenience feature
         }
         
