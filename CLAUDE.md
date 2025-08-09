@@ -85,3 +85,4 @@ Anthropic api and openai api (with custom url) are supported.
 # Workflow
 
 - Automatically do git commit
+- In case I ask you to bump up version, bump up version in package.json, then tag commit then push

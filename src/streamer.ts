@@ -369,6 +369,31 @@ export class StreamingService {
                         // stays visible until the DocumentListener picks up the change and executes the tool
                         log(`Ensuring tool execution status remains visible for manual execution`);
                         statusManager.showToolExecutionStatus();
+
+                        // Auto-save after tool_execute block generation if enabled
+                        try {
+                          if (getAutoSaveAfterStreaming()) {
+                            log("Auto-saving document after tool_execute block generation");
+                            
+                            // Brief delay to ensure tool_execute block addition is processed by VS Code
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                            
+                            const saved = await this.document.save();
+                            
+                            if (saved && !this.document.isDirty) {
+                              log("Document auto-saved successfully after tool_execute block generation");
+                            } else if (saved && this.document.isDirty) {
+                              log("Document save returned true but document is still dirty after tool_execute block generation");
+                            } else {
+                              log("Document auto-save failed after tool_execute block generation - save() returned false");
+                            }
+                          } else {
+                            log("Auto-save is disabled, skipping save after tool_execute block generation");
+                          }
+                        } catch (error) {
+                          log(`Error during auto-save after tool_execute block generation: ${error}`);
+                          // Don't show error to user as auto-save is a convenience feature
+                        }
                       } else {
                         log(
                           `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
