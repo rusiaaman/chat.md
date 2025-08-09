@@ -370,6 +370,13 @@ export class StreamingService {
                         log(`Ensuring tool execution status remains visible for manual execution`);
                         statusManager.showToolExecutionStatus();
 
+                        // Mark streamer as inactive BEFORE auto-save to prevent conflicts
+                        streamer.isActive = false;
+                        log("Marked streamer as inactive after tool_execute block insertion");
+
+                        // Small delay to ensure state propagation before triggering auto-save document changes
+                        await new Promise(resolve => setTimeout(resolve, 50));
+
                         // Auto-save after tool_execute block generation if enabled
                         try {
                           if (getAutoSaveAfterStreaming()) {
@@ -406,8 +413,7 @@ export class StreamingService {
                     }
                   }
 
-                  // Mark streamer as inactive to stop streaming
-                  streamer.isActive = false;
+                  // Streamer already marked as inactive above before auto-save
                   break;
                 } catch (error) {
                   log(`Error handling tool call: ${error}`);

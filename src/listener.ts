@@ -794,8 +794,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    */
   private async startStreaming(): Promise<void> {
     // Prevent concurrent streams for the same document
-    if (this.getActiveStreamer()) {
-        log("Streaming is already active for this document.");
+    const activeStreamer = this.getActiveStreamer();
+    if (activeStreamer) {
+        log(`Streaming is already active for this document. Active streamer: messageIndex=${activeStreamer.messageIndex}, isActive=${activeStreamer.isActive}, tokensLength=${activeStreamer.tokens.length}, isHandlingToolCall=${activeStreamer.isHandlingToolCall}`);
         return;
     }
     await this.lock.acquire();
