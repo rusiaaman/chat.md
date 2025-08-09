@@ -87,6 +87,7 @@ export class StreamingService {
 
     return (
       message.includes("max_tokens") ||
+      message.includes("max_completion_tokens") ||
       message.includes("token limit") ||
       message.includes("context length") ||
       message.includes("finish_reason=length")

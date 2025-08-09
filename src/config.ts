@@ -285,7 +285,7 @@ export function getBaseUrl(): string | undefined {
 
 /**
  * Gets the maximum number of thinking tokens to use
- * Used for O-series models (o1, o2) that require max_completion_tokens instead of max_tokens
+ * Used for all OpenAI models as part of max_completion_tokens
  * @returns The number of thinking tokens to use (default: 16000)
  */
 export function getMaxThinkingTokens(): number {
@@ -296,7 +296,7 @@ export function getMaxThinkingTokens(): number {
 
 /**
  * Gets the maximum number of tokens to generate
- * This is used as max_tokens for non-O-series models and as part of max_completion_tokens for O-series
+ * This is used as max_tokens for Anthropic models and as part of max_completion_tokens for OpenAI models
  * @returns The number of max tokens to use (default: 8000)
  */
 export function getMaxTokens(): number {

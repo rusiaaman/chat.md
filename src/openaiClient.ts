@@ -94,21 +94,12 @@ export class OpenAIClient {
         stream: true,
       };
 
-      // Check if this is an O-series model (o1, o2, etc.) or GPT-5 series model
-      const isOSeriesModel = modelName && (/^o\d+/.test(modelName) || /^gpt-5/.test(modelName));
-
-      if (isOSeriesModel) {
-        // For O-series models, use max_completion_tokens instead of max_tokens
-        const maxThinkingTokens = getMaxThinkingTokens();
-        const maxCompletionTokens = maxTokens + maxThinkingTokens;
-        
-        log(`Detected O-series model (${modelName}), using max_completion_tokens: ${maxCompletionTokens} (${maxTokens} + ${maxThinkingTokens} thinking tokens)`);
-        requestBody.max_completion_tokens = maxCompletionTokens;
-      } else {
-        // For all other models, use standard max_tokens
-        log(`Using standard max_tokens: ${maxTokens} for model ${modelName}`);
-        requestBody.max_tokens = maxTokens;
-      }
+      // Use max_completion_tokens for all models (max_tokens is deprecated)
+      const maxThinkingTokens = getMaxThinkingTokens();
+      const maxCompletionTokens = maxTokens + maxThinkingTokens;
+      
+      log(`Using max_completion_tokens: ${maxCompletionTokens} (${maxTokens} + ${maxThinkingTokens} thinking tokens) for model ${modelName}`);
+      requestBody.max_completion_tokens = maxCompletionTokens;
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,
@@ -261,10 +252,10 @@ export class OpenAIClient {
 
             // If any recent chunk had finish_reason="length", throw max tokens error
             if (maxTokensDetected) {
-              log(
-                "🚨 Max tokens detected in recent chunks! Will restart stream.",
-              );
-              throw new Error("max_tokens: Detected finish_reason=length");
+                log(
+                "🚨 Max completion tokens detected in recent chunks! Will restart stream.",
+                );
+              throw new Error("max_completion_tokens: Detected finish_reason=length");
             }
 
             break;
@@ -301,7 +292,7 @@ export class OpenAIClient {
 
                       // Throw error to trigger max tokens handling
                       throw new Error(
-                        "max_tokens: Detected finish_reason=length",
+                        "max_completion_tokens: Detected finish_reason=length",
                       );
                     }
 
@@ -391,8 +382,8 @@ export class OpenAIClient {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in createStreamGenerator: ${message}`);
 
-      // Don't show error notification for max tokens errors - they're handled gracefully
-      if (!message.includes("max_tokens")) {
+      // Don't show error notification for max completion tokens errors - they're handled gracefully
+      if (!message.includes("max_completion_tokens")) {
         // Only notify about unexpected errors, not max tokens which we handle
         vscode.window.showErrorMessage(
           `Error during OpenAI stream processing: ${message}`,
@@ -400,7 +391,7 @@ export class OpenAIClient {
       } else {
         // For max tokens, just log it without user notification
         log(
-          `Max tokens error detected in createStreamGenerator - will be handled by streamResponse`,
+          `Max completion tokens error detected in createStreamGenerator - will be handled by streamResponse`,
         );
       }
 
