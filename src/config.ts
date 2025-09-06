@@ -174,6 +174,59 @@ export function getSelectedConfig(): ApiConfig | undefined {
 }
 
 /**
+ * Returns config by name if present
+ */
+export function getConfigByName(name: string | undefined): ApiConfig | undefined {
+  if (!name) return undefined;
+  const configs = getApiConfigs();
+  return configs[name];
+}
+
+/**
+ * Gets provider type for a given config name (falls back to selected)
+ */
+export function getProviderForConfig(configName?: string): string {
+  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!cfg) {
+    throw new Error("No API configuration available. Please select or create one.");
+  }
+  return cfg.type;
+}
+
+/**
+ * Gets API key for a given config name (falls back to selected)
+ */
+export function getApiKeyForConfig(configName?: string): string {
+  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!cfg) {
+    throw new Error("No API configuration available. Please select or create one.");
+  }
+  return cfg.apiKey;
+}
+
+/**
+ * Gets model name for a given config name (falls back to selected)
+ */
+export function getModelNameForConfig(configName?: string): string | undefined {
+  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!cfg) {
+    throw new Error("No API configuration available. Please select or create one.");
+  }
+  return cfg.model_name;
+}
+
+/**
+ * Gets base URL for a given config name (falls back to selected)
+ */
+export function getBaseUrlForConfig(configName?: string): string | undefined {
+  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!cfg) {
+    throw new Error("No API configuration available. Please select or create one.");
+  }
+  return cfg.base_url && cfg.base_url.trim() !== "" ? cfg.base_url : undefined;
+}
+
+/**
  * Sets the selected configuration
  */
 export async function setSelectedConfig(configName: string): Promise<void> {

@@ -18,6 +18,8 @@ export interface ParsedDocumentResult {
   systemPrompt: string;
   hasImageInSystemBlock: boolean;
   settings?: Record<string, any>; // Parsed settings from # %% settings block
+  fileConfig?: Record<string, any>; // Parsed .env-like config before first block
+  hasConfigurationBlock?: boolean; // Whether a configuration block exists
 }
 
 /**
@@ -150,12 +152,47 @@ export function parseDocument(
   // Debug logging
   log(`Split document into ${blocks.length} blocks`);
 
-  // **New Check**: Validate content before the first block marker
+  // Parse optional configuration preamble ('.env'-like) before first marker
+  let fileConfig: Record<string, any> | undefined = undefined;
+  let hasConfigurationBlock = false;
   if (blocks.length > 0 && blocks[0].trim() !== "") {
-      const errorMsg = "Invalid content before first block marker. Start with a '# %% user', '# %% system', or similar block.";
-      log(`Error: ${errorMsg}`);
-      // Throw a specific error that can be caught upstream
-      throw new Error("INVALID_START_CONTENT");
+    const preamble = blocks[0];
+    const cfg: Record<string, any> = {};
+    // Supported keys for per-file chatmd configuration
+    const allowedKeys = new Set(["selectedConfig"]);
+    const lines = preamble.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;                 // allow empty lines
+      if (trimmed.startsWith("#")) continue;  // allow comments
+      const m = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+      if (!m) {
+        // Non key=value content is invalid before first block
+        log("Invalid line in configuration preamble: " + trimmed);
+        throw new Error("INVALID_START_CONTENT");
+      }
+      const key = m[1];
+      let value = m[2].trim();
+      // Strip inline comment for unquoted values
+      if (!/^["']/.test(value)) {
+        const hashIdx = value.indexOf("#");
+        if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
+      }
+      // Remove surrounding quotes if present
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (allowedKeys.has(key)) {
+        cfg[key] = value;
+      } else {
+        log(`Ignoring unsupported config key '${key}' in configuration block`);
+      }
+    }
+    if (Object.keys(cfg).length > 0) {
+      fileConfig = cfg;
+      hasConfigurationBlock = true;
+      log(`Parsed configuration block with keys: ${Object.keys(cfg).join(", ")}`);
+    }
   }
 
   for (let i = 0; i < Math.min(blocks.length, 10); i++) {
@@ -165,8 +202,8 @@ export function parseDocument(
     // );
   }
 
-  // Skip first empty element if exists
-  let startIdx = blocks[0].trim() === "" ? 1 : 0;
+  // Skip first split segment (preamble or empty)
+  let startIdx = 1;
 
   // Check if the last block is an empty assistant or tool_execute block
   const lastRoleIndex = blocks.length - 2;
@@ -266,6 +303,8 @@ export function parseDocument(
     systemPrompt: finalSystemPrompt,
     hasImageInSystemBlock: hasImageInSystemBlock,
     settings: settings || undefined,
+    fileConfig,
+    hasConfigurationBlock,
   });
 }
 

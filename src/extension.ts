@@ -18,7 +18,7 @@ import {
   ApiConfig,
   getDefaultSystemPrompt,
 } from "./config";
-import { getBlockInfoAtPosition } from "./parser";
+import { getBlockInfoAtPosition, parseDocument } from "./parser";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
 import { cancelCurrentToolExecution } from "./tools/toolExecutor";
@@ -95,35 +95,74 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
  */
 export function updateStreamingStatusBar(): void {
   const activeEditor = vscode.window.activeTextEditor;
-  let isActive = false;
-  if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
-    const streamer = getActiveStreamerForDocument(activeEditor.document); // Assuming this helper exists
-    isActive = !!(streamer && streamer.isActive);
+
+  // 1) Compute total number of active streamers across all documents
+  let totalAlive = 0;
+  for (const listener of documentListenerInstances.values()) {
+    try {
+      totalAlive += listener.getActiveStreamerCount();
+    } catch {
+      // ignore
+    }
+  }
+  statusManager.updateTotalStreamersAlive(totalAlive);
+
+  // 2) Determine provider/config for the active .chat.md file (file-specific)
+  let providerForFile: string | undefined;
+  let configNameForFile: string | undefined;
+
+  try {
+    if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+      const text = activeEditor.document.getText();
+      const parsed = parseDocument(text, activeEditor.document);
+      const perFileConfigName: string | undefined = (parsed as any).fileConfig?.selectedConfig;
+
+      // Update config name in status bar to reflect per-file override or global
+      const globalSelected = getSelectedConfigName();
+      configNameForFile = perFileConfigName || globalSelected;
+      statusManager.updateConfigName(configNameForFile);
+
+      // Resolve provider using per-file override if present
+      try {
+        if (perFileConfigName) {
+          providerForFile = require("./config").getProviderForConfig(perFileConfigName);
+        } else {
+          providerForFile = require("./config").getProvider();
+        }
+      } catch {
+        providerForFile = undefined;
+      }
+    } else {
+      // Non chat.md file - show global config info
+      statusManager.updateConfigName(getSelectedConfigName());
+      try {
+        providerForFile = require("./config").getProvider();
+      } catch {
+        providerForFile = undefined;
+      }
+    }
+  } catch {
+    // Parsing might fail in intermediate edits; keep previous state
   }
 
-  // Check the actual current status from StatusManager too
-  const currentManagerStatus = statusManager.getCurrentStatus();
+  statusManager.updateProvider(providerForFile);
 
-  if (
-    currentManagerStatus === "executing" ||
-    currentManagerStatus === "cancelling"
-  ) {
-    // Don't change if executing or cancelling, let those states manage themselves
-    // But we might still need to refresh the text if the config name changed via the background update
-    // A simpler way is to just re-call the current state's method
-    switch (currentManagerStatus) {
-      case "executing":
-        statusManager.showToolExecutionStatus();
-        break;
-      case "cancelling":
-        statusManager.showToolCancellationStatus();
-        break;
-      // Add other cases if needed
-    }
-  } else if (isActive) {
-    statusManager.showStreamingStatus();
+  // 3) Respect executing/cancelling states, otherwise show streaming if any alive
+  const currentManagerStatus = statusManager.getCurrentStatus();
+  if (currentManagerStatus === "executing") {
+    statusManager.showToolExecutionStatus(providerForFile);
+    return;
+  }
+  if (currentManagerStatus === "cancelling") {
+    statusManager.showToolCancellationStatus(providerForFile);
+    return;
+  }
+
+  // If any streamer is alive across any documents, show "Streaming (n)"
+  if (totalAlive > 0) {
+    statusManager.showStreamingStatus(totalAlive, providerForFile);
   } else {
-    statusManager.hideStreamingStatus(); // This will set the idle text with the correct config name
+    statusManager.hideStreamingStatus();
   }
 }
 

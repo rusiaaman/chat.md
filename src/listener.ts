@@ -18,7 +18,7 @@ import {
 } from "./config";
 import * as path from "path";
 import * as fs from "fs"; // Keep fs for file operations
-import { log, mcpClientManager, statusManager } from "./extension"; // Import statusManager directly
+import { log, mcpClientManager, statusManager, updateStreamingStatusBar } from "./extension"; // Import statusManager and updater
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
 import {
@@ -33,6 +33,7 @@ import {
  */
 export class DocumentListener {
   private readonly streamers: Map<number, StreamerState> = new Map();
+  private defaultConfigInserted: boolean = false;
   private readonly lock: Lock = new Lock();
   private readonly disposables: vscode.Disposable[] = [];
 
@@ -80,6 +81,17 @@ export class DocumentListener {
       }
     }
     return undefined;
+  }
+
+  /**
+   * Get count of active streamers for this document
+   */
+  public getActiveStreamerCount(): number {
+    let count = 0;
+    for (const s of this.streamers.values()) {
+      if (s.isActive) count++;
+    }
+    return count;
   }
 
   /**
@@ -154,6 +166,35 @@ export class DocumentListener {
     try {
         // Parse the document on every change to check for errors first (invalid start, images in system)
         const parseResult = parseDocument(text, this.document);
+
+        // Update status bar with file-specific provider/config hover info
+        try {
+          updateStreamingStatusBar();
+        } catch (e) {
+          log(`Failed to update status bar after parse: ${e}`);
+        }
+
+        // Insert default configuration block on first file update if missing
+        if (!this.defaultConfigInserted && !parseResult.hasConfigurationBlock) {
+          try {
+            const { getSelectedConfigName } = require("./config");
+            const cfgName = getSelectedConfigName();
+            if (cfgName && this.document.fileName.endsWith(".chat.md")) {
+              const edit = new vscode.WorkspaceEdit();
+              const insertText = `selectedConfig="${cfgName}"\n\n`;
+              edit.insert(this.document.uri, new vscode.Position(0, 0), insertText);
+              const applied = await vscode.workspace.applyEdit(edit);
+              if (applied) {
+                this.defaultConfigInserted = true;
+                log(`Inserted default configuration preamble selectedConfig="${cfgName}"`);
+              } else {
+                log("Failed to insert default configuration preamble");
+              }
+            }
+          } catch (e) {
+            log(`Error inserting default configuration preamble: ${e}`);
+          }
+        }
 
         // **Handle Image in System Block Error**
         if (parseResult.hasImageInSystemBlock) {
@@ -759,9 +800,33 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       toolSystemPrompt
     ].filter(p => p && p.trim() !== '').join('\n\n');
     
-    // Create StreamingService
+    // Create StreamingService with per-file overrides if available
     const StreamingService = require("./streamer").StreamingService;
-    const streamingService = new StreamingService(apiKey, this.document, this.lock);
+
+    // Determine per-file config
+    const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
+
+    // Resolve API key and provider/baseUrl with per-file override if provided
+    let apiKeyToUse = apiKey;
+    let providerOverride: string | undefined = undefined;
+    let baseUrlOverride: string | undefined = undefined;
+    try {
+      const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig, getProvider, getBaseUrl } = require("./config");
+      if (perFileConfigName) {
+        apiKeyToUse = getApiKeyForConfig(perFileConfigName);
+        providerOverride = getProviderForConfig(perFileConfigName);
+        baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
+        statusManager.updateProvider(providerOverride);
+      } else {
+        providerOverride = getProvider();
+        baseUrlOverride = getBaseUrl();
+        statusManager.updateProvider(providerOverride);
+      }
+    } catch (e) {
+      log(`Error resolving per-file config overrides (resume): ${e}`);
+    }
+
+    const streamingService = new StreamingService(apiKeyToUse, this.document, this.lock, providerOverride, baseUrlOverride);
     
     // Create a streamer state that will resume in the existing assistant block
     const messageIndex = updatedMessages.length - 1;
@@ -835,6 +900,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       // Extract messages and custom system prompt
       const messages: readonly MessageParam[] = parseResult.messages;
+
+      // Determine per-file config (selectedConfig) if present
+      const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
       // const customSystemPrompt: string =; // Removed incomplete duplicate line
       const customSystemPrompt: string = parseResult.systemPrompt; // Keep correct line
 
@@ -881,10 +949,34 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       }
 
       // Create StreamingService (ensure constructor matches required args: apiKey, document, lock)
+      // Resolve API key and provider/baseUrl with per-file override if provided
+      let apiKeyToUse = apiKey;
+      let providerOverride: string | undefined = undefined;
+      let baseUrlOverride: string | undefined = undefined;
+      try {
+        const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
+        if (perFileConfigName) {
+          apiKeyToUse = getApiKeyForConfig(perFileConfigName);
+          providerOverride = getProviderForConfig(perFileConfigName);
+          baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
+          statusManager.updateProvider(providerOverride);
+        } else {
+          // fall back to currently selected provider
+          const { getProvider, getBaseUrl } = require("./config");
+          providerOverride = getProvider();
+          baseUrlOverride = getBaseUrl();
+          statusManager.updateProvider(providerOverride);
+        }
+      } catch (e) {
+        log(`Error resolving per-file config overrides: ${e}`);
+      }
+
       const streamingService = new StreamingService(
-        apiKey, // Pass the validated API key
+        apiKeyToUse, // Per-file or global API key
         this.document,
         this.lock,
+        providerOverride,
+        baseUrlOverride,
       );
 
       // Create streamer state

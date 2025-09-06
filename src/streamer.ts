@@ -22,20 +22,26 @@ export class StreamingService {
     apiKey: string,
     private readonly document: vscode.TextDocument,
     private readonly lock: Lock,
+    providerOverride?: string,
+    baseUrlOverride?: string,
   ) {
     try {
-      // Import the config functions to ensure they're available
-      const { getProvider, getBaseUrl } = require("./config");
-
-      this.provider = getProvider();
+      // Decide provider (allow per-file override)
+      const resolvedProvider: string = (providerOverride ?? (require("./config").getProvider())) as string;
+      this.provider = resolvedProvider;
       log(`Using LLM provider: ${this.provider}`);
 
-      let baseUrl;
-      try {
-        baseUrl = getBaseUrl();
-      } catch (e) {
-        log(`Could not get base URL: ${e}, will use default`);
-        baseUrl = undefined;
+      // Decide base URL (allow per-file override)
+      let baseUrl = baseUrlOverride;
+      if (this.provider === "openai") {
+        try {
+          if (!baseUrl) {
+            baseUrl = (require("./config").getBaseUrl()) as string | undefined;
+          }
+        } catch (e) {
+          log(`Could not get base URL: ${e}, will use default`);
+          baseUrl = undefined;
+        }
       }
 
       if (this.provider === "anthropic") {

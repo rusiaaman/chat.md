@@ -13,10 +13,11 @@ export class StatusManager {
   private streamingDots: string = "";
   private animationInterval: NodeJS.Timeout | undefined;
   private hoverDisposables: vscode.Disposable[] = [];
+  private totalStreamersAlive: number = 0;
+  private currentProvider: string | undefined;
 
   private currentConfigName: string | undefined;
-  private currentStatus: "idle" | "streaming" | "executing" | "cancelling" =
-    "idle";
+  private currentStatus: "idle" | "streaming" | "executing" | "cancelling" = "idle";
 
   private readonly IDLE_TOOLTIP = "Click to select API configuration.";
   private readonly BUSY_TOOLTIP = "Click to cancel the current operation.";
@@ -60,6 +61,22 @@ export class StatusManager {
   }
 
   /**
+   * Updates the current provider (file-specific when a .chat.md is active)
+   */
+  public updateProvider(provider: string | undefined): void {
+    this.currentProvider = provider;
+    log(`StatusManager: Updated provider to '${provider || "None"}'`);
+  }
+
+  /**
+   * Updates total streamers alive (across files)
+   */
+  public updateTotalStreamersAlive(count: number): void {
+    this.totalStreamersAlive = count;
+    log(`StatusManager: Total streamers alive = ${count}`);
+  }
+
+  /**
    * Clears any running animation interval.
    */
   private clearAnimation(): void {
@@ -76,8 +93,9 @@ export class StatusManager {
   private setIdleStatus(): void {
     this.currentStatus = "idle";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(check) chat.md: Idle (${configText})`;
-    this.streamingStatusItem.tooltip = this.IDLE_TOOLTIP;
+    const providerText = this.currentProvider ? `${this.currentProvider}` : "No Provider";
+    this.streamingStatusItem.text = `$(check) chat.md: Idle (${providerText}, ${configText})`;
+    this.streamingStatusItem.tooltip = `Provider: ${providerText}\nConfig: ${configText}\n${this.IDLE_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.selectApiConfig";
     this.streamingStatusItem.backgroundColor = undefined;
     log(`Changed to idle status (Config: ${configText})`);
@@ -86,12 +104,16 @@ export class StatusManager {
   /**
    * Shows the streaming status with an animation, including the config name.
    */
-  public showStreamingStatus(): void {
+  public showStreamingStatus(totalStreamers?: number, provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "streaming";
+    if (typeof totalStreamers === "number") this.totalStreamersAlive = totalStreamers;
+    if (provider !== undefined) this.currentProvider = provider;
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming (${configText})`;
-    this.streamingStatusItem.tooltip = `Streaming... ${this.BUSY_TOOLTIP}`;
+    const providerText = this.currentProvider ? `${this.currentProvider}` : "No Provider";
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming (${alive}) [${providerText}]`;
+    this.streamingStatusItem.tooltip = `Streaming (${alive})\nProvider: ${providerText}\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.warningBackground",
@@ -106,12 +128,14 @@ export class StatusManager {
   /**
    * Shows the tool execution status, including the config name.
    */
-  public showToolExecutionStatus(): void {
+  public showToolExecutionStatus(provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "executing";
+    if (provider !== undefined) this.currentProvider = provider;
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool (${configText})`;
-    this.streamingStatusItem.tooltip = `Executing tool... ${this.BUSY_TOOLTIP}`;
+    const providerText = this.currentProvider ? `${this.currentProvider}` : "No Provider";
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool [${providerText}]`;
+    this.streamingStatusItem.tooltip = `Executing tool...\nProvider: ${providerText}\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.warningBackground",
@@ -136,12 +160,14 @@ export class StatusManager {
   /**
    * Shows the tool cancellation status, including the config name.
    */
-  public showToolCancellationStatus(): void {
+  public showToolCancellationStatus(provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "cancelling";
+    if (provider !== undefined) this.currentProvider = provider;
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling (${configText})`;
-    this.streamingStatusItem.tooltip = `Cancellation requested... ${this.BUSY_TOOLTIP}`;
+    const providerText = this.currentProvider ? `${this.currentProvider}` : "No Provider";
+    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling [${providerText}]`;
+    this.streamingStatusItem.tooltip = `Cancellation requested...\nProvider: ${providerText}\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.errorBackground",
@@ -168,10 +194,10 @@ export class StatusManager {
    * Updates the animation for the streaming status, including the config name.
    */
   private updateStreamingAnimation(): void {
-    this.streamingDots =
-      this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
-    const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming${this.streamingDots} (${configText})`;
+    this.streamingDots = this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    const providerText = this.currentProvider ? `${this.currentProvider}` : "No Provider";
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming${this.streamingDots} (${alive}) [${providerText}]`;
   }
 
   /**
