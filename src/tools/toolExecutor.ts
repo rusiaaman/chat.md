@@ -1,4 +1,4 @@
-import { log } from "../extension";
+import { log, requestStatusBarUpdate, onActiveFileChanged } from "../extension";
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
@@ -78,9 +78,13 @@ export async function executeToolCall(
   const abortController = new AbortController();
   activeToolExecutions.set(executionId, abortController);
   
-  // Show tool execution status
-  statusManager.showToolExecutionStatus();
-  log(`toolExecutor: Showing 'executing tool' status for tool "${toolName}"`);
+  // Show tool execution status - use coordinated system
+  if (document) {
+    requestStatusBarUpdate(document.uri.fsPath, `tool execution started: ${toolName}`);
+    log(`toolExecutor: Requested status update for tool "${toolName}" from ${document.fileName}`);
+  } else {
+    log(`toolExecutor: No document provided for tool "${toolName}" - cannot update status bar`);
+  }
   
   // Additional debug info for document
   if (document) {
@@ -156,16 +160,9 @@ export async function executeToolCall(
       currentToolExecution = null;
     }
     
-    // Only change status back to idle if we're not already in another state
-    // due to cancellation, which would set its own status
-    if (statusManager.getCurrentStatus() !== 'cancelling') {
-      log(`toolExecutor: Current status is '${statusManager.getCurrentStatus()}', restoring to idle after tool "${toolName}" execution`);
-      statusManager.hideStreamingStatus();
-    } else if (statusManager.getCurrentStatus() === 'cancelling' && activeToolExecutions.size === 0) {
-      // If we're in cancelling state and this was the last active execution, go back to idle
-      log(`toolExecutor: Restoring status to idle after cancellation of tool "${toolName}"`);
-      statusManager.hideStreamingStatus();
-    }
+    // Refresh status based on current active file after tool execution ends
+    log(`toolExecutor: Tool "${toolName}" execution finished, refreshing status for active file`);
+    onActiveFileChanged();
   }
 }
 
@@ -187,8 +184,9 @@ export function cancelCurrentToolExecution(): boolean {
     // Mark this execution as cancelled so any future responses will be ignored
     cancelledExecutions.add(executionId);
     
-    // Show cancellation status
-    statusManager.showToolCancellationStatus();
+    // Refresh status for cancellation - will show cancelling state if active file has executing tool
+    log(`toolExecutor: Tool "${executionId}" cancellation requested, refreshing status`);
+    onActiveFileChanged();
     
     // Abort the execution
     const controller = activeToolExecutions.get(executionId);
