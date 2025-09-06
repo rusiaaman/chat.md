@@ -35,6 +35,7 @@ export class DocumentListener {
   private readonly streamers: Map<number, StreamerState> = new Map();
   private defaultConfigInserted: boolean = false;
   private readonly lock: Lock = new Lock();
+  private isExecutingTool: boolean = false;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly document: vscode.TextDocument) {}
@@ -92,6 +93,13 @@ export class DocumentListener {
       if (s.isActive) count++;
     }
     return count;
+  }
+
+  /**
+   * Whether this document is currently executing a tool
+   */
+  public getIsExecuting(): boolean {
+    return this.isExecutingTool;
   }
 
   /**
@@ -246,7 +254,8 @@ export class DocumentListener {
   private async executeToolFromPreviousBlock(): Promise<void> {
     await this.lock.acquire();
 
-    // Show tool execution status in the status bar
+    // Mark executing for this document and show status
+    this.isExecutingTool = true;
     statusManager.showToolExecutionStatus();
     log(`DocumentListener: Showing 'executing tool' status for tool_execute block`);
 
@@ -521,6 +530,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       await this.insertToolResult(formattedError, true); // Pass flag indicating this is already formatted
     } finally {
       this.lock.release();
+      this.isExecutingTool = false;
+      try { updateStreamingStatusBar(); } catch {}
     }
   }
 

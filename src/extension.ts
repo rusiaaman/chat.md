@@ -147,21 +147,30 @@ export function updateStreamingStatusBar(): void {
 
   statusManager.updateProvider(providerForFile);
 
-  // 3) Respect executing/cancelling states, otherwise show streaming if any alive
-  const currentManagerStatus = statusManager.getCurrentStatus();
-  if (currentManagerStatus === "executing") {
-    statusManager.showToolExecutionStatus(providerForFile);
-    return;
-  }
-  if (currentManagerStatus === "cancelling") {
-    statusManager.showToolCancellationStatus(providerForFile);
-    return;
+  // 3) Decide status per current chat (chat-specific)
+  const activeEditorNow = vscode.window.activeTextEditor;
+  let currentDocHasStreaming = false;
+  let currentDocIsExecuting = false;
+
+  if (activeEditorNow && activeEditorNow.document.fileName.endsWith(".chat.md")) {
+    const streamer = getActiveStreamerForDocument(activeEditorNow.document);
+    currentDocHasStreaming = !!(streamer && streamer.isActive);
+
+    const listener = getDocumentListenerForDocument(activeEditorNow.document);
+    currentDocIsExecuting = !!(listener && listener.getIsExecuting && listener.getIsExecuting());
   }
 
-  // If any streamer is alive across any documents, show "Streaming (n)"
-  if (totalAlive > 0) {
-    statusManager.showStreamingStatus(totalAlive, providerForFile);
+  if (currentDocIsExecuting) {
+    // Executing tool for this chat only
+    statusManager.showToolExecutionStatus();
+  } else if (currentDocHasStreaming) {
+    // Streaming for this chat only (yellow)
+    statusManager.showStreamingStatus(totalAlive);
+  } else if (totalAlive > 0) {
+    // Other chats streaming elsewhere: show purple idle with (n)
+    statusManager.showIdleWithAlive(totalAlive);
   } else {
+    // Pure idle
     statusManager.hideStreamingStatus();
   }
 }

@@ -129,8 +129,9 @@ export class StatusManager {
     this.clearAnimation();
     this.currentStatus = "executing";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool (${configText})`;
-    this.streamingStatusItem.tooltip = `Executing tool...\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool (${alive}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Executing tool...\nTotal streamers: (${alive})\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.warningBackground",
@@ -146,10 +147,10 @@ export class StatusManager {
    * Updates the animation for the tool execution status, including the config name.
    */
   private updateToolExecutionAnimation(): void {
-    this.streamingDots =
-      this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    this.streamingDots = this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool${this.streamingDots} (${configText})`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool${this.streamingDots} (${alive}) (${configText})`;
   }
 
   /**
@@ -159,8 +160,9 @@ export class StatusManager {
     this.clearAnimation();
     this.currentStatus = "cancelling";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling (${configText})`;
-    this.streamingStatusItem.tooltip = `Cancellation requested...\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling (${alive}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Cancellation requested...\nTotal streamers: (${alive})\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.errorBackground",
@@ -174,6 +176,21 @@ export class StatusManager {
   public hideStreamingStatus(): void {
     this.clearAnimation();
     this.setIdleStatus();
+  }
+
+  /**
+   * Show idle but indicate other chats streaming with purple background
+   */
+  public showIdleWithAlive(totalStreamers: number): void {
+    this.clearAnimation();
+    this.currentStatus = "idle";
+    this.totalStreamersAlive = totalStreamers;
+    const configText = this.currentConfigName || "No Config";
+    this.streamingStatusItem.text = `$(circle-large-outline) chat.md: Idle (${totalStreamers}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Other chats streaming (${totalStreamers})\nConfig: ${configText}\n${this.IDLE_TOOLTIP}`;
+    this.streamingStatusItem.command = "filechat.selectApiConfig";
+    this.streamingStatusItem.backgroundColor = new vscode.ThemeColor("statusBarItem.remoteBackground");
+    log(`Changed to idle-with-alive status (Alive: ${totalStreamers}, Config: ${configText})`);
   }
 
   /**
