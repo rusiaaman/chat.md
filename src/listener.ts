@@ -826,7 +826,14 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       log(`Error resolving per-file config overrides (resume): ${e}`);
     }
 
-    const streamingService = new StreamingService(apiKeyToUse, this.document, this.lock, providerOverride, baseUrlOverride);
+    const streamingService = new StreamingService(
+      apiKeyToUse as string,
+      this.document,
+      this.lock,
+      providerOverride,
+      baseUrlOverride,
+      perFileConfigName,
+    );
     
     // Create a streamer state that will resume in the existing assistant block
     const messageIndex = updatedMessages.length - 1;
@@ -869,26 +876,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     log("Acquired streaming lock.");
 
     try {
-      // Config validation (as per current structure)
-      let apiKey: string | undefined;
-      try {
-        // Keep the require here if that's the current pattern
-        const { getApiKey, getProvider } = require("./config");
-        apiKey = getApiKey();
-        // const provider = getProvider(); // Provider not explicitly used later in this snippet's logic
-        if (!apiKey) {
-          throw new Error("API key not configured");
-        }
-      } catch (error) {
-        const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}. Please configure an API...`; // Shortened message
-        log(message);
-        vscode.window.showErrorMessage(message);
-        this.removeLastEmptyBlock("assistant"); // Clean up trigger
-        return;
-      }
-
       const text = this.document.getText();
-      // **Parse document using the updated parser**
+      // Parse document to read per-file configuration preamble first
       const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
 
       // **Handle Image in System Block Error**
@@ -904,8 +893,24 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       // Determine per-file config (selectedConfig) if present
       const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
-      // const customSystemPrompt: string =; // Removed incomplete duplicate line
-      const customSystemPrompt: string = parseResult.systemPrompt; // Keep correct line
+      const customSystemPrompt: string = parseResult.systemPrompt;
+
+      // Resolve API key using per-file config if present, else global
+      let apiKeyToUse: string | undefined;
+      try {
+        const { getApiKeyForConfig, getApiKey } = require("./config");
+        apiKeyToUse = perFileConfigName ? getApiKeyForConfig(perFileConfigName) : getApiKey();
+      } catch (e) {
+        apiKeyToUse = undefined;
+      }
+      if (!apiKeyToUse) {
+        const which = perFileConfigName ? `for config "${perFileConfigName}"` : "in settings";
+        const message = `Configuration error: API key missing ${which}.`;
+        log(message);
+        vscode.window.showErrorMessage(message);
+        this.removeLastEmptyBlock("assistant");
+        return;
+      }
 
       log(`Parsed ${messages.length} messages. Custom system prompt length: ${customSystemPrompt.length}`);
 
@@ -949,9 +954,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         return;
       }
 
-      // Create StreamingService (ensure constructor matches required args: apiKey, document, lock)
-      // Resolve API key and provider/baseUrl with per-file override if provided
-      let apiKeyToUse = apiKey;
+      // Resolve provider/baseUrl with per-file override if provided
       let providerOverride: string | undefined = undefined;
       let baseUrlOverride: string | undefined = undefined;
       try {
@@ -973,11 +976,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       }
 
       const streamingService = new StreamingService(
-        apiKeyToUse, // Per-file or global API key
+        apiKeyToUse as string, // Per-file or global API key
         this.document,
         this.lock,
         providerOverride,
         baseUrlOverride,
+        perFileConfigName,
       );
 
       // Create streamer state

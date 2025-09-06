@@ -24,6 +24,7 @@ export class StreamingService {
     private readonly lock: Lock,
     providerOverride?: string,
     baseUrlOverride?: string,
+    private readonly configNameOverride?: string,
   ) {
     try {
       // Decide provider (allow per-file override)
@@ -166,8 +167,9 @@ export class StreamingService {
           );
           statusManager.showStreamingStatus();
 
-          // Import getModelName to make sure it's available
-          const { getModelName } = require("./config");
+          // Resolve model name (allow per-file override)
+          const { getModelName, getModelNameForConfig } = require("./config");
+          const modelNameOverride: string | undefined = this.configNameOverride ? getModelNameForConfig(this.configNameOverride) : undefined;
 
           // Use the provided system prompt
           log(`Using provided system prompt (${systemPrompt.length} chars)`);
@@ -179,12 +181,14 @@ export class StreamingService {
               messages,
               this.document,
               systemPrompt,
+              modelNameOverride,
             );
           } else if (this.provider === "openai" && this.openaiClient) {
             stream = await this.openaiClient.streamCompletion(
               messages,
               this.document,
               systemPrompt,
+              modelNameOverride,
             );
           } else {
             throw new Error(

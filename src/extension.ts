@@ -1066,7 +1066,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("filechat.selectApiConfig", async () => {
-      log("COMMAND TRIGGERED: filechat.selectApiConfig"); // <-- ADD THIS
+      log("COMMAND TRIGGERED: filechat.selectApiConfig");
 
       const configs = getApiConfigs();
       const configNames = Object.keys(configs);
@@ -1089,9 +1089,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         const config = configs[name];
         return {
           label: name,
-          description: `${config.type} - ${
-            config.model_name || "default model"
-          }`,
+          description: `${config.type} - ${config.model_name || "default model"}`,
           detail: config.base_url ? `Base URL: ${config.base_url}` : undefined,
         };
       });
@@ -1101,23 +1099,67 @@ export function activate(contextParam: vscode.ExtensionContext) {
         title: "Select Active Configuration",
       });
 
-      // Inside the filechat.selectApiConfig command handler, after successful selection
-      if (selectedItem) {
-        await setSelectedConfig(selectedItem.label);
-        vscode.window.showInformationMessage(
-          `Configuration "${selectedItem.label}" is now active`,
-        );
-        // Update StatusManager and refresh the display
-        statusManager.updateConfigName(selectedItem.label);
-        updateStreamingStatusBar(); // Refresh the status bar text
-      } else {
-        return; // User cancelled
-      }
+      if (!selectedItem) return; // User cancelled
 
+      // Update global selected config
       await setSelectedConfig(selectedItem.label);
+      statusManager.updateConfigName(selectedItem.label);
       vscode.window.showInformationMessage(
         `Configuration "${selectedItem.label}" is now active`,
       );
+
+      // Also update the currently open .chat.md file's configuration preamble
+      try {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+          const doc = activeEditor.document;
+          const text = doc.getText();
+
+          // Find start of first block marker
+          const firstMarkerRegex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
+          const markerMatch = firstMarkerRegex.exec(text);
+          const preambleEnd = markerMatch ? markerMatch.index : 0;
+
+          const preamble = text.slice(0, preambleEnd);
+          let newPreamble = preamble;
+
+          if (preamble.trim().length === 0) {
+            // No preamble - insert selectedConfig at the top
+            newPreamble = `selectedConfig="${selectedItem.label}"\n\n`;
+          } else {
+            // Replace existing selectedConfig=... if present, else prepend
+            if (/^selectedConfig\s*=.*$/m.test(preamble)) {
+              newPreamble = preamble.replace(
+                /^selectedConfig\s*=.*$/m,
+                `selectedConfig="${selectedItem.label}"`
+              );
+              // Ensure a trailing blank line between preamble and first block
+              if (!newPreamble.endsWith("\n\n")) {
+                newPreamble = newPreamble.replace(/\n*$/,"") + "\n\n";
+              }
+            } else {
+              newPreamble = `selectedConfig="${selectedItem.label}"\n` + (preamble.endsWith("\n") ? "" : "\n");
+            }
+          }
+
+          // Apply edit to replace preamble
+          const edit = new vscode.WorkspaceEdit();
+          const startPos = new vscode.Position(0, 0);
+          const endPos = doc.positionAt(preambleEnd);
+          edit.replace(doc.uri, new vscode.Range(startPos, endPos), newPreamble);
+
+          const applied = await vscode.workspace.applyEdit(edit);
+          if (!applied) {
+            log("Failed to update chat file preamble with selectedConfig");
+          } else {
+            log(`Updated chat file preamble with selectedConfig="${selectedItem.label}"`);
+          }
+        }
+      } catch (e) {
+        log(`Error updating .chat.md preamble after config selection: ${e}`);
+      }
+
+      updateStreamingStatusBar(); // Refresh status bar (provider/config now file-specific)
     }),
 
     vscode.commands.registerCommand("filechat.removeApiConfig", async () => {
