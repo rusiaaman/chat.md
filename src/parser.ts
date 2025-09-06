@@ -158,8 +158,13 @@ export function parseDocument(
   if (blocks.length > 0 && blocks[0].trim() !== "") {
     const preamble = blocks[0];
     const cfg: Record<string, any> = {};
-    // Supported keys for per-file chatmd configuration
+    
+    // ONLY selectedConfig is allowed in per-file configuration
+    // The four keys (type, apiKey, base_url, model_name) should come from the named config in global settings
+    // apiConfigs should also NOT be inline - it belongs in global settings only
     const allowedKeys = new Set(["selectedConfig"]);
+    const explicitlyForbiddenKeys = new Set(["type", "apiKey", "base_url", "model_name", "apiConfigs"]);
+    
     const lines = preamble.split(/\r?\n/);
     for (const line of lines) {
       const trimmed = line.trim();
@@ -173,6 +178,14 @@ export function parseDocument(
       }
       const key = m[1];
       let value = m[2].trim();
+      
+      // Check for explicitly forbidden keys and give clear error
+      if (explicitlyForbiddenKeys.has(key)) {
+        const errorMsg = `Configuration key '${key}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`;
+        log(errorMsg);
+        throw new Error(`FORBIDDEN_INLINE_CONFIG_KEY: ${key}`);
+      }
+      
       // Strip inline comment for unquoted values
       if (!/^["']/.test(value)) {
         const hashIdx = value.indexOf("#");
@@ -185,7 +198,7 @@ export function parseDocument(
       if (allowedKeys.has(key)) {
         cfg[key] = value;
       } else {
-        log(`Ignoring unsupported config key '${key}' in configuration block`);
+        log(`Ignoring unsupported config key '${key}' in configuration block. Only 'selectedConfig' is supported.`);
       }
     }
     if (Object.keys(cfg).length > 0) {

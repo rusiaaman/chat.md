@@ -197,7 +197,14 @@ function updateStreamingStatusBarForActiveFile(): void {
         providerForFile = undefined;
       }
     }
-  } catch {
+  } catch (error) {
+    // Log specific errors for debugging, but don't show user errors for status bar updates
+    if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+      const forbiddenKey = error.message.split(": ")[1];
+      log(`Status bar update: Forbidden config key '${forbiddenKey}' detected in .chat.md file`);
+    } else if (error instanceof Error) {
+      log(`Status bar update: Parse error - ${error.message}`);
+    }
     // Parsing might fail in intermediate edits; keep previous state
   }
 

@@ -186,45 +186,57 @@ export function getConfigByName(name: string | undefined): ApiConfig | undefined
 }
 
 /**
- * Gets provider type for a given config name (falls back to selected)
+ * Gets provider type for a given config name (NO fallback - fails if config doesn't exist)
  */
 export function getProviderForConfig(configName?: string): string {
-  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!configName) {
+    throw new Error("Config name is required. Use getProvider() for global config.");
+  }
+  const cfg = getConfigByName(configName);
   if (!cfg) {
-    throw new Error("No API configuration available. Please select or create one.");
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
   }
   return cfg.type;
 }
 
 /**
- * Gets API key for a given config name (falls back to selected)
+ * Gets API key for a given config name (NO fallback - fails if config doesn't exist)
  */
 export function getApiKeyForConfig(configName?: string): string {
-  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!configName) {
+    throw new Error("Config name is required. Use getApiKey() for global config.");
+  }
+  const cfg = getConfigByName(configName);
   if (!cfg) {
-    throw new Error("No API configuration available. Please select or create one.");
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
   }
   return cfg.apiKey;
 }
 
 /**
- * Gets model name for a given config name (falls back to selected)
+ * Gets model name for a given config name (NO fallback - fails if config doesn't exist)
  */
 export function getModelNameForConfig(configName?: string): string | undefined {
-  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!configName) {
+    throw new Error("Config name is required. Use getModelName() for global config.");
+  }
+  const cfg = getConfigByName(configName);
   if (!cfg) {
-    throw new Error("No API configuration available. Please select or create one.");
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
   }
   return cfg.model_name;
 }
 
 /**
- * Gets base URL for a given config name (falls back to selected)
+ * Gets base URL for a given config name (NO fallback - fails if config doesn't exist)
  */
 export function getBaseUrlForConfig(configName?: string): string | undefined {
-  const cfg = getConfigByName(configName) || getSelectedConfig();
+  if (!configName) {
+    throw new Error("Config name is required. Use getBaseUrl() for global config.");
+  }
+  const cfg = getConfigByName(configName);
   if (!cfg) {
-    throw new Error("No API configuration available. Please select or create one.");
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
   }
   return cfg.base_url && cfg.base_url.trim() !== "" ? cfg.base_url : undefined;
 }

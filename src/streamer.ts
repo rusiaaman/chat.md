@@ -27,17 +27,36 @@ export class StreamingService {
     private readonly configNameOverride?: string,
   ) {
     try {
-      // Decide provider (allow per-file override)
-      const resolvedProvider: string = (providerOverride ?? (require("./config").getProvider())) as string;
+      // Decide provider (use per-file override or global)
+      let resolvedProvider: string;
+      if (providerOverride) {
+        resolvedProvider = providerOverride;
+      } else if (this.configNameOverride) {
+        // Use per-file config for fallback
+        const { getProviderForConfig } = require("./config");
+        resolvedProvider = getProviderForConfig(this.configNameOverride);
+      } else {
+        // Use global config
+        const { getProvider } = require("./config");
+        resolvedProvider = getProvider();
+      }
       this.provider = resolvedProvider;
-      log(`Using LLM provider: ${this.provider}`);
+      log(`Using LLM provider: ${this.provider} (configOverride: ${this.configNameOverride || 'none'})`);
 
-      // Decide base URL (allow per-file override)
+      // Decide base URL (use per-file override or file-specific config)
       let baseUrl = baseUrlOverride;
       if (this.provider === "openai") {
         try {
           if (!baseUrl) {
-            baseUrl = (require("./config").getBaseUrl()) as string | undefined;
+            if (this.configNameOverride) {
+              // Use per-file config for fallback
+              const { getBaseUrlForConfig } = require("./config");
+              baseUrl = getBaseUrlForConfig(this.configNameOverride);
+            } else {
+              // Use global config
+              const { getBaseUrl } = require("./config");
+              baseUrl = getBaseUrl();
+            }
           }
         } catch (e) {
           log(`Could not get base URL: ${e}, will use default`);

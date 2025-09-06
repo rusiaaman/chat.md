@@ -137,11 +137,17 @@ export class DocumentListener {
         log(`Initial check: No empty assistant or tool_execute block found.`);
       }
     } catch (error) {
-      // Check for specific parse error: Invalid content before first block
+      // Check for specific parse errors
       if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
         log("Initial check: Invalid content before first block marker.");
         vscode.window.showErrorMessage(
           "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
+        );
+      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+        const forbiddenKey = error.message.split(": ")[1];
+        log(`Initial check: Forbidden config key '${forbiddenKey}' in inline config.`);
+        vscode.window.showErrorMessage(
+          `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
         );
       } else {
         log(`Error during initial document check: ${error}`);
@@ -231,15 +237,24 @@ export class DocumentListener {
           // log(`Change detected: No empty assistant or tool_execute block found`);
         }
     } catch (error) {
-      // Check for specific parse error: Invalid content before first block
+      // Check for specific parse errors
       if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
         log("Change detected: Invalid content before first block marker.");
         vscode.window.showErrorMessage(
           "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
         );
         // Prevent triggering stream/tool execution if there's an error
-        this.removeLastEmptyBlock("assistant"); // Remove trigger block if it exists
-        this.removeLastEmptyBlock("tool_execute"); // Remove trigger block if it exists
+        this.removeLastEmptyBlock("assistant");
+        this.removeLastEmptyBlock("tool_execute");
+      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+        const forbiddenKey = error.message.split(": ")[1];
+        log(`Change detected: Forbidden config key '${forbiddenKey}' in inline config.`);
+        vscode.window.showErrorMessage(
+          `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
+        );
+        // Prevent triggering stream/tool execution if there's an error
+        this.removeLastEmptyBlock("assistant");
+        this.removeLastEmptyBlock("tool_execute");
       } else {
         // Handle other errors
         log(`Error handling document change: ${error}`);
@@ -786,20 +801,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       }
     }
     
-    // Get API key and validate config
-    let apiKey: string;
-    try {
-      const { getApiKey } = require("./config");
-      apiKey = getApiKey();
-      if (!apiKey) {
-        throw new Error("API key not configured");
-      }
-    } catch (error) {
-      const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}`;
-      log(message);
-      vscode.window.showErrorMessage(message);
-      return;
-    }
+    // API key will be resolved later based on per-file config
+    // Don't get global API key here as it might fail when per-file config is valid
     
     // Build final system prompt
     const { getDefaultSystemPrompt, generateToolCallingSystemPrompt } = require("./config");
@@ -820,23 +823,28 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
 
     // Resolve API key and provider/baseUrl with per-file override if provided
-    let apiKeyToUse = apiKey;
+    let apiKeyToUse: string;
     let providerOverride: string | undefined = undefined;
     let baseUrlOverride: string | undefined = undefined;
     try {
-      const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig, getProvider, getBaseUrl } = require("./config");
       if (perFileConfigName) {
+        const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
         apiKeyToUse = getApiKeyForConfig(perFileConfigName);
         providerOverride = getProviderForConfig(perFileConfigName);
         baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
         statusManager.updateProvider(providerOverride);
       } else {
+        const { getApiKey, getProvider, getBaseUrl } = require("./config");
+        apiKeyToUse = getApiKey();
         providerOverride = getProvider();
         baseUrlOverride = getBaseUrl();
         statusManager.updateProvider(providerOverride);
       }
     } catch (e) {
-      log(`Error resolving per-file config overrides (resume): ${e}`);
+      const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+      log(errorMsg);
+      vscode.window.showErrorMessage(errorMsg);
+      return;
     }
 
     const streamingService = new StreamingService(
@@ -973,8 +981,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       let providerOverride: string | undefined = undefined;
       let baseUrlOverride: string | undefined = undefined;
       try {
-        const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
         if (perFileConfigName) {
+          const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
           apiKeyToUse = getApiKeyForConfig(perFileConfigName);
           providerOverride = getProviderForConfig(perFileConfigName);
           baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
@@ -987,7 +995,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           statusManager.updateProvider(providerOverride);
         }
       } catch (e) {
-        log(`Error resolving per-file config overrides: ${e}`);
+        const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+        log(errorMsg);
+        vscode.window.showErrorMessage(errorMsg);
+        this.removeLastEmptyBlock("assistant");
+        return;
       }
 
       const streamingService = new StreamingService(
