@@ -851,6 +851,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       })
       .finally(() => {
         log(`Resume streamer ${messageIndex} promise finally block reached.`);
+        try { updateStreamingStatusBar(); } catch {}
       });
   }
 
@@ -991,18 +992,19 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       this.streamers.set(messageIndex, streamer);
       log(`Created new streamer for message index ${messageIndex}.`);
+      // Update status bar to reflect new active streamer count/provider
+      try { updateStreamingStatusBar(); } catch {}
 
       // **Start streaming in background, passing the FINAL system prompt**
       streamingService
         .streamResponse(messages, streamer, finalSystemPrompt) // Pass the combined prompt
         .catch((err) => {
           log(`Streaming error for index ${messageIndex}: ${err}`);
-          // State management (isActive = false) should happen within StreamingService or cancel
-          // streamer.isActive = false; // Avoid setting state directly here if service handles it
         })
         .finally(() => {
-            log(`Streamer ${messageIndex} promise finally block reached.`);
-             // Consider if map cleanup is needed here or handled by the service/cancel logic
+          log(`Streamer ${messageIndex} promise finally block reached.`);
+          // Refresh status bar when stream ends
+          try { updateStreamingStatusBar(); } catch {}
         });
 
     } catch (error) {
