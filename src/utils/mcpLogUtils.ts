@@ -3,6 +3,7 @@ import * as path from "path";
 import { Writable } from "stream";
 import { getMcpServerLogPath } from "./fileUtils";
 import { log } from "../extension";
+import { getBatchedWriter } from "./batchedWriter";
 
 // Keep track of open write streams for each server
 const logStreams: Map<string, fs.WriteStream> = new Map();
@@ -20,10 +21,10 @@ export function appendToMcpLog(
   message: string,
 ): void {
   try {
+    const logPath = getMcpServerLogPath(logBasePath, serverId);
     let stream = logStreams.get(serverId);
 
     if (!stream) {
-      const logPath = getMcpServerLogPath(logBasePath, serverId);
       // Ensure the directory exists (should be handled by getMcpLogBasePath, but double-check)
       const logDir = path.dirname(logPath);
       if (!fs.existsSync(logDir)) {
@@ -53,9 +54,18 @@ export function appendToMcpLog(
       });
     }
 
-    // Add timestamp and write the message
+    // Add timestamp and write the message using batched writer for better performance
     const timestamp = new Date().toISOString();
-    stream.write(`[${timestamp}] ${message}\n`);
+    const formattedMessage = `[${timestamp}] ${message}\n`;
+    
+    // Use batched writer for better performance, especially for remote files
+    const batchedWriter = getBatchedWriter(logPath, {
+      maxBatchSize: 20,       // Batch up to 20 log messages
+      maxBatchDelay: 1000,    // Flush after 1 second if batch isn't full
+      flushOnClose: true,     // Ensure remaining content is written when closing
+    });
+    
+    batchedWriter.add(formattedMessage);
   } catch (error) {
     log(`Failed to append to MCP log for server ${serverId}: ${error}`);
     // Attempt to clean up if stream creation failed

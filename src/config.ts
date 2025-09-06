@@ -285,13 +285,51 @@ export function getBaseUrl(): string | undefined {
 
 /**
  * Gets the maximum number of thinking tokens to use
- * Used for all OpenAI models as part of max_completion_tokens
+ * Used for Anthropic thinking parameter and OpenAI max_completion_tokens calculation
  * @returns The number of thinking tokens to use (default: 16000)
  */
 export function getMaxThinkingTokens(): number {
   // Get from configuration if available, otherwise use default
   const config = vscode.workspace.getConfiguration("chatmd");
   return config.get("maxThinkingTokens") || 16000; // Default to 16k tokens
+}
+
+/**
+ * Gets the reasoning effort setting
+ * @returns The reasoning effort level (minimal, low, medium, high) or undefined if not set
+ */
+export function getReasoningEffort(): "minimal" | "low" | "medium" | "high" | undefined {
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get("reasoningEffort");
+}
+
+/**
+ * Calculate thinking token budget based on reasoning effort
+ * Used for Anthropic API when reasoning effort is configured instead of explicit thinking tokens
+ * @param maxTokens The max tokens for the regular response
+ * @param reasoningEffort The reasoning effort level
+ * @returns The calculated thinking token budget
+ */
+export function calculateThinkingTokensFromEffort(
+  maxTokens: number, 
+  reasoningEffort: "minimal" | "low" | "medium" | "high"
+): number {
+  // Use similar ratios as OpenRouter's approach
+  const effortRatios = {
+    minimal: 0.1,  // Very minimal thinking
+    low: 0.2,      // Low thinking
+    medium: 0.5,   // Medium thinking (default)
+    high: 0.8      // High thinking
+  };
+  
+  const ratio = effortRatios[reasoningEffort];
+  const calculatedBudget = Math.floor(maxTokens * ratio);
+  
+  // Cap between reasonable bounds
+  const minBudget = 1024;
+  const maxBudget = 32000;
+  
+  return Math.max(Math.min(calculatedBudget, maxBudget), minBudget);
 }
 
 /**

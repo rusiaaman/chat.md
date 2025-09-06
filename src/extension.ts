@@ -27,6 +27,7 @@ import {
   generateChatTemplate,
   getCurrentContext,
 } from "./utils/contextTemplateUtils";
+import { closeAllBatchedWriters } from "./utils/batchedWriter";
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -1346,4 +1347,7 @@ export function deactivate() {
 
   // Dispose of status manager
   statusManager.dispose();
+
+  // Close all batched writers to ensure remaining content is flushed
+  closeAllBatchedWriters();
 }

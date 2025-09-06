@@ -661,8 +661,8 @@ export class McpClientManager {
         log(
           `Error executing tool ${name} on server ${serverId} (fallback): ${error}`,
         );
-        // Continue searching on other servers in case of error? Or return error immediately?
-        // For now, return the error from the first server that failed.
+        // Return error immediately to prevent inconsistent behavior
+        // This ensures the first server that fails provides the error
         return `Error executing tool ${name}: ${error}`;
       }
     }
@@ -1261,18 +1261,18 @@ export class McpClientManager {
       // Logged by the caller, rethrow to be handled there
       throw error;
     }
-    }
-  
-    /**
-     * Process tool result that contains mixed content (text and images)
-     * Saves images to disk and returns a formatted result with markdown links
-     * @param content The content array from the tool result
-     * @param serverId The server ID that executed the tool
-     * @param toolName The name of the tool that was executed
-     * @param document The current document (for resolving relative paths)
-     * @returns A formatted string with text content and markdown links to saved images
-     */
-    private processMixedToolResult(
+  }
+
+  /**
+   * Process tool result that contains mixed content (text and images)
+   * Saves images to disk and returns a formatted result with markdown links
+   * @param content The content array from the tool result
+   * @param serverId The server ID that executed the tool
+   * @param toolName The name of the tool that was executed
+   * @param document The current document (for resolving relative paths)
+   * @returns A formatted string with text content and markdown links to saved images
+   */
+  private processMixedToolResult(
       content: any[],
       serverId: string,
       toolName: string,

@@ -1106,7 +1106,7 @@ export class StreamingService {
     } catch (error) {
       log(`Error updating document: ${error}`);
       console.error("Error updating document:", error);
-      streamer.isActive = false;
+      this.setStreamerInactive(streamer, "error updating document");
       return false; // Update failed due to error
     } finally {
       this.lock.release();

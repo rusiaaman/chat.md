@@ -2,6 +2,7 @@ import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
 import { MessageParam } from "../types";
+import { getBatchedWriter } from "./batchedWriter";
 
 /**
  * Resolves file paths that may be relative to the current document
@@ -185,14 +186,15 @@ export function appendToChatHistory(
       return;
     }
 
-    // Read existing content
-    const existingContent = readFileAsText(historyFilePath) || "";
+    // Use batched writer for better performance, especially for remote files
+    const batchedWriter = getBatchedWriter(historyFilePath, {
+      maxBatchSize: 5,        // Batch up to 5 token chunks
+      maxBatchDelay: 500,     // Flush after 500ms if batch isn't full
+      flushOnClose: true,     // Ensure remaining content is written when closing
+    });
 
-    // Append new content (raw tokens)
-    const updatedContent = existingContent + content;
-
-    // Write back to file
-    writeFile(historyFilePath, updatedContent);
+    // Add content to batch buffer
+    batchedWriter.add(content);
   } catch (error) {
     console.error("Error appending to chat history:", error);
     // Don't throw - we want this to be non-blocking
