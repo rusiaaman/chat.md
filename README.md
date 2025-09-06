@@ -268,10 +268,9 @@ vscode json settings
   "chatmd.reasoningEffort": "medium"
 ```
 
-Note: `maxTokens` (default: 8000) controls the maximum number of tokens generated in model responses.
-For OpenAI O-series models (like o1, o2) that require `max_completion_tokens` instead of `max_tokens`, 
-the extension automatically detects them and uses `maxThinkingTokens` (default: 16000) as additional thinking tokens.
-For Anthropic models, `maxThinkingTokens` controls the thinking token budget, or can be calculated automatically from `reasoningEffort`.
+Note: `maxTokens` (default: 8000) controls the maximum number of tokens for model responses.
+For OpenAI reasoning models (GPT-5, o3, o1 series), `maxTokens` is used as the total `max_completion_tokens` budget (includes both thinking and response tokens).
+For Anthropic models, `maxThinkingTokens` controls the thinking token budget separately, or can be calculated automatically from `reasoningEffort`.
 ## License
 
 MIT License - see the LICENSE file for details.
