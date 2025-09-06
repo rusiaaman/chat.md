@@ -93,7 +93,8 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
 /**
  * Requests a status bar update for a specific file path
  * Invariant 1: Any process that updates status bar should hold the "filepath" as a key
- * Invariant 2: The process only updates status bar if current open tab matches the "filepath" key
+ * Invariant 2: The process only updates status TEXT/COLOR if current open tab matches the "filepath" key
+ * But the global count (n) is ALWAYS updated and displayed
  */
 export function requestStatusBarUpdate(requestingFilePath: string, reason: string): void {
   const activeEditor = vscode.window.activeTextEditor;
@@ -104,9 +105,10 @@ export function requestStatusBarUpdate(requestingFilePath: string, reason: strin
   // Always update the total count regardless of which file is requesting
   updateTotalStreamerCount();
   
-  // Only update the visual status if the requesting file is the active tab
   if (!currentActiveFilePath || currentActiveFilePath !== requestingFilePath) {
-    log(`Status update ignored - requesting file (${path.basename(requestingFilePath)}) is not the active tab (${currentActiveFilePath ? path.basename(currentActiveFilePath) : 'none'})`);
+    log(`Status update from non-active file (${path.basename(requestingFilePath)}) - only updating count, refreshing display for active file`);
+    // Non-active file requested update - refresh display with updated count but based on active file's state
+    updateStreamingStatusBarForActiveFile();
     return;
   }
   
