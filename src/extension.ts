@@ -18,7 +18,7 @@ import {
   ApiConfig,
   getDefaultSystemPrompt,
 } from "./config";
-import { getBlockInfoAtPosition } from "./parser";
+import { getBlockInfoAtPosition, parseDocument } from "./parser";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
 import { cancelCurrentToolExecution } from "./tools/toolExecutor";
@@ -65,7 +65,7 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
     try {
       await setSelectedConfig(targetConfigName);
       statusManager.updateConfigName(targetConfigName);
-      updateStreamingStatusBar(); // Refresh the status bar display
+      onActiveFileChanged(); // Refresh the status bar display
       vscode.window.showInformationMessage(
         `Switched to API config: "${targetConfigName}"`, // Provide feedback
       );
@@ -91,39 +91,172 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
 }
 
 /**
+ * Requests a status bar update for a specific file path
+ * Invariant 1: Any process that updates status bar should hold the "filepath" as a key
+ * Invariant 2: The process only updates status TEXT/COLOR if current open tab matches the "filepath" key
+ * But the global count (n) is ALWAYS updated and displayed
+ */
+export function requestStatusBarUpdate(requestingFilePath: string, reason: string): void {
+  const activeEditor = vscode.window.activeTextEditor;
+  const currentActiveFilePath = activeEditor?.document.uri.fsPath;
+  
+  log(`Status update requested by ${path.basename(requestingFilePath)}: ${reason}`);
+  
+  // Always update the total count regardless of which file is requesting
+  updateTotalStreamerCount();
+  
+  if (!currentActiveFilePath || currentActiveFilePath !== requestingFilePath) {
+    log(`Status update from non-active file (${path.basename(requestingFilePath)}) - only updating count, refreshing display for active file`);
+    // Non-active file requested update - refresh display with updated count but based on active file's state
+    updateStreamingStatusBarForActiveFile();
+    return;
+  }
+  
+  log(`Status update accepted for active file: ${path.basename(requestingFilePath)}`);
+  updateStreamingStatusBarForActiveFile();
+}
+
+/**
+ * Force refresh the status bar when switching files
+ * Invariant 3: On switching the filepath the status bar refresh is triggered
+ */
+export function onActiveFileChanged(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+  const currentActiveFilePath = activeEditor?.document.uri.fsPath;
+  
+  if (currentActiveFilePath) {
+    log(`Active file changed to: ${path.basename(currentActiveFilePath)}`);
+    requestStatusBarUpdate(currentActiveFilePath, "active file changed");
+  } else {
+    log(`No active file - updating with global state`);
+    updateStreamingStatusBarForActiveFile();
+  }
+}
+
+/**
+ * Update just the total streamer count across all documents
+ */
+function updateTotalStreamerCount(): void {
+  let totalAlive = 0;
+  for (const listener of documentListenerInstances.values()) {
+    try {
+      totalAlive += listener.getActiveStreamerCount();
+    } catch {
+      // ignore
+    }
+  }
+  statusManager.updateTotalStreamersAlive(totalAlive);
+  log(`Updated total streamer count: ${totalAlive}`);
+}
+
+/**
  * Updates the streaming status bar based on active document and streaming state
+ * This is the internal implementation that does the actual status bar update
+ */
+function updateStreamingStatusBarForActiveFile(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+
+  // Force reset status manager to clear any stale state
+  statusManager.forceResetStatus();
+
+  // Update total count
+  updateTotalStreamerCount();
+  const totalAlive = statusManager.getTotalStreamersAlive();
+
+  // Determine provider/config for the active .chat.md file (file-specific)
+  let providerForFile: string | undefined;
+  let configNameForFile: string | undefined;
+
+  try {
+    if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+      const text = activeEditor.document.getText();
+      const parsed = parseDocument(text, activeEditor.document);
+      const perFileConfigName: string | undefined = (parsed as any).fileConfig?.selectedConfig;
+
+      // Update config name in status bar to reflect per-file override or global
+      const globalSelected = getSelectedConfigName();
+      configNameForFile = perFileConfigName || globalSelected;
+      statusManager.updateConfigName(configNameForFile);
+
+      // Resolve provider using per-file override if present
+      try {
+        if (perFileConfigName) {
+          providerForFile = require("./config").getProviderForConfig(perFileConfigName);
+        } else {
+          providerForFile = require("./config").getProvider();
+        }
+      } catch {
+        providerForFile = undefined;
+      }
+    } else {
+      // Non chat.md file - show global config info
+      statusManager.updateConfigName(getSelectedConfigName());
+      try {
+        providerForFile = require("./config").getProvider();
+      } catch {
+        providerForFile = undefined;
+      }
+    }
+  } catch (error) {
+    // Log specific errors for debugging, but don't show user errors for status bar updates
+    if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+      const forbiddenKey = error.message.split(": ")[1];
+      log(`Status bar update: Forbidden config key '${forbiddenKey}' detected in .chat.md file`);
+    } else if (error instanceof Error) {
+      log(`Status bar update: Parse error - ${error.message}`);
+    }
+    // Parsing might fail in intermediate edits; keep previous state
+  }
+
+  statusManager.updateProvider(providerForFile);
+
+  // Decide status per current chat (chat-specific)
+  let currentDocHasStreaming = false;
+  let currentDocIsExecuting = false;
+  let currentDocFileName = "none";
+
+  if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+    currentDocFileName = path.basename(activeEditor.document.fileName);
+    const streamer = getActiveStreamerForDocument(activeEditor.document);
+    currentDocHasStreaming = !!(streamer && streamer.isActive);
+
+    const listener = getDocumentListenerForDocument(activeEditor.document);
+    currentDocIsExecuting = !!(listener && listener.getIsExecuting && listener.getIsExecuting());
+    
+    log(`Status check for ${currentDocFileName}: streaming=${currentDocHasStreaming}, executing=${currentDocIsExecuting}, totalAlive=${totalAlive}`);
+  } else {
+    log(`Status check: not a chat file or no active editor. totalAlive=${totalAlive}`);
+  }
+
+  if (currentDocIsExecuting) {
+    // Executing tool for this chat only
+    log(`Showing tool execution status for ${currentDocFileName}`);
+    statusManager.showToolExecutionStatus();
+  } else if (currentDocHasStreaming) {
+    // Streaming for this chat only (yellow)
+    log(`Showing streaming status for ${currentDocFileName} (${totalAlive} total)`);
+    statusManager.showStreamingStatus(totalAlive);
+  } else if (totalAlive > 0) {
+    // Other chats streaming elsewhere: show purple idle with (n)
+    log(`Showing idle-with-alive for ${currentDocFileName} (${totalAlive} streaming elsewhere)`);
+    statusManager.showIdleWithAlive(totalAlive);
+  } else {
+    // Pure idle
+    log(`Showing pure idle for ${currentDocFileName}`);
+    statusManager.hideStreamingStatus();
+  }
+}
+
+/**
+ * Legacy function for backward compatibility - now routes through the proper system
+ * @deprecated Use requestStatusBarUpdate instead
  */
 export function updateStreamingStatusBar(): void {
   const activeEditor = vscode.window.activeTextEditor;
-  let isActive = false;
-  if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
-    const streamer = getActiveStreamerForDocument(activeEditor.document); // Assuming this helper exists
-    isActive = !!(streamer && streamer.isActive);
-  }
-
-  // Check the actual current status from StatusManager too
-  const currentManagerStatus = statusManager.getCurrentStatus();
-
-  if (
-    currentManagerStatus === "executing" ||
-    currentManagerStatus === "cancelling"
-  ) {
-    // Don't change if executing or cancelling, let those states manage themselves
-    // But we might still need to refresh the text if the config name changed via the background update
-    // A simpler way is to just re-call the current state's method
-    switch (currentManagerStatus) {
-      case "executing":
-        statusManager.showToolExecutionStatus();
-        break;
-      case "cancelling":
-        statusManager.showToolCancellationStatus();
-        break;
-      // Add other cases if needed
-    }
-  } else if (isActive) {
-    statusManager.showStreamingStatus();
+  if (activeEditor) {
+    requestStatusBarUpdate(activeEditor.document.uri.fsPath, "legacy updateStreamingStatusBar call");
   } else {
-    statusManager.hideStreamingStatus(); // This will set the idle text with the correct config name
+    updateStreamingStatusBarForActiveFile();
   }
 }
 
@@ -263,14 +396,19 @@ export function activate(contextParam: vscode.ExtensionContext) {
   }
 
   // Register events for updating the status bar
+  // Invariant 3: On switching the filepath the status bar refresh is triggered
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(() => {
-      updateStreamingStatusBar();
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      log(`Active editor changed to: ${editor ? path.basename(editor.document.fileName) : 'none'}`);
+      // Add a small delay to ensure the editor change is fully processed
+      setTimeout(() => {
+        onActiveFileChanged();
+      }, 50);
     }),
   );
 
   // Update status bar initially
-  updateStreamingStatusBar();
+  onActiveFileChanged();
 
   // Listen for newly opened documents
   context.subscriptions.push(
@@ -339,7 +477,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
           newConfigName = getSelectedConfigName();
         }
         statusManager.updateConfigName(newConfigName); // Assuming statusManager is accessible
-        updateStreamingStatusBar(); // Assuming this function exists and updates the display
+        onActiveFileChanged(); // Updates the display
       }
 
       // 4. Handle MCP server configuration changes (keep existing logic)
@@ -423,7 +561,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         if (streamer && streamer.isActive && streamer.cancel) {
           streamer.cancel();
           vscode.window.showInformationMessage("chat.md streaming cancelled");
-          updateStreamingStatusBar();
+          onActiveFileChanged();
         }
       }
     }),
@@ -781,7 +919,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
           );
           streamer.cancel();
           vscode.window.showInformationMessage("chat.md streaming cancelled");
-          updateStreamingStatusBar(); // Update status bar after cancelling
+          onActiveFileChanged(); // Update status bar after cancelling
           streamerCancelled = true;
         }
       }
@@ -1027,7 +1165,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand("filechat.selectApiConfig", async () => {
-      log("COMMAND TRIGGERED: filechat.selectApiConfig"); // <-- ADD THIS
+      log("COMMAND TRIGGERED: filechat.selectApiConfig");
 
       const configs = getApiConfigs();
       const configNames = Object.keys(configs);
@@ -1050,9 +1188,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         const config = configs[name];
         return {
           label: name,
-          description: `${config.type} - ${
-            config.model_name || "default model"
-          }`,
+          description: `${config.type} - ${config.model_name || "default model"}`,
           detail: config.base_url ? `Base URL: ${config.base_url}` : undefined,
         };
       });
@@ -1062,23 +1198,67 @@ export function activate(contextParam: vscode.ExtensionContext) {
         title: "Select Active Configuration",
       });
 
-      // Inside the filechat.selectApiConfig command handler, after successful selection
-      if (selectedItem) {
-        await setSelectedConfig(selectedItem.label);
-        vscode.window.showInformationMessage(
-          `Configuration "${selectedItem.label}" is now active`,
-        );
-        // Update StatusManager and refresh the display
-        statusManager.updateConfigName(selectedItem.label);
-        updateStreamingStatusBar(); // Refresh the status bar text
-      } else {
-        return; // User cancelled
-      }
+      if (!selectedItem) return; // User cancelled
 
+      // Update global selected config
       await setSelectedConfig(selectedItem.label);
+      statusManager.updateConfigName(selectedItem.label);
       vscode.window.showInformationMessage(
         `Configuration "${selectedItem.label}" is now active`,
       );
+
+      // Also update the currently open .chat.md file's configuration preamble
+      try {
+        const activeEditor = vscode.window.activeTextEditor;
+        if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+          const doc = activeEditor.document;
+          const text = doc.getText();
+
+          // Find start of first block marker
+          const firstMarkerRegex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
+          const markerMatch = firstMarkerRegex.exec(text);
+          const preambleEnd = markerMatch ? markerMatch.index : 0;
+
+          const preamble = text.slice(0, preambleEnd);
+          let newPreamble = preamble;
+
+          if (preamble.trim().length === 0) {
+            // No preamble - insert selectedConfig at the top
+            newPreamble = `selectedConfig="${selectedItem.label}"\n\n`;
+          } else {
+            // Replace existing selectedConfig=... if present, else prepend
+            if (/^selectedConfig\s*=.*$/m.test(preamble)) {
+              newPreamble = preamble.replace(
+                /^selectedConfig\s*=.*$/m,
+                `selectedConfig="${selectedItem.label}"`
+              );
+              // Ensure a trailing blank line between preamble and first block
+              if (!newPreamble.endsWith("\n\n")) {
+                newPreamble = newPreamble.replace(/\n*$/,"") + "\n\n";
+              }
+            } else {
+              newPreamble = `selectedConfig="${selectedItem.label}"\n` + (preamble.endsWith("\n") ? "" : "\n");
+            }
+          }
+
+          // Apply edit to replace preamble
+          const edit = new vscode.WorkspaceEdit();
+          const startPos = new vscode.Position(0, 0);
+          const endPos = doc.positionAt(preambleEnd);
+          edit.replace(doc.uri, new vscode.Range(startPos, endPos), newPreamble);
+
+          const applied = await vscode.workspace.applyEdit(edit);
+          if (!applied) {
+            log("Failed to update chat file preamble with selectedConfig");
+          } else {
+            log(`Updated chat file preamble with selectedConfig="${selectedItem.label}"`);
+          }
+        }
+      } catch (e) {
+        log(`Error updating .chat.md preamble after config selection: ${e}`);
+      }
+
+      onActiveFileChanged(); // Refresh status bar (provider/config now file-specific)
     }),
 
     vscode.commands.registerCommand("filechat.removeApiConfig", async () => {

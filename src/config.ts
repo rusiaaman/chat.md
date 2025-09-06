@@ -110,6 +110,9 @@ Tool usage guidelines:
 - In <param> value for scalar parameters (string, number, boolean), write values directly without quotes
 - For object/array type parameters, use properly encoded JSON format
 
+Correct: <param name="xml_content"><hello>{"greeting": "hello"}</hello></param>
+Incorrect: <param name="xml_content">&lt;hello&gt;{\"greeting\": \"hello\"}&lt;/hello&gt;</param>
+Correct: <param name="weather_object">{"temperature_3days": [20, 21, 19]}</param>
 
 Chatmd provides the shortest answer it can to the person's message, while respecting any stated length and comprehensiveness preferences given by the person. Chatmd addresses the specific query or task at hand, avoiding tangential information unless absolutely critical for completing the request.
 
@@ -171,6 +174,71 @@ export function getSelectedConfig(): ApiConfig | undefined {
 
   const configs = getApiConfigs();
   return configs[configName];
+}
+
+/**
+ * Returns config by name if present
+ */
+export function getConfigByName(name: string | undefined): ApiConfig | undefined {
+  if (!name) return undefined;
+  const configs = getApiConfigs();
+  return configs[name];
+}
+
+/**
+ * Gets provider type for a given config name (NO fallback - fails if config doesn't exist)
+ */
+export function getProviderForConfig(configName?: string): string {
+  if (!configName) {
+    throw new Error("Config name is required. Use getProvider() for global config.");
+  }
+  const cfg = getConfigByName(configName);
+  if (!cfg) {
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
+  }
+  return cfg.type;
+}
+
+/**
+ * Gets API key for a given config name (NO fallback - fails if config doesn't exist)
+ */
+export function getApiKeyForConfig(configName?: string): string {
+  if (!configName) {
+    throw new Error("Config name is required. Use getApiKey() for global config.");
+  }
+  const cfg = getConfigByName(configName);
+  if (!cfg) {
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
+  }
+  return cfg.apiKey;
+}
+
+/**
+ * Gets model name for a given config name (NO fallback - fails if config doesn't exist)
+ */
+export function getModelNameForConfig(configName?: string): string | undefined {
+  if (!configName) {
+    throw new Error("Config name is required. Use getModelName() for global config.");
+  }
+  const cfg = getConfigByName(configName);
+  if (!cfg) {
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
+  }
+  return cfg.model_name;
+}
+
+/**
+ * Gets base URL for a given config name (NO fallback - fails if config doesn't exist)
+ */
+export function getBaseUrlForConfig(configName?: string): string | undefined {
+  if (!configName) {
+    throw new Error("Config name is required. Use getBaseUrl() for global config.");
+  }
+  const cfg = getConfigByName(configName);
+  if (!cfg) {
+    throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
+  }
+  return cfg.base_url && cfg.base_url.trim() !== "" ? cfg.base_url : undefined;
 }
 
 /**

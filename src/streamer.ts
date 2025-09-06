@@ -4,7 +4,7 @@ import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
-import { log, statusManager } from "./extension";
+import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
@@ -22,20 +22,46 @@ export class StreamingService {
     apiKey: string,
     private readonly document: vscode.TextDocument,
     private readonly lock: Lock,
+    providerOverride?: string,
+    baseUrlOverride?: string,
+    private readonly configNameOverride?: string,
   ) {
     try {
-      // Import the config functions to ensure they're available
-      const { getProvider, getBaseUrl } = require("./config");
+      // Decide provider (use per-file override or global)
+      let resolvedProvider: string;
+      if (providerOverride) {
+        resolvedProvider = providerOverride;
+      } else if (this.configNameOverride) {
+        // Use per-file config for fallback
+        const { getProviderForConfig } = require("./config");
+        resolvedProvider = getProviderForConfig(this.configNameOverride);
+      } else {
+        // Use global config
+        const { getProvider } = require("./config");
+        resolvedProvider = getProvider();
+      }
+      this.provider = resolvedProvider;
+      log(`Using LLM provider: ${this.provider} (configOverride: ${this.configNameOverride || 'none'})`);
 
-      this.provider = getProvider();
-      log(`Using LLM provider: ${this.provider}`);
-
-      let baseUrl;
-      try {
-        baseUrl = getBaseUrl();
-      } catch (e) {
-        log(`Could not get base URL: ${e}, will use default`);
-        baseUrl = undefined;
+      // Decide base URL (use per-file override or file-specific config)
+      let baseUrl = baseUrlOverride;
+      if (this.provider === "openai") {
+        try {
+          if (!baseUrl) {
+            if (this.configNameOverride) {
+              // Use per-file config for fallback
+              const { getBaseUrlForConfig } = require("./config");
+              baseUrl = getBaseUrlForConfig(this.configNameOverride);
+            } else {
+              // Use global config
+              const { getBaseUrl } = require("./config");
+              baseUrl = getBaseUrl();
+            }
+          }
+        } catch (e) {
+          log(`Could not get base URL: ${e}, will use default`);
+          baseUrl = undefined;
+        }
       }
 
       if (this.provider === "anthropic") {
@@ -67,7 +93,7 @@ export class StreamingService {
       streamer.isActive = false;
       
       // Immediately hide streaming status
-      statusManager.hideStreamingStatus();
+      requestStatusBarUpdate(this.document.uri.fsPath, "streaming cancelled");
       
       // Notify user that cancellation request was processed
       vscode.window.showInformationMessage("Streaming cancellation initiated");
@@ -158,10 +184,12 @@ export class StreamingService {
           log(
             `Starting to stream response for ${messages.length} messages${retryAttempt > 0 ? ` (retry ${retryAttempt})` : ""}`,
           );
-          statusManager.showStreamingStatus();
+          // Invariant 4: On any streamer status update the status bar refresh is triggered
+          requestStatusBarUpdate(this.document.uri.fsPath, "streaming started");
 
-          // Import getModelName to make sure it's available
-          const { getModelName } = require("./config");
+          // Resolve model name (allow per-file override)
+          const { getModelName, getModelNameForConfig } = require("./config");
+          const modelNameOverride: string | undefined = this.configNameOverride ? getModelNameForConfig(this.configNameOverride) : undefined;
 
           // Use the provided system prompt
           log(`Using provided system prompt (${systemPrompt.length} chars)`);
@@ -173,12 +201,14 @@ export class StreamingService {
               messages,
               this.document,
               systemPrompt,
+              modelNameOverride,
             );
           } else if (this.provider === "openai" && this.openaiClient) {
             stream = await this.openaiClient.streamCompletion(
               messages,
               this.document,
               systemPrompt,
+              modelNameOverride,
             );
           } else {
             throw new Error(
@@ -251,7 +281,7 @@ export class StreamingService {
                   const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
                   
                   // Always show the status bar when a tool call is detected
-                  statusManager.showToolExecutionStatus();
+                  requestStatusBarUpdate(this.document.uri.fsPath, "tool execution detected");
                   log(`Showing 'executing tool' status for detected tool "${toolName}"`);
                   
                   // All tools are always auto-executed since the feature to disable auto-execution has been removed
@@ -368,7 +398,7 @@ export class StreamingService {
                         // The tool_execute block has been added, but we need to make sure the status
                         // stays visible until the DocumentListener picks up the change and executes the tool
                         log(`Ensuring tool execution status remains visible for manual execution`);
-                        statusManager.showToolExecutionStatus();
+                        requestStatusBarUpdate(this.document.uri.fsPath, "tool auto-execution started");
 
                         // Mark streamer as inactive BEFORE auto-save to prevent conflicts
                         streamer.isActive = false;
@@ -406,7 +436,7 @@ export class StreamingService {
                           `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
                         );
                         // Since adding the tool_execute block failed, hide the status
-                        statusManager.hideStreamingStatus();
+                        requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
                       }
                     } else {
                       log("Could not find position to insert tool_execute block");
@@ -749,7 +779,7 @@ export class StreamingService {
         // Only hide streaming status if we're NOT handling a tool call
         if (!streamer.isHandlingToolCall) {
           log(`Streaming completed normally, restoring status to idle`);
-          statusManager.hideStreamingStatus();
+          requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished with error");
         } else {
           log(`Streaming completed due to tool call detection, keeping 'executing tool' status visible`);
         }

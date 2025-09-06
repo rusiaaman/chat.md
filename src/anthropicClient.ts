@@ -24,19 +24,22 @@ export class AnthropicClient {
     messages: readonly MessageParam[],
     document?: vscode.TextDocument,
     systemPrompt?: string,
+    modelNameOverride?: string,
   ): AsyncGenerator<string[], void, unknown> {
     log(`Starting API request with ${messages.length} messages`);
 
     try {
       const formattedMessages = this.formatMessages(messages, document);
-      // Try to get model name safely
-      let modelName;
-      try {
-        const { getModelName } = require("./config");
-        modelName = getModelName();
-      } catch (e) {
-        log(`Error getting model name: ${e}`);
-        modelName = null;
+      // Resolve model name (allow per-file override)
+      let modelName = modelNameOverride;
+      if (!modelName) {
+        try {
+          const { getModelName } = require("./config");
+          modelName = getModelName();
+        } catch (e) {
+          log(`Error getting model name: ${e}`);
+          modelName = undefined;
+        }
       }
 
       // Use fallback if needed

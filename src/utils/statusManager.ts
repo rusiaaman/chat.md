@@ -13,10 +13,11 @@ export class StatusManager {
   private streamingDots: string = "";
   private animationInterval: NodeJS.Timeout | undefined;
   private hoverDisposables: vscode.Disposable[] = [];
+  private totalStreamersAlive: number = 0;
+  private currentProvider: string | undefined;
 
   private currentConfigName: string | undefined;
-  private currentStatus: "idle" | "streaming" | "executing" | "cancelling" =
-    "idle";
+  private currentStatus: "idle" | "streaming" | "executing" | "cancelling" = "idle";
 
   private readonly IDLE_TOOLTIP = "Click to select API configuration.";
   private readonly BUSY_TOOLTIP = "Click to cancel the current operation.";
@@ -60,6 +61,29 @@ export class StatusManager {
   }
 
   /**
+   * Updates the current provider (file-specific when a .chat.md is active)
+   */
+  public updateProvider(provider: string | undefined): void {
+    this.currentProvider = provider;
+    log(`StatusManager: Updated provider to '${provider || "None"}'`);
+  }
+
+  /**
+   * Updates total streamers alive (across files)
+   */
+  public updateTotalStreamersAlive(count: number): void {
+    this.totalStreamersAlive = count;
+    log(`StatusManager: Total streamers alive = ${count}`);
+  }
+
+  /**
+   * Gets the current total streamers alive count
+   */
+  public getTotalStreamersAlive(): number {
+    return this.totalStreamersAlive;
+  }
+
+  /**
    * Clears any running animation interval.
    */
   private clearAnimation(): void {
@@ -77,7 +101,7 @@ export class StatusManager {
     this.currentStatus = "idle";
     const configText = this.currentConfigName || "No Config";
     this.streamingStatusItem.text = `$(check) chat.md: Idle (${configText})`;
-    this.streamingStatusItem.tooltip = this.IDLE_TOOLTIP;
+    this.streamingStatusItem.tooltip = `Config: ${configText}\n${this.IDLE_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.selectApiConfig";
     this.streamingStatusItem.backgroundColor = undefined;
     log(`Changed to idle status (Config: ${configText})`);
@@ -86,12 +110,14 @@ export class StatusManager {
   /**
    * Shows the streaming status with an animation, including the config name.
    */
-  public showStreamingStatus(): void {
+  public showStreamingStatus(totalStreamers?: number, _provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "streaming";
+    if (typeof totalStreamers === "number") this.totalStreamersAlive = totalStreamers;
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming (${configText})`;
-    this.streamingStatusItem.tooltip = `Streaming... ${this.BUSY_TOOLTIP}`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming (${alive}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Streaming (${alive})\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.warningBackground",
@@ -106,12 +132,13 @@ export class StatusManager {
   /**
    * Shows the tool execution status, including the config name.
    */
-  public showToolExecutionStatus(): void {
+  public showToolExecutionStatus(_provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "executing";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool (${configText})`;
-    this.streamingStatusItem.tooltip = `Executing tool... ${this.BUSY_TOOLTIP}`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool (${alive}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Executing tool...\nTotal streamers: (${alive})\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.warningBackground",
@@ -127,21 +154,22 @@ export class StatusManager {
    * Updates the animation for the tool execution status, including the config name.
    */
   private updateToolExecutionAnimation(): void {
-    this.streamingDots =
-      this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    this.streamingDots = this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool${this.streamingDots} (${configText})`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(tools~spin) chat.md: Executing tool${this.streamingDots} (${alive}) (${configText})`;
   }
 
   /**
    * Shows the tool cancellation status, including the config name.
    */
-  public showToolCancellationStatus(): void {
+  public showToolCancellationStatus(_provider?: string): void {
     this.clearAnimation();
     this.currentStatus = "cancelling";
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling (${configText})`;
-    this.streamingStatusItem.tooltip = `Cancellation requested... ${this.BUSY_TOOLTIP}`;
+    const alive = this.totalStreamersAlive || 0;
+    this.streamingStatusItem.text = `$(stop-circle) chat.md: Cancelling (${alive}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Cancellation requested...\nTotal streamers: (${alive})\nConfig: ${configText}\n${this.BUSY_TOOLTIP}`;
     this.streamingStatusItem.command = "filechat.cancelStreaming";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor(
       "statusBarItem.errorBackground",
@@ -154,7 +182,37 @@ export class StatusManager {
    */
   public hideStreamingStatus(): void {
     this.clearAnimation();
+    // Force reset the current status to ensure clean state
+    this.currentStatus = "idle";
     this.setIdleStatus();
+    log(`Status manager: forced reset to idle`);
+  }
+
+  /**
+   * Show idle but indicate other chats streaming with purple background
+   */
+  public showIdleWithAlive(totalStreamers: number): void {
+    this.clearAnimation();
+    this.currentStatus = "idle";
+    this.totalStreamersAlive = totalStreamers;
+    const configText = this.currentConfigName || "No Config";
+    this.streamingStatusItem.text = `$(circle-large-outline) chat.md: Idle (${totalStreamers}) (${configText})`;
+    this.streamingStatusItem.tooltip = `Other chats streaming (${totalStreamers})\nConfig: ${configText}\n${this.IDLE_TOOLTIP}`;
+    this.streamingStatusItem.command = "filechat.selectApiConfig";
+    this.streamingStatusItem.backgroundColor = new vscode.ThemeColor("statusBarItem.remoteBackground");
+    log(`Changed to idle-with-alive status (Alive: ${totalStreamers}, Config: ${configText})`);
+  }
+
+  /**
+   * Force reset all status state - used when switching between chats
+   */
+  public forceResetStatus(): void {
+    log(`Status manager: forcing complete reset`);
+    this.clearAnimation();
+    this.currentStatus = "idle";
+    // Clear any background colors or commands that might be stuck
+    this.streamingStatusItem.backgroundColor = undefined;
+    this.streamingStatusItem.command = "filechat.selectApiConfig";
   }
 
   /**
@@ -168,10 +226,10 @@ export class StatusManager {
    * Updates the animation for the streaming status, including the config name.
    */
   private updateStreamingAnimation(): void {
-    this.streamingDots =
-      this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    this.streamingDots = this.streamingDots.length >= 3 ? "" : this.streamingDots + ".";
+    const alive = this.totalStreamersAlive || 0;
     const configText = this.currentConfigName || "No Config";
-    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming${this.streamingDots} (${configText})`;
+    this.streamingStatusItem.text = `$(loading~spin) chat.md: Streaming${this.streamingDots} (${alive}) (${configText})`;
   }
 
   /**

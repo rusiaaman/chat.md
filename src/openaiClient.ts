@@ -55,6 +55,7 @@ export class OpenAIClient {
     messages: readonly MessageParam[],
     document?: vscode.TextDocument,
     systemPrompt?: string,
+    modelNameOverride?: string,
   ): AsyncGenerator<string[], void, unknown> {
     log(`Starting OpenAI API request with ${messages.length} messages`);
 
@@ -70,14 +71,16 @@ export class OpenAIClient {
       // Add system message as the first message
       const allMessages = [systemMessage, ...formattedMessages];
 
-      // Try to get model name safely
-      let modelName;
-      try {
-        const { getModelName } = require("./config");
-        modelName = getModelName();
-      } catch (e) {
-        log(`Error getting model name: ${e}`);
-        modelName = null;
+      // Resolve model name (allow per-file override)
+      let modelName = modelNameOverride;
+      if (!modelName) {
+        try {
+          const { getModelName } = require("./config");
+          modelName = getModelName();
+        } catch (e) {
+          log(`Error getting model name: ${e}`);
+          modelName = undefined;
+        }
       }
 
       // Use fallback if needed

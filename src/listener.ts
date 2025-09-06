@@ -18,7 +18,7 @@ import {
 } from "./config";
 import * as path from "path";
 import * as fs from "fs"; // Keep fs for file operations
-import { log, mcpClientManager, statusManager } from "./extension"; // Import statusManager directly
+import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
 import {
@@ -33,7 +33,9 @@ import {
  */
 export class DocumentListener {
   private readonly streamers: Map<number, StreamerState> = new Map();
+  private defaultConfigInserted: boolean = false;
   private readonly lock: Lock = new Lock();
+  private isExecutingTool: boolean = false;
   private readonly disposables: vscode.Disposable[] = [];
 
   constructor(private readonly document: vscode.TextDocument) {}
@@ -83,6 +85,24 @@ export class DocumentListener {
   }
 
   /**
+   * Get count of active streamers for this document
+   */
+  public getActiveStreamerCount(): number {
+    let count = 0;
+    for (const s of this.streamers.values()) {
+      if (s.isActive) count++;
+    }
+    return count;
+  }
+
+  /**
+   * Whether this document is currently executing a tool
+   */
+  public getIsExecuting(): boolean {
+    return this.isExecutingTool;
+  }
+
+  /**
    * Check document on initial load for actionable states (errors or triggers).
    */
   private async checkDocument(): Promise<void> {
@@ -117,11 +137,17 @@ export class DocumentListener {
         log(`Initial check: No empty assistant or tool_execute block found.`);
       }
     } catch (error) {
-      // Check for specific parse error: Invalid content before first block
+      // Check for specific parse errors
       if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
         log("Initial check: Invalid content before first block marker.");
         vscode.window.showErrorMessage(
           "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
+        );
+      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+        const forbiddenKey = error.message.split(": ")[1];
+        log(`Initial check: Forbidden config key '${forbiddenKey}' in inline config.`);
+        vscode.window.showErrorMessage(
+          `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
         );
       } else {
         log(`Error during initial document check: ${error}`);
@@ -155,6 +181,35 @@ export class DocumentListener {
         // Parse the document on every change to check for errors first (invalid start, images in system)
         const parseResult = parseDocument(text, this.document);
 
+        // Update status bar with file-specific provider/config hover info
+        try {
+          requestStatusBarUpdate(this.document.uri.fsPath, "document changed");
+        } catch (e) {
+          log(`Failed to update status bar after parse: ${e}`);
+        }
+
+        // Insert default configuration block on first file update if missing
+        if (!this.defaultConfigInserted && !parseResult.hasConfigurationBlock) {
+          try {
+            const { getSelectedConfigName } = require("./config");
+            const cfgName = getSelectedConfigName();
+            if (cfgName && this.document.fileName.endsWith(".chat.md")) {
+              const edit = new vscode.WorkspaceEdit();
+              const insertText = `selectedConfig="${cfgName}"\n\n`;
+              edit.insert(this.document.uri, new vscode.Position(0, 0), insertText);
+              const applied = await vscode.workspace.applyEdit(edit);
+              if (applied) {
+                this.defaultConfigInserted = true;
+                log(`Inserted default configuration preamble selectedConfig="${cfgName}"`);
+              } else {
+                log("Failed to insert default configuration preamble");
+              }
+            }
+          } catch (e) {
+            log(`Error inserting default configuration preamble: ${e}`);
+          }
+        }
+
         // **Handle Image in System Block Error**
         if (parseResult.hasImageInSystemBlock) {
           log("Change detected: Image found in system block. Aborting actions.");
@@ -182,15 +237,24 @@ export class DocumentListener {
           // log(`Change detected: No empty assistant or tool_execute block found`);
         }
     } catch (error) {
-      // Check for specific parse error: Invalid content before first block
+      // Check for specific parse errors
       if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
         log("Change detected: Invalid content before first block marker.");
         vscode.window.showErrorMessage(
           "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
         );
         // Prevent triggering stream/tool execution if there's an error
-        this.removeLastEmptyBlock("assistant"); // Remove trigger block if it exists
-        this.removeLastEmptyBlock("tool_execute"); // Remove trigger block if it exists
+        this.removeLastEmptyBlock("assistant");
+        this.removeLastEmptyBlock("tool_execute");
+      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+        const forbiddenKey = error.message.split(": ")[1];
+        log(`Change detected: Forbidden config key '${forbiddenKey}' in inline config.`);
+        vscode.window.showErrorMessage(
+          `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
+        );
+        // Prevent triggering stream/tool execution if there's an error
+        this.removeLastEmptyBlock("assistant");
+        this.removeLastEmptyBlock("tool_execute");
       } else {
         // Handle other errors
         log(`Error handling document change: ${error}`);
@@ -205,9 +269,10 @@ export class DocumentListener {
   private async executeToolFromPreviousBlock(): Promise<void> {
     await this.lock.acquire();
 
-    // Show tool execution status in the status bar
-    statusManager.showToolExecutionStatus();
-    log(`DocumentListener: Showing 'executing tool' status for tool_execute block`);
+    // Mark executing for this document and request status update
+    this.isExecutingTool = true;
+    requestStatusBarUpdate(this.document.uri.fsPath, "tool execution started");
+    log(`DocumentListener: Requested status update for tool execution`);
 
     try {
       const text = this.document.getText();
@@ -480,6 +545,10 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       await this.insertToolResult(formattedError, true); // Pass flag indicating this is already formatted
     } finally {
       this.lock.release();
+      this.isExecutingTool = false;
+      try { 
+        requestStatusBarUpdate(this.document.uri.fsPath, "tool execution finished");
+      } catch {}
     }
   }
 
@@ -732,20 +801,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       }
     }
     
-    // Get API key and validate config
-    let apiKey: string;
-    try {
-      const { getApiKey } = require("./config");
-      apiKey = getApiKey();
-      if (!apiKey) {
-        throw new Error("API key not configured");
-      }
-    } catch (error) {
-      const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}`;
-      log(message);
-      vscode.window.showErrorMessage(message);
-      return;
-    }
+    // API key will be resolved later based on per-file config
+    // Don't get global API key here as it might fail when per-file config is valid
     
     // Build final system prompt
     const { getDefaultSystemPrompt, generateToolCallingSystemPrompt } = require("./config");
@@ -759,9 +816,45 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       toolSystemPrompt
     ].filter(p => p && p.trim() !== '').join('\n\n');
     
-    // Create StreamingService
+    // Create StreamingService with per-file overrides if available
     const StreamingService = require("./streamer").StreamingService;
-    const streamingService = new StreamingService(apiKey, this.document, this.lock);
+
+    // Determine per-file config
+    const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
+
+    // Resolve API key and provider/baseUrl with per-file override if provided
+    let apiKeyToUse: string;
+    let providerOverride: string | undefined = undefined;
+    let baseUrlOverride: string | undefined = undefined;
+    try {
+      if (perFileConfigName) {
+        const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
+        apiKeyToUse = getApiKeyForConfig(perFileConfigName);
+        providerOverride = getProviderForConfig(perFileConfigName);
+        baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
+        statusManager.updateProvider(providerOverride);
+      } else {
+        const { getApiKey, getProvider, getBaseUrl } = require("./config");
+        apiKeyToUse = getApiKey();
+        providerOverride = getProvider();
+        baseUrlOverride = getBaseUrl();
+        statusManager.updateProvider(providerOverride);
+      }
+    } catch (e) {
+      const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+      log(errorMsg);
+      vscode.window.showErrorMessage(errorMsg);
+      return;
+    }
+
+    const streamingService = new StreamingService(
+      apiKeyToUse as string,
+      this.document,
+      this.lock,
+      providerOverride,
+      baseUrlOverride,
+      perFileConfigName,
+    );
     
     // Create a streamer state that will resume in the existing assistant block
     const messageIndex = updatedMessages.length - 1;
@@ -786,6 +879,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       })
       .finally(() => {
         log(`Resume streamer ${messageIndex} promise finally block reached.`);
+        try { 
+          requestStatusBarUpdate(this.document.uri.fsPath, "resume streaming finished");
+        } catch {}
       });
   }
 
@@ -803,26 +899,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     log("Acquired streaming lock.");
 
     try {
-      // Config validation (as per current structure)
-      let apiKey: string | undefined;
-      try {
-        // Keep the require here if that's the current pattern
-        const { getApiKey, getProvider } = require("./config");
-        apiKey = getApiKey();
-        // const provider = getProvider(); // Provider not explicitly used later in this snippet's logic
-        if (!apiKey) {
-          throw new Error("API key not configured");
-        }
-      } catch (error) {
-        const message = `Configuration error: ${error instanceof Error ? error.message : String(error)}. Please configure an API...`; // Shortened message
-        log(message);
-        vscode.window.showErrorMessage(message);
-        this.removeLastEmptyBlock("assistant"); // Clean up trigger
-        return;
-      }
-
       const text = this.document.getText();
-      // **Parse document using the updated parser**
+      // Parse document to read per-file configuration preamble first
       const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
 
       // **Handle Image in System Block Error**
@@ -835,8 +913,27 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       // Extract messages and custom system prompt
       const messages: readonly MessageParam[] = parseResult.messages;
-      // const customSystemPrompt: string =; // Removed incomplete duplicate line
-      const customSystemPrompt: string = parseResult.systemPrompt; // Keep correct line
+
+      // Determine per-file config (selectedConfig) if present
+      const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
+      const customSystemPrompt: string = parseResult.systemPrompt;
+
+      // Resolve API key using per-file config if present, else global
+      let apiKeyToUse: string | undefined;
+      try {
+        const { getApiKeyForConfig, getApiKey } = require("./config");
+        apiKeyToUse = perFileConfigName ? getApiKeyForConfig(perFileConfigName) : getApiKey();
+      } catch (e) {
+        apiKeyToUse = undefined;
+      }
+      if (!apiKeyToUse) {
+        const which = perFileConfigName ? `for config "${perFileConfigName}"` : "in settings";
+        const message = `Configuration error: API key missing ${which}.`;
+        log(message);
+        vscode.window.showErrorMessage(message);
+        this.removeLastEmptyBlock("assistant");
+        return;
+      }
 
       log(`Parsed ${messages.length} messages. Custom system prompt length: ${customSystemPrompt.length}`);
 
@@ -880,11 +977,38 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         return;
       }
 
-      // Create StreamingService (ensure constructor matches required args: apiKey, document, lock)
+      // Resolve provider/baseUrl with per-file override if provided
+      let providerOverride: string | undefined = undefined;
+      let baseUrlOverride: string | undefined = undefined;
+      try {
+        if (perFileConfigName) {
+          const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
+          apiKeyToUse = getApiKeyForConfig(perFileConfigName);
+          providerOverride = getProviderForConfig(perFileConfigName);
+          baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
+          statusManager.updateProvider(providerOverride);
+        } else {
+          // fall back to currently selected provider
+          const { getProvider, getBaseUrl } = require("./config");
+          providerOverride = getProvider();
+          baseUrlOverride = getBaseUrl();
+          statusManager.updateProvider(providerOverride);
+        }
+      } catch (e) {
+        const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+        log(errorMsg);
+        vscode.window.showErrorMessage(errorMsg);
+        this.removeLastEmptyBlock("assistant");
+        return;
+      }
+
       const streamingService = new StreamingService(
-        apiKey, // Pass the validated API key
+        apiKeyToUse as string, // Per-file or global API key
         this.document,
         this.lock,
+        providerOverride,
+        baseUrlOverride,
+        perFileConfigName,
       );
 
       // Create streamer state
@@ -899,18 +1023,23 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       this.streamers.set(messageIndex, streamer);
       log(`Created new streamer for message index ${messageIndex}.`);
+      // Update status bar to reflect new active streamer count/provider
+      try { 
+        requestStatusBarUpdate(this.document.uri.fsPath, "new streamer created");
+      } catch {}
 
       // **Start streaming in background, passing the FINAL system prompt**
       streamingService
         .streamResponse(messages, streamer, finalSystemPrompt) // Pass the combined prompt
         .catch((err) => {
           log(`Streaming error for index ${messageIndex}: ${err}`);
-          // State management (isActive = false) should happen within StreamingService or cancel
-          // streamer.isActive = false; // Avoid setting state directly here if service handles it
         })
         .finally(() => {
-            log(`Streamer ${messageIndex} promise finally block reached.`);
-             // Consider if map cleanup is needed here or handled by the service/cancel logic
+          log(`Streamer ${messageIndex} promise finally block reached.`);
+          // Refresh status bar when stream ends
+          try { 
+            requestStatusBarUpdate(this.document.uri.fsPath, "start streaming finished");
+          } catch {}
         });
 
     } catch (error) {
