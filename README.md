@@ -116,6 +116,7 @@ Access these settings through VS Code's settings UI or settings.json:
 - `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
+- `chatmd.reasoningEffort`: Control reasoning depth (minimal, low, medium, high)
 
 ### Tool Execution
 
@@ -263,12 +264,38 @@ vscode json settings
   },
   "chatmd.selectedConfig": "gemini-2.5pro",
   "chatmd.maxTokens": 8000,
-  "chatmd.maxThinkingTokens": 16000
+  "chatmd.maxThinkingTokens": 16000,
+  "chatmd.reasoningEffort": "medium"
 ```
 
 Note: `maxTokens` (default: 8000) controls the maximum number of tokens generated in model responses.
 For OpenAI O-series models (like o1, o2) that require `max_completion_tokens` instead of `max_tokens`, 
 the extension automatically detects them and uses `maxThinkingTokens` (default: 16000) as additional thinking tokens.
+
+### Reasoning Effort Configuration
+
+You can now control the reasoning effort/thinking tokens for both OpenAI and Anthropic models:
+
+```json
+{
+  "chatmd.reasoningEffort": "medium"  // minimal, low, medium, high
+}
+```
+
+**For OpenAI models** (GPT-5, o3, o1 series):
+- Sets the `reasoning_effort` parameter directly in the API call
+- Controls how much internal thinking the model does before responding
+
+**For Anthropic models** (Claude 3.7+):  
+- If `maxThinkingTokens` is explicitly configured (non-default value), uses that
+- If `reasoningEffort` is configured, calculates thinking token budget automatically
+- If neither is set, lets Anthropic handle thinking tokens automatically
+
+**Reasoning Effort Levels:**
+- `minimal`: Very fast, minimal thinking (~10% of max_tokens for thinking)
+- `low`: Fast with some thinking (~20% of max_tokens for thinking) 
+- `medium`: Balanced thinking and speed (~50% of max_tokens for thinking)
+- `high`: Deep thinking, slower responses (~80% of max_tokens for thinking)
 ## License
 
 MIT License - see the LICENSE file for details.
