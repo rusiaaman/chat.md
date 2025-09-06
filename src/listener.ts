@@ -18,7 +18,7 @@ import {
 } from "./config";
 import * as path from "path";
 import * as fs from "fs"; // Keep fs for file operations
-import { log, mcpClientManager, statusManager, updateStreamingStatusBar } from "./extension"; // Import statusManager and updater
+import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
 import {
@@ -177,7 +177,7 @@ export class DocumentListener {
 
         // Update status bar with file-specific provider/config hover info
         try {
-          updateStreamingStatusBar();
+          requestStatusBarUpdate(this.document.uri.fsPath, "document changed");
         } catch (e) {
           log(`Failed to update status bar after parse: ${e}`);
         }
@@ -254,10 +254,10 @@ export class DocumentListener {
   private async executeToolFromPreviousBlock(): Promise<void> {
     await this.lock.acquire();
 
-    // Mark executing for this document and show status
+    // Mark executing for this document and request status update
     this.isExecutingTool = true;
-    statusManager.showToolExecutionStatus();
-    log(`DocumentListener: Showing 'executing tool' status for tool_execute block`);
+    requestStatusBarUpdate(this.document.uri.fsPath, "tool execution started");
+    log(`DocumentListener: Requested status update for tool execution`);
 
     try {
       const text = this.document.getText();
@@ -531,7 +531,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     } finally {
       this.lock.release();
       this.isExecutingTool = false;
-      try { updateStreamingStatusBar(); } catch {}
+      try { 
+        requestStatusBarUpdate(this.document.uri.fsPath, "tool execution finished");
+      } catch {}
     }
   }
 
@@ -869,7 +871,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       })
       .finally(() => {
         log(`Resume streamer ${messageIndex} promise finally block reached.`);
-        try { updateStreamingStatusBar(); } catch {}
+        try { 
+          requestStatusBarUpdate(this.document.uri.fsPath, "resume streaming finished");
+        } catch {}
       });
   }
 
@@ -1008,7 +1012,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       this.streamers.set(messageIndex, streamer);
       log(`Created new streamer for message index ${messageIndex}.`);
       // Update status bar to reflect new active streamer count/provider
-      try { updateStreamingStatusBar(); } catch {}
+      try { 
+        requestStatusBarUpdate(this.document.uri.fsPath, "new streamer created");
+      } catch {}
 
       // **Start streaming in background, passing the FINAL system prompt**
       streamingService
@@ -1019,7 +1025,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         .finally(() => {
           log(`Streamer ${messageIndex} promise finally block reached.`);
           // Refresh status bar when stream ends
-          try { updateStreamingStatusBar(); } catch {}
+          try { 
+            requestStatusBarUpdate(this.document.uri.fsPath, "start streaming finished");
+          } catch {}
         });
 
     } catch (error) {

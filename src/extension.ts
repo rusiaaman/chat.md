@@ -65,7 +65,7 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
     try {
       await setSelectedConfig(targetConfigName);
       statusManager.updateConfigName(targetConfigName);
-      updateStreamingStatusBar(); // Refresh the status bar display
+      onActiveFileChanged(); // Refresh the status bar display
       vscode.window.showInformationMessage(
         `Switched to API config: "${targetConfigName}"`, // Provide feedback
       );
@@ -91,15 +91,50 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
 }
 
 /**
- * Updates the streaming status bar based on active document and streaming state
+ * Requests a status bar update for a specific file path
+ * Invariant 1: Any process that updates status bar should hold the "filepath" as a key
+ * Invariant 2: The process only updates status bar if current open tab matches the "filepath" key
  */
-export function updateStreamingStatusBar(): void {
+export function requestStatusBarUpdate(requestingFilePath: string, reason: string): void {
   const activeEditor = vscode.window.activeTextEditor;
+  const currentActiveFilePath = activeEditor?.document.uri.fsPath;
+  
+  log(`Status update requested by ${path.basename(requestingFilePath)}: ${reason}`);
+  
+  // Always update the total count regardless of which file is requesting
+  updateTotalStreamerCount();
+  
+  // Only update the visual status if the requesting file is the active tab
+  if (!currentActiveFilePath || currentActiveFilePath !== requestingFilePath) {
+    log(`Status update ignored - requesting file (${path.basename(requestingFilePath)}) is not the active tab (${currentActiveFilePath ? path.basename(currentActiveFilePath) : 'none'})`);
+    return;
+  }
+  
+  log(`Status update accepted for active file: ${path.basename(requestingFilePath)}`);
+  updateStreamingStatusBarForActiveFile();
+}
 
-  // 0) Force reset status manager to clear any stale state
-  statusManager.forceResetStatus();
+/**
+ * Force refresh the status bar when switching files
+ * Invariant 3: On switching the filepath the status bar refresh is triggered
+ */
+export function onActiveFileChanged(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+  const currentActiveFilePath = activeEditor?.document.uri.fsPath;
+  
+  if (currentActiveFilePath) {
+    log(`Active file changed to: ${path.basename(currentActiveFilePath)}`);
+    requestStatusBarUpdate(currentActiveFilePath, "active file changed");
+  } else {
+    log(`No active file - updating with global state`);
+    updateStreamingStatusBarForActiveFile();
+  }
+}
 
-  // 1) Compute total number of active streamers across all documents
+/**
+ * Update just the total streamer count across all documents
+ */
+function updateTotalStreamerCount(): void {
   let totalAlive = 0;
   for (const listener of documentListenerInstances.values()) {
     try {
@@ -109,8 +144,24 @@ export function updateStreamingStatusBar(): void {
     }
   }
   statusManager.updateTotalStreamersAlive(totalAlive);
+  log(`Updated total streamer count: ${totalAlive}`);
+}
 
-  // 2) Determine provider/config for the active .chat.md file (file-specific)
+/**
+ * Updates the streaming status bar based on active document and streaming state
+ * This is the internal implementation that does the actual status bar update
+ */
+function updateStreamingStatusBarForActiveFile(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+
+  // Force reset status manager to clear any stale state
+  statusManager.forceResetStatus();
+
+  // Update total count
+  updateTotalStreamerCount();
+  const totalAlive = statusManager.getTotalStreamersAlive();
+
+  // Determine provider/config for the active .chat.md file (file-specific)
   let providerForFile: string | undefined;
   let configNameForFile: string | undefined;
 
@@ -150,18 +201,17 @@ export function updateStreamingStatusBar(): void {
 
   statusManager.updateProvider(providerForFile);
 
-  // 3) Decide status per current chat (chat-specific)
-  const activeEditorNow = vscode.window.activeTextEditor;
+  // Decide status per current chat (chat-specific)
   let currentDocHasStreaming = false;
   let currentDocIsExecuting = false;
   let currentDocFileName = "none";
 
-  if (activeEditorNow && activeEditorNow.document.fileName.endsWith(".chat.md")) {
-    currentDocFileName = path.basename(activeEditorNow.document.fileName);
-    const streamer = getActiveStreamerForDocument(activeEditorNow.document);
+  if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+    currentDocFileName = path.basename(activeEditor.document.fileName);
+    const streamer = getActiveStreamerForDocument(activeEditor.document);
     currentDocHasStreaming = !!(streamer && streamer.isActive);
 
-    const listener = getDocumentListenerForDocument(activeEditorNow.document);
+    const listener = getDocumentListenerForDocument(activeEditor.document);
     currentDocIsExecuting = !!(listener && listener.getIsExecuting && listener.getIsExecuting());
     
     log(`Status check for ${currentDocFileName}: streaming=${currentDocHasStreaming}, executing=${currentDocIsExecuting}, totalAlive=${totalAlive}`);
@@ -185,6 +235,19 @@ export function updateStreamingStatusBar(): void {
     // Pure idle
     log(`Showing pure idle for ${currentDocFileName}`);
     statusManager.hideStreamingStatus();
+  }
+}
+
+/**
+ * Legacy function for backward compatibility - now routes through the proper system
+ * @deprecated Use requestStatusBarUpdate instead
+ */
+export function updateStreamingStatusBar(): void {
+  const activeEditor = vscode.window.activeTextEditor;
+  if (activeEditor) {
+    requestStatusBarUpdate(activeEditor.document.uri.fsPath, "legacy updateStreamingStatusBar call");
+  } else {
+    updateStreamingStatusBarForActiveFile();
   }
 }
 
@@ -324,18 +387,19 @@ export function activate(contextParam: vscode.ExtensionContext) {
   }
 
   // Register events for updating the status bar
+  // Invariant 3: On switching the filepath the status bar refresh is triggered
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
       log(`Active editor changed to: ${editor ? path.basename(editor.document.fileName) : 'none'}`);
       // Add a small delay to ensure the editor change is fully processed
       setTimeout(() => {
-        updateStreamingStatusBar();
+        onActiveFileChanged();
       }, 50);
     }),
   );
 
   // Update status bar initially
-  updateStreamingStatusBar();
+  onActiveFileChanged();
 
   // Listen for newly opened documents
   context.subscriptions.push(
@@ -404,7 +468,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
           newConfigName = getSelectedConfigName();
         }
         statusManager.updateConfigName(newConfigName); // Assuming statusManager is accessible
-        updateStreamingStatusBar(); // Assuming this function exists and updates the display
+        onActiveFileChanged(); // Updates the display
       }
 
       // 4. Handle MCP server configuration changes (keep existing logic)
@@ -488,7 +552,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         if (streamer && streamer.isActive && streamer.cancel) {
           streamer.cancel();
           vscode.window.showInformationMessage("chat.md streaming cancelled");
-          updateStreamingStatusBar();
+          onActiveFileChanged();
         }
       }
     }),
@@ -846,7 +910,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
           );
           streamer.cancel();
           vscode.window.showInformationMessage("chat.md streaming cancelled");
-          updateStreamingStatusBar(); // Update status bar after cancelling
+          onActiveFileChanged(); // Update status bar after cancelling
           streamerCancelled = true;
         }
       }
@@ -1185,7 +1249,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         log(`Error updating .chat.md preamble after config selection: ${e}`);
       }
 
-      updateStreamingStatusBar(); // Refresh status bar (provider/config now file-specific)
+      onActiveFileChanged(); // Refresh status bar (provider/config now file-specific)
     }),
 
     vscode.commands.registerCommand("filechat.removeApiConfig", async () => {

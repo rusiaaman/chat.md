@@ -77,6 +77,13 @@ export class StatusManager {
   }
 
   /**
+   * Gets the current total streamers alive count
+   */
+  public getTotalStreamersAlive(): number {
+    return this.totalStreamersAlive;
+  }
+
+  /**
    * Clears any running animation interval.
    */
   private clearAnimation(): void {

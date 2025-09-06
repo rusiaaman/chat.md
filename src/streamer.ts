@@ -4,7 +4,7 @@ import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
-import { log, statusManager } from "./extension";
+import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
@@ -74,7 +74,7 @@ export class StreamingService {
       streamer.isActive = false;
       
       // Immediately hide streaming status
-      statusManager.hideStreamingStatus();
+      requestStatusBarUpdate(this.document.uri.fsPath, "streaming cancelled");
       
       // Notify user that cancellation request was processed
       vscode.window.showInformationMessage("Streaming cancellation initiated");
@@ -165,7 +165,8 @@ export class StreamingService {
           log(
             `Starting to stream response for ${messages.length} messages${retryAttempt > 0 ? ` (retry ${retryAttempt})` : ""}`,
           );
-          statusManager.showStreamingStatus();
+          // Invariant 4: On any streamer status update the status bar refresh is triggered
+          requestStatusBarUpdate(this.document.uri.fsPath, "streaming started");
 
           // Resolve model name (allow per-file override)
           const { getModelName, getModelNameForConfig } = require("./config");
@@ -261,7 +262,7 @@ export class StreamingService {
                   const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
                   
                   // Always show the status bar when a tool call is detected
-                  statusManager.showToolExecutionStatus();
+                  requestStatusBarUpdate(this.document.uri.fsPath, "tool execution detected");
                   log(`Showing 'executing tool' status for detected tool "${toolName}"`);
                   
                   // All tools are always auto-executed since the feature to disable auto-execution has been removed
@@ -378,7 +379,7 @@ export class StreamingService {
                         // The tool_execute block has been added, but we need to make sure the status
                         // stays visible until the DocumentListener picks up the change and executes the tool
                         log(`Ensuring tool execution status remains visible for manual execution`);
-                        statusManager.showToolExecutionStatus();
+                        requestStatusBarUpdate(this.document.uri.fsPath, "tool auto-execution started");
 
                         // Mark streamer as inactive BEFORE auto-save to prevent conflicts
                         streamer.isActive = false;
@@ -416,7 +417,7 @@ export class StreamingService {
                           `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
                         );
                         // Since adding the tool_execute block failed, hide the status
-                        statusManager.hideStreamingStatus();
+                        requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
                       }
                     } else {
                       log("Could not find position to insert tool_execute block");
@@ -759,7 +760,7 @@ export class StreamingService {
         // Only hide streaming status if we're NOT handling a tool call
         if (!streamer.isHandlingToolCall) {
           log(`Streaming completed normally, restoring status to idle`);
-          statusManager.hideStreamingStatus();
+          requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished with error");
         } else {
           log(`Streaming completed due to tool call detection, keeping 'executing tool' status visible`);
         }
