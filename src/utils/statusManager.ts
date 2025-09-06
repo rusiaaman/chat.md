@@ -175,7 +175,10 @@ export class StatusManager {
    */
   public hideStreamingStatus(): void {
     this.clearAnimation();
+    // Force reset the current status to ensure clean state
+    this.currentStatus = "idle";
     this.setIdleStatus();
+    log(`Status manager: forced reset to idle`);
   }
 
   /**
@@ -191,6 +194,18 @@ export class StatusManager {
     this.streamingStatusItem.command = "filechat.selectApiConfig";
     this.streamingStatusItem.backgroundColor = new vscode.ThemeColor("statusBarItem.remoteBackground");
     log(`Changed to idle-with-alive status (Alive: ${totalStreamers}, Config: ${configText})`);
+  }
+
+  /**
+   * Force reset all status state - used when switching between chats
+   */
+  public forceResetStatus(): void {
+    log(`Status manager: forcing complete reset`);
+    this.clearAnimation();
+    this.currentStatus = "idle";
+    // Clear any background colors or commands that might be stuck
+    this.streamingStatusItem.backgroundColor = undefined;
+    this.streamingStatusItem.command = "filechat.selectApiConfig";
   }
 
   /**

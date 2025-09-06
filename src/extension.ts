@@ -96,6 +96,9 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
 export function updateStreamingStatusBar(): void {
   const activeEditor = vscode.window.activeTextEditor;
 
+  // 0) Force reset status manager to clear any stale state
+  statusManager.forceResetStatus();
+
   // 1) Compute total number of active streamers across all documents
   let totalAlive = 0;
   for (const listener of documentListenerInstances.values()) {
@@ -151,26 +154,36 @@ export function updateStreamingStatusBar(): void {
   const activeEditorNow = vscode.window.activeTextEditor;
   let currentDocHasStreaming = false;
   let currentDocIsExecuting = false;
+  let currentDocFileName = "none";
 
   if (activeEditorNow && activeEditorNow.document.fileName.endsWith(".chat.md")) {
+    currentDocFileName = path.basename(activeEditorNow.document.fileName);
     const streamer = getActiveStreamerForDocument(activeEditorNow.document);
     currentDocHasStreaming = !!(streamer && streamer.isActive);
 
     const listener = getDocumentListenerForDocument(activeEditorNow.document);
     currentDocIsExecuting = !!(listener && listener.getIsExecuting && listener.getIsExecuting());
+    
+    log(`Status check for ${currentDocFileName}: streaming=${currentDocHasStreaming}, executing=${currentDocIsExecuting}, totalAlive=${totalAlive}`);
+  } else {
+    log(`Status check: not a chat file or no active editor. totalAlive=${totalAlive}`);
   }
 
   if (currentDocIsExecuting) {
     // Executing tool for this chat only
+    log(`Showing tool execution status for ${currentDocFileName}`);
     statusManager.showToolExecutionStatus();
   } else if (currentDocHasStreaming) {
     // Streaming for this chat only (yellow)
+    log(`Showing streaming status for ${currentDocFileName} (${totalAlive} total)`);
     statusManager.showStreamingStatus(totalAlive);
   } else if (totalAlive > 0) {
     // Other chats streaming elsewhere: show purple idle with (n)
+    log(`Showing idle-with-alive for ${currentDocFileName} (${totalAlive} streaming elsewhere)`);
     statusManager.showIdleWithAlive(totalAlive);
   } else {
     // Pure idle
+    log(`Showing pure idle for ${currentDocFileName}`);
     statusManager.hideStreamingStatus();
   }
 }
@@ -312,8 +325,12 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
   // Register events for updating the status bar
   context.subscriptions.push(
-    vscode.window.onDidChangeActiveTextEditor(() => {
-      updateStreamingStatusBar();
+    vscode.window.onDidChangeActiveTextEditor((editor) => {
+      log(`Active editor changed to: ${editor ? path.basename(editor.document.fileName) : 'none'}`);
+      // Add a small delay to ensure the editor change is fully processed
+      setTimeout(() => {
+        updateStreamingStatusBar();
+      }, 50);
     }),
   );
 
