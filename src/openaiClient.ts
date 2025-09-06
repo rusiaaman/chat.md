@@ -84,8 +84,9 @@ export class OpenAIClient {
       modelName = modelName || "gpt-3.5-turbo";
 
       // Get the max tokens value from configuration
-      const { getMaxTokens, getMaxThinkingTokens } = require("./config");
+      const { getMaxTokens, getReasoningEffort } = require("./config");
       const maxTokens = getMaxTokens();
+      const reasoningEffort = getReasoningEffort();
       
       // Initial request body
       const requestBody: any = {
@@ -94,12 +95,15 @@ export class OpenAIClient {
         stream: true,
       };
 
-      // Use max_completion_tokens for all models (max_tokens is deprecated)
-      const maxThinkingTokens = getMaxThinkingTokens();
-      const maxCompletionTokens = maxTokens + maxThinkingTokens;
-      
-      log(`Using max_completion_tokens: ${maxCompletionTokens} (${maxTokens} + ${maxThinkingTokens} thinking tokens) for model ${modelName}`);
-      requestBody.max_completion_tokens = maxCompletionTokens;
+      // Add reasoning_effort parameter if configured
+      if (reasoningEffort) {
+        requestBody.reasoning_effort = reasoningEffort;
+        log(`Using reasoning_effort: ${reasoningEffort}`);
+      }
+
+      // Use max_completion_tokens for reasoning models (includes both thinking and response tokens)
+      log(`Using max_completion_tokens: ${maxTokens} for model ${modelName}`);
+      requestBody.max_completion_tokens = maxTokens;
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,

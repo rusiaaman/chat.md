@@ -211,6 +211,17 @@
           "description": "Automatically save the file when streaming completes successfully",
           "default": true,
           "scope": "application"
+        },
+        "chatmd.reasoningEffort": {
+          "type": "string",
+          "enum": [
+            "minimal",
+            "low", 
+            "medium",
+            "high"
+          ],
+          "description": "Reasoning effort level for LLM responses. For OpenAI: controls reasoning_effort parameter. For Anthropic: used to calculate thinking token budget if maxThinkingTokens is not set.",
+          "scope": "application"
         }
       }
     },

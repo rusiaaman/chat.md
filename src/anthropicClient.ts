@@ -45,13 +45,43 @@ export class AnthropicClient {
       const systemPromptToUse =
         systemPrompt || generateToolCallingSystemPrompt();
 
+      // Get configuration values
+      const { getMaxTokens, getMaxThinkingTokens, getReasoningEffort, calculateThinkingTokensFromEffort } = require("./config");
+      const maxTokens = getMaxTokens();
+      const configuredThinkingTokens = getMaxThinkingTokens();
+      const reasoningEffort = getReasoningEffort();
+      
       const requestBody: any = {
         model: modelName,
         messages: formattedMessages,
         system: systemPromptToUse,
         stream: true,
-        max_tokens: 4000,
+        max_tokens: maxTokens,
       };
+
+      // Determine thinking token budget for Anthropic
+      let thinkingTokens;
+      
+      // If maxThinkingTokens is explicitly configured and not the default, use that
+      if (configuredThinkingTokens && configuredThinkingTokens !== 16000) {
+        thinkingTokens = configuredThinkingTokens;
+        log(`Using configured thinking tokens: ${thinkingTokens}`);
+      } 
+      // If reasoning effort is configured, calculate thinking tokens from it
+      else if (reasoningEffort) {
+        thinkingTokens = calculateThinkingTokensFromEffort(maxTokens, reasoningEffort);
+        log(`Using thinking tokens calculated from reasoning effort "${reasoningEffort}": ${thinkingTokens}`);
+      }
+      // Otherwise, don't set thinking tokens (let Anthropic handle it automatically)
+      else {
+        log("No thinking token configuration, letting Anthropic handle automatically");
+      }
+      
+      // Add thinking tokens parameter if we calculated one
+      if (thinkingTokens) {
+        requestBody.thinking = { max_tokens: thinkingTokens };
+        log(`Setting Anthropic thinking.max_tokens: ${thinkingTokens}`);
+      }
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,

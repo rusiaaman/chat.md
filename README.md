@@ -116,6 +116,7 @@ Access these settings through VS Code's settings UI or settings.json:
 - `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
+- `chatmd.reasoningEffort`: Control reasoning depth (minimal, low, medium, high)
 
 ### Tool Execution
 
@@ -263,12 +264,13 @@ vscode json settings
   },
   "chatmd.selectedConfig": "gemini-2.5pro",
   "chatmd.maxTokens": 8000,
-  "chatmd.maxThinkingTokens": 16000
+  "chatmd.maxThinkingTokens": 16000,
+  "chatmd.reasoningEffort": "medium"
 ```
 
-Note: `maxTokens` (default: 8000) controls the maximum number of tokens generated in model responses.
-For OpenAI O-series models (like o1, o2) that require `max_completion_tokens` instead of `max_tokens`, 
-the extension automatically detects them and uses `maxThinkingTokens` (default: 16000) as additional thinking tokens.
+Note: `maxTokens` (default: 8000) controls the maximum number of tokens for model responses.
+For OpenAI reasoning models (GPT-5, o3, o1 series), `maxTokens` is used as the total `max_completion_tokens` budget (includes both thinking and response tokens).
+For Anthropic models, `maxThinkingTokens` controls the thinking token budget separately, or can be calculated automatically from `reasoningEffort`.
 ## License
 
 MIT License - see the LICENSE file for details.
