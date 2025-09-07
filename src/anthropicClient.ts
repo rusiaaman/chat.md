@@ -25,6 +25,8 @@ export class AnthropicClient {
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
+    configName?: string,
+    fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
     log(`Starting API request with ${messages.length} messages`);
 
@@ -48,11 +50,11 @@ export class AnthropicClient {
       const systemPromptToUse =
         systemPrompt || generateToolCallingSystemPrompt();
 
-      // Get configuration values
+      // Get configuration values with proper precedence (file config > provider config > global config)
       const { getMaxTokens, getMaxThinkingTokens, getReasoningEffort, calculateThinkingTokensFromEffort } = require("./config");
-      const maxTokens = getMaxTokens();
-      const configuredThinkingTokens = getMaxThinkingTokens();
-      const reasoningEffort = getReasoningEffort();
+      const maxTokens = getMaxTokens(configName, fileConfig);
+      const configuredThinkingTokens = getMaxThinkingTokens(configName, fileConfig);
+      const reasoningEffort = getReasoningEffort(configName, fileConfig);
       
       const requestBody: any = {
         model: modelName,

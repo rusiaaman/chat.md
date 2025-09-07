@@ -159,10 +159,10 @@ export function parseDocument(
     const preamble = blocks[0];
     const cfg: Record<string, any> = {};
     
-    // ONLY selectedConfig is allowed in per-file configuration
+    // selectedConfig and the three token/reasoning parameters are allowed in per-file configuration
     // The four keys (type, apiKey, base_url, model_name) should come from the named config in global settings
     // apiConfigs should also NOT be inline - it belongs in global settings only
-    const allowedKeys = new Set(["selectedConfig"]);
+    const allowedKeys = new Set(["selectedConfig", "reasoningEffort", "maxTokens", "maxThinkingTokens"]);
     const explicitlyForbiddenKeys = new Set(["type", "apiKey", "base_url", "model_name", "apiConfigs"]);
     
     const lines = preamble.split(/\r?\n/);
@@ -196,9 +196,19 @@ export function parseDocument(
         value = value.slice(1, -1);
       }
       if (allowedKeys.has(key)) {
-        cfg[key] = value;
+        // Parse numeric values for token configurations
+        if (key === "maxTokens" || key === "maxThinkingTokens") {
+          const numValue = parseInt(value, 10);
+          if (!isNaN(numValue)) {
+            cfg[key] = numValue;
+          } else {
+            log(`Invalid numeric value for ${key}: ${value}, ignoring`);
+          }
+        } else {
+          cfg[key] = value;
+        }
       } else {
-        log(`Ignoring unsupported config key '${key}' in configuration block. Only 'selectedConfig' is supported.`);
+        log(`Ignoring unsupported config key '${key}' in configuration block. Only ${Array.from(allowedKeys).join(', ')} are supported.`);
       }
     }
     if (Object.keys(cfg).length > 0) {

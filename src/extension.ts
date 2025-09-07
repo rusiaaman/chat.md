@@ -1136,12 +1136,75 @@ export function activate(contextParam: vscode.ExtensionContext) {
         }
       }
 
+      // Ask if user wants to configure advanced parameters
+      const configureAdvanced = await vscode.window.showQuickPick(["Yes", "No"], {
+        placeHolder: "Configure advanced parameters (reasoning effort, token limits)?",
+        title: "Advanced Configuration",
+      });
+
+      let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
+      let maxTokens: number | undefined;
+      let maxThinkingTokens: number | undefined;
+
+      if (configureAdvanced === "Yes") {
+        // Configure reasoning effort
+        const effortOptions = [
+          { label: "Default (use global setting)", value: undefined },
+          { label: "Minimal", value: "minimal" as const },
+          { label: "Low", value: "low" as const },
+          { label: "Medium", value: "medium" as const },
+          { label: "High", value: "high" as const },
+        ];
+
+        const selectedEffort = await vscode.window.showQuickPick(effortOptions, {
+          placeHolder: "Select reasoning effort level",
+          title: "Configure Reasoning Effort",
+        });
+
+        if (selectedEffort) {
+          reasoningEffort = selectedEffort.value;
+        }
+
+        // Configure max tokens
+        const maxTokensInput = await vscode.window.showInputBox({
+          prompt: "Enter maximum tokens to generate (leave empty for global setting)",
+          value: existingConfig?.maxTokens?.toString() || "",
+          validateInput: (value) => {
+            if (!value || value.trim() === "") return null; // Empty is ok (use global)
+            const num = parseInt(value, 10);
+            return !isNaN(num) && num > 0 ? null : "Must be a positive number";
+          },
+        });
+
+        if (maxTokensInput && maxTokensInput.trim() !== "") {
+          maxTokens = parseInt(maxTokensInput, 10);
+        }
+
+        // Configure max thinking tokens
+        const maxThinkingTokensInput = await vscode.window.showInputBox({
+          prompt: "Enter maximum thinking tokens (leave empty for global setting)",
+          value: existingConfig?.maxThinkingTokens?.toString() || "",
+          validateInput: (value) => {
+            if (!value || value.trim() === "") return null; // Empty is ok (use global)
+            const num = parseInt(value, 10);
+            return !isNaN(num) && num > 0 ? null : "Must be a positive number";
+          },
+        });
+
+        if (maxThinkingTokensInput && maxThinkingTokensInput.trim() !== "") {
+          maxThinkingTokens = parseInt(maxThinkingTokensInput, 10);
+        }
+      }
+
       // Create and save the configuration
       const config: ApiConfig = {
         type: selectedProvider as "anthropic" | "openai",
         apiKey,
         model_name: modelName || undefined,
         base_url: baseUrl || undefined,
+        reasoningEffort,
+        maxTokens,
+        maxThinkingTokens,
       };
 
       await setApiConfig(configName, config);
@@ -1186,10 +1249,16 @@ export function activate(contextParam: vscode.ExtensionContext) {
       // Build items with description of each config
       const configItems = configNames.map((name) => {
         const config = configs[name];
+        const details = [];
+        if (config.base_url) details.push(`Base URL: ${config.base_url}`);
+        if (config.reasoningEffort) details.push(`Reasoning: ${config.reasoningEffort}`);
+        if (config.maxTokens) details.push(`Max tokens: ${config.maxTokens}`);
+        if (config.maxThinkingTokens) details.push(`Thinking tokens: ${config.maxThinkingTokens}`);
+        
         return {
           label: name,
           description: `${config.type} - ${config.model_name || "default model"}`,
-          detail: config.base_url ? `Base URL: ${config.base_url}` : undefined,
+          detail: details.length > 0 ? details.join(' | ') : undefined,
         };
       });
 
