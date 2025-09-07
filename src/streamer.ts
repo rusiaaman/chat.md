@@ -158,7 +158,8 @@ export class StreamingService {
     streamer: StreamerState,
     systemPrompt: string, // Added systemPrompt parameter
     currentRetryAttempt: number = 0, // Add parameter to track retry attempts across recursive calls
-    maxTokenRetryAttempt: number = 0 // Add parameter to track max token retries
+    maxTokenRetryAttempt: number = 0, // Add parameter to track max token retries
+    fileConfig?: Record<string, any> // Add optional file configuration parameter
   ): Promise<void> {
     // Flag to track if we need to restart due to max tokens
     let maxTokensReached = false;
@@ -202,6 +203,8 @@ export class StreamingService {
               this.document,
               systemPrompt,
               modelNameOverride,
+              this.configNameOverride,
+              fileConfig,
             );
           } else if (this.provider === "openai" && this.openaiClient) {
             stream = await this.openaiClient.streamCompletion(
@@ -209,6 +212,8 @@ export class StreamingService {
               this.document,
               systemPrompt,
               modelNameOverride,
+              this.configNameOverride,
+              fileConfig,
             );
           } else {
             throw new Error(
@@ -676,7 +681,8 @@ export class StreamingService {
                   streamer,
                   systemPrompt,
                   retryAttempt, // Pass the current retry count to maintain it across calls
-                  tokenRetryAttempt // Pass the token retry count
+                  tokenRetryAttempt, // Pass the token retry count
+                  fileConfig // Pass the file configuration
                 );
                 return; // If successful, exit this function
               } catch (retryError) {

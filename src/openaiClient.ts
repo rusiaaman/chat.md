@@ -56,6 +56,8 @@ export class OpenAIClient {
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
+    configName?: string,
+    fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
     log(`Starting OpenAI API request with ${messages.length} messages`);
 
@@ -86,10 +88,10 @@ export class OpenAIClient {
       // Use fallback if needed
       modelName = modelName || "gpt-3.5-turbo";
 
-      // Get the max tokens value from configuration
+      // Get configuration values with proper precedence (file config > provider config > global config)
       const { getMaxTokens, getReasoningEffort } = require("./config");
-      const maxTokens = getMaxTokens();
-      const reasoningEffort = getReasoningEffort();
+      const maxTokens = getMaxTokens(configName, fileConfig);
+      const reasoningEffort = getReasoningEffort(configName, fileConfig);
       
       // Initial request body
       const requestBody: any = {

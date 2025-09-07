@@ -10,6 +10,9 @@ export interface ApiConfig {
   apiKey: string;
   model_name?: string;
   base_url?: string;
+  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  maxTokens?: number;
+  maxThinkingTokens?: number;
 }
 
 /**
@@ -354,21 +357,60 @@ export function getBaseUrl(): string | undefined {
 /**
  * Gets the maximum number of thinking tokens to use
  * Used for Anthropic thinking parameter and OpenAI max_completion_tokens calculation
+ * @param configName Optional specific config name to check first
+ * @param fileConfig Optional file-specific configuration
  * @returns The number of thinking tokens to use (default: 16000)
  */
-export function getMaxThinkingTokens(): number {
-  // Get from configuration if available, otherwise use default
+export function getMaxThinkingTokens(configName?: string, fileConfig?: Record<string, any>): number {
+  // 1. First check file-specific config (highest priority)
+  if (fileConfig?.maxThinkingTokens !== undefined) {
+    log(`Using maxThinkingTokens from file config: ${fileConfig.maxThinkingTokens}`);
+    return fileConfig.maxThinkingTokens;
+  }
+
+  // 2. Then check provider-specific config
+  if (configName) {
+    const providerConfig = getConfigByName(configName);
+    if (providerConfig?.maxThinkingTokens !== undefined) {
+      log(`Using maxThinkingTokens from provider config '${configName}': ${providerConfig.maxThinkingTokens}`);
+      return providerConfig.maxThinkingTokens;
+    }
+  }
+
+  // 3. Finally check global config
   const config = vscode.workspace.getConfiguration("chatmd");
-  return config.get("maxThinkingTokens") || 16000; // Default to 16k tokens
+  const globalValue = config.get<number>("maxThinkingTokens") || 16000;
+  log(`Using maxThinkingTokens from global config: ${globalValue}`);
+  return globalValue;
 }
 
 /**
  * Gets the reasoning effort setting
+ * @param configName Optional specific config name to check first
+ * @param fileConfig Optional file-specific configuration
  * @returns The reasoning effort level (minimal, low, medium, high) or undefined if not set
  */
-export function getReasoningEffort(): "minimal" | "low" | "medium" | "high" | undefined {
+export function getReasoningEffort(configName?: string, fileConfig?: Record<string, any>): "minimal" | "low" | "medium" | "high" | undefined {
+  // 1. First check file-specific config (highest priority)
+  if (fileConfig?.reasoningEffort !== undefined) {
+    log(`Using reasoningEffort from file config: ${fileConfig.reasoningEffort}`);
+    return fileConfig.reasoningEffort;
+  }
+
+  // 2. Then check provider-specific config
+  if (configName) {
+    const providerConfig = getConfigByName(configName);
+    if (providerConfig?.reasoningEffort !== undefined) {
+      log(`Using reasoningEffort from provider config '${configName}': ${providerConfig.reasoningEffort}`);
+      return providerConfig.reasoningEffort;
+    }
+  }
+
+  // 3. Finally check global config
   const config = vscode.workspace.getConfiguration("chatmd");
-  return config.get("reasoningEffort");
+  const globalValue = config.get<"minimal" | "low" | "medium" | "high">("reasoningEffort");
+  log(`Using reasoningEffort from global config: ${globalValue}`);
+  return globalValue;
 }
 
 /**
@@ -403,12 +445,31 @@ export function calculateThinkingTokensFromEffort(
 /**
  * Gets the maximum number of tokens to generate
  * This is used as max_tokens for Anthropic models and as part of max_completion_tokens for OpenAI models
+ * @param configName Optional specific config name to check first
+ * @param fileConfig Optional file-specific configuration
  * @returns The number of max tokens to use (default: 8000)
  */
-export function getMaxTokens(): number {
-  // Get from configuration if available, otherwise use default
+export function getMaxTokens(configName?: string, fileConfig?: Record<string, any>): number {
+  // 1. First check file-specific config (highest priority)
+  if (fileConfig?.maxTokens !== undefined) {
+    log(`Using maxTokens from file config: ${fileConfig.maxTokens}`);
+    return fileConfig.maxTokens;
+  }
+
+  // 2. Then check provider-specific config
+  if (configName) {
+    const providerConfig = getConfigByName(configName);
+    if (providerConfig?.maxTokens !== undefined) {
+      log(`Using maxTokens from provider config '${configName}': ${providerConfig.maxTokens}`);
+      return providerConfig.maxTokens;
+    }
+  }
+
+  // 3. Finally check global config
   const config = vscode.workspace.getConfiguration("chatmd");
-  return config.get("maxTokens") || 8000; // Default to 8k tokens
+  const globalValue = config.get<number>("maxTokens") || 8000;
+  log(`Using maxTokens from global config: ${globalValue}`);
+  return globalValue;
 }
 
 /**

@@ -111,12 +111,33 @@ Optionally you can start a markdown preview side by side to get live markdown pr
 
 ## Configuration
 
-Access these settings through VS Code's settings UI or settings.json:
+chat.md supports a three-level configuration system with the following precedence (highest to lowest):
 
-- `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL)
+1. **File-specific configuration** - Set at the top of individual `.chat.md` files
+2. **Provider-specific configuration** - Set in VS Code settings for each API provider  
+3. **Global configuration** - Default VS Code settings
+
+### File-specific Configuration
+Configure parameters at the beginning of any `.chat.md` file:
+```
+selectedConfig="my-provider"
+reasoningEffort="high"
+maxTokens=4000
+maxThinkingTokens=20000
+
+# %% system
+Your system prompt here
+```
+
+### VS Code Settings
+Access these through VS Code's settings UI or settings.json:
+
+- `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL, plus optional reasoning/token settings)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
-- `chatmd.reasoningEffort`: Control reasoning depth (minimal, low, medium, high)
+- `chatmd.reasoningEffort`: Global reasoning depth (minimal, low, medium, high)
+- `chatmd.maxTokens`: Global maximum response tokens
+- `chatmd.maxThinkingTokens`: Global maximum thinking tokens
 
 ### Tool Execution
 
@@ -215,7 +236,10 @@ vscode json settings
       "type": "anthropic",
       "apiKey": "sk-ant-",
       "base_url": "",
-      "model_name": "claude-3-7-sonnet-latest"
+      "model_name": "claude-3-7-sonnet-latest",
+      "reasoningEffort": "high",
+      "maxTokens": 6000,
+      "maxThinkingTokens": 18000
     },
     "openrouter-qasar": {
       "type": "openai",
@@ -268,9 +292,11 @@ vscode json settings
   "chatmd.reasoningEffort": "medium"
 ```
 
-Note: `maxTokens` (default: 8000) controls the maximum number of tokens for model responses.
-For OpenAI reasoning models (GPT-5, o3, o1 series), `maxTokens` is used as the total `max_completion_tokens` budget (includes both thinking and response tokens).
-For Anthropic models, `maxThinkingTokens` controls the thinking token budget separately, or can be calculated automatically from `reasoningEffort`.
+**Configuration Notes:**
+- `maxTokens` (default: 8000) controls the maximum number of tokens for model responses
+- For OpenAI reasoning models (o1, o3 series), `maxTokens` is used as the total `max_completion_tokens` budget (includes both thinking and response tokens)  
+- For Anthropic models, `maxThinkingTokens` controls the thinking token budget separately, or can be calculated automatically from `reasoningEffort`
+- Provider-specific configurations override global settings, and file-specific configurations override both (see [CONFIGURATION.md](CONFIGURATION.md) for detailed precedence rules)
 ## License
 
 MIT License - see the LICENSE file for details.

@@ -111,7 +111,7 @@
         "chatmd.apiConfigs": {
           "type": "object",
           "description": "Dictionary of named API configurations",
-          "additionalProperties": {
+            "additionalProperties": {
             "type": "object",
             "properties": {
               "type": {
@@ -133,6 +133,24 @@
               "model_name": {
                 "type": "string",
                 "description": "Model name to use with the selected provider"
+              },
+              "reasoningEffort": {
+                "type": "string",
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "description": "Reasoning effort level for this provider configuration (overrides global setting)"
+              },
+              "maxTokens": {
+                "type": "number",
+                "description": "Maximum number of tokens to generate for this provider configuration (overrides global setting)"
+              },
+              "maxThinkingTokens": {
+                "type": "number",
+                "description": "Maximum number of thinking tokens for this provider configuration (overrides global setting)"
               }
             },
             "required": [

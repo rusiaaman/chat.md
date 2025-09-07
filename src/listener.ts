@@ -873,7 +873,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     
     // Start streaming, which will continue from where the last response left off
     streamingService
-      .streamResponse(updatedMessages, streamer, finalSystemPrompt)
+      .streamResponse(updatedMessages, streamer, finalSystemPrompt, 0, 0, (parseResult as any).fileConfig)
       .catch((err: any) => {
         log(`Resume streaming error for index ${messageIndex}: ${err}`);
       })
@@ -1028,9 +1028,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         requestStatusBarUpdate(this.document.uri.fsPath, "new streamer created");
       } catch {}
 
-      // **Start streaming in background, passing the FINAL system prompt**
+      // **Start streaming in background, passing the FINAL system prompt and file config**
       streamingService
-        .streamResponse(messages, streamer, finalSystemPrompt) // Pass the combined prompt
+        .streamResponse(messages, streamer, finalSystemPrompt, 0, 0, (parseResult as any).fileConfig) // Pass the combined prompt and file config
         .catch((err) => {
           log(`Streaming error for index ${messageIndex}: ${err}`);
         })
