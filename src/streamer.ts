@@ -82,6 +82,124 @@ export class StreamingService {
   }
 
   /**
+   * Creates a batching wrapper around a stream that collects tokens for a specified interval
+   * before emitting them as batches
+   */
+  private async* createBatchingWrapper(
+    stream: AsyncIterable<string[]>,
+    batchIntervalMs: number = 100
+  ): AsyncGenerator<string[], void, unknown> {
+    const tokenBatch: string[] = [];
+    let batchTimer: NodeJS.Timeout | null = null;
+    let isTimerActive = false;
+    
+    // Queue to store batches ready for emission
+    const batchQueue: string[][] = [];
+    let streamEnded = false;
+
+    const emitCurrentBatch = () => {
+      if (tokenBatch.length > 0) {
+        log(`Batching: queuing batch of ${tokenBatch.length} tokens`);
+        batchQueue.push([...tokenBatch]);
+        tokenBatch.length = 0; // Clear the batch
+      }
+    };
+
+    const startBatchTimer = () => {
+      if (isTimerActive) return;
+      
+      isTimerActive = true;
+      const timerTick = () => {
+        emitCurrentBatch();
+        
+        if (!streamEnded) {
+          batchTimer = setTimeout(timerTick, batchIntervalMs);
+        } else {
+          isTimerActive = false;
+          batchTimer = null;
+        }
+      };
+      
+      batchTimer = setTimeout(timerTick, batchIntervalMs);
+    };
+
+    // Start processing the stream asynchronously
+    const processStream = async () => {
+      try {
+        for await (const tokens of stream) {
+          if (tokens && tokens.length > 0) {
+            log(`Batching: received ${tokens.length} tokens`);
+            tokenBatch.push(...tokens);
+            
+            // Start timer on first tokens
+            if (!isTimerActive) {
+              startBatchTimer();
+            }
+          }
+        }
+      } catch (error) {
+        log(`Batching: stream processing error: ${error}`);
+      } finally {
+        log('Batching: stream ended');
+        streamEnded = true;
+        
+        // Clear timer and emit final batch
+        if (batchTimer) {
+          clearTimeout(batchTimer);
+          batchTimer = null;
+        }
+        isTimerActive = false;
+        
+        // Emit any remaining tokens
+        emitCurrentBatch();
+      }
+    };
+
+    // Start stream processing (don't await - let it run in background)
+    const streamPromise = processStream();
+
+    try {
+      // Keep emitting batches until stream is done and queue is empty
+      while (!streamEnded || batchQueue.length > 0 || tokenBatch.length > 0) {
+        // Check for queued batches first
+        if (batchQueue.length > 0) {
+          const batch = batchQueue.shift()!;
+          log(`Batching: yielding batch of ${batch.length} tokens`);
+          yield batch;
+          continue;
+        }
+        
+        // If stream ended and we have remaining tokens, emit them
+        if (streamEnded && tokenBatch.length > 0) {
+          log(`Batching: yielding final ${tokenBatch.length} tokens`);
+          const finalBatch = [...tokenBatch];
+          tokenBatch.length = 0;
+          yield finalBatch;
+          continue;
+        }
+        
+        // Wait a bit for more tokens or timer to fire
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      
+      log('Batching: all batches emitted, wrapper complete');
+      
+    } finally {
+      // Cleanup
+      if (batchTimer) {
+        clearTimeout(batchTimer);
+        batchTimer = null;
+      }
+      isTimerActive = false;
+      
+      // Wait for stream processing to complete
+      await streamPromise;
+      
+      log('Batching: cleanup complete');
+    }
+  }
+
+  /**
    * Cancels an active streaming response
    * This can be called by external components holding a reference to the streamer
    */
@@ -248,7 +366,10 @@ export class StreamingService {
 
           let tokenCount = 0;
 
-          for await (const tokens of stream) {
+          // Create a batching wrapper for the stream
+          const batchingStream = this.createBatchingWrapper(stream, 100); // 100ms batching interval
+
+          for await (const tokens of batchingStream) {
             // Check streamer status at the beginning of each token processing
             if (!streamer.isActive) {
               log("Streamer no longer active, stopping stream immediately");
@@ -257,7 +378,7 @@ export class StreamingService {
 
             if (tokens.length > 0) {
               tokenCount += tokens.length;
-              log(`Received ${tokens.length} tokens: "${tokens.join("")}"`);
+              log(`Received batched ${tokens.length} tokens: "${tokens.join("")}"`);
 
               // Log received tokens to the chat history file if available
               if (streamer.historyFilePath) {
