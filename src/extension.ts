@@ -1142,7 +1142,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         title: "Advanced Configuration",
       });
 
-      let reasoningEffort: "minimal" | "low" | "medium" | "high" | undefined;
+      let reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | undefined;
       let maxTokens: number | undefined;
       let maxThinkingTokens: number | undefined;
 
@@ -1150,6 +1150,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         // Configure reasoning effort
         const effortOptions = [
           { label: "Default (use global setting)", value: undefined },
+          { label: "None", value: "none" as const },
           { label: "Minimal", value: "minimal" as const },
           { label: "Low", value: "low" as const },
           { label: "Medium", value: "medium" as const },

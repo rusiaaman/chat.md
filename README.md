@@ -135,7 +135,7 @@ Access these through VS Code's settings UI or settings.json:
 - `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL, plus optional reasoning/token settings)
 - `chatmd.selectedConfig`: Active API configuration
 - `chatmd.mcpServers`: Configure MCP tool servers
-- `chatmd.reasoningEffort`: Global reasoning depth (minimal, low, medium, high)
+- `chatmd.reasoningEffort`: Global reasoning depth (none, minimal, low, medium, high)
 - `chatmd.maxTokens`: Global maximum response tokens
 - `chatmd.maxThinkingTokens`: Global maximum thinking tokens
 
@@ -237,7 +237,7 @@ vscode json settings
       "apiKey": "sk-ant-",
       "base_url": "",
       "model_name": "claude-3-7-sonnet-latest",
-      "reasoningEffort": "high",
+      "reasoningEffort": "medium",
       "maxTokens": 6000,
       "maxThinkingTokens": 18000
     },

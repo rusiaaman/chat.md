@@ -137,6 +137,7 @@
               "reasoningEffort": {
                 "type": "string",
                 "enum": [
+                  "none",
                   "minimal",
                   "low",
                   "medium",
@@ -233,6 +234,7 @@
         "chatmd.reasoningEffort": {
           "type": "string",
           "enum": [
+            "none",
             "minimal",
             "low", 
             "medium",

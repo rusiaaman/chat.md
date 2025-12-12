@@ -10,7 +10,7 @@ export interface ApiConfig {
   apiKey: string;
   model_name?: string;
   base_url?: string;
-  reasoningEffort?: "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   maxTokens?: number;
   maxThinkingTokens?: number;
 }
@@ -390,7 +390,7 @@ export function getMaxThinkingTokens(configName?: string, fileConfig?: Record<st
  * @param fileConfig Optional file-specific configuration
  * @returns The reasoning effort level (minimal, low, medium, high) or undefined if not set
  */
-export function getReasoningEffort(configName?: string, fileConfig?: Record<string, any>): "minimal" | "low" | "medium" | "high" | undefined {
+export function getReasoningEffort(configName?: string, fileConfig?: Record<string, any>): "none" | "minimal" | "low" | "medium" | "high" | undefined {
   // 1. First check file-specific config (highest priority)
   if (fileConfig?.reasoningEffort !== undefined) {
     log(`Using reasoningEffort from file config: ${fileConfig.reasoningEffort}`);
@@ -408,7 +408,7 @@ export function getReasoningEffort(configName?: string, fileConfig?: Record<stri
 
   // 3. Finally check global config
   const config = vscode.workspace.getConfiguration("chatmd");
-  const globalValue = config.get<"minimal" | "low" | "medium" | "high">("reasoningEffort");
+  const globalValue = config.get<"none" | "minimal" | "low" | "medium" | "high">("reasoningEffort");
   log(`Using reasoningEffort from global config: ${globalValue}`);
   return globalValue;
 }
@@ -422,10 +422,11 @@ export function getReasoningEffort(configName?: string, fileConfig?: Record<stri
  */
 export function calculateThinkingTokensFromEffort(
   maxTokens: number, 
-  reasoningEffort: "minimal" | "low" | "medium" | "high"
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high"
 ): number {
   // Use similar ratios as OpenRouter's approach
   const effortRatios = {
+    none: 0,       // No thinking tokens
     minimal: 0.1,  // Very minimal thinking
     low: 0.2,      // Low thinking
     medium: 0.5,   // Medium thinking (default)
