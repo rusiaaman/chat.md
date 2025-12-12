@@ -230,7 +230,7 @@ vscode json settings
       "type": "openai",
       "apiKey": "",
       "model_name": "gpt-5.2",
-      "reasoningEffort": "minimal"
+      "reasoningEffort": "none"
     },
     "gemini-2.5pro": {
       "type": "openai",
