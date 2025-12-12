@@ -226,6 +226,12 @@ chat.md breaks away from the artificial "chat" paradigm and acknowledges that AI
 vscode json settings
 ```json
   "chatmd.apiConfigs": {
+    "gpt-5.2": {
+      "type": "openai",
+      "apiKey": "",
+      "model_name": "gpt-5.2",
+      "reasoningEffort": "minimal"
+    },
     "gemini-2.5pro": {
       "type": "openai",
       "apiKey": "",
@@ -237,7 +243,6 @@ vscode json settings
       "apiKey": "sk-ant-",
       "base_url": "",
       "model_name": "claude-3-7-sonnet-latest",
-      "reasoningEffort": "medium",
       "maxTokens": 6000,
       "maxThinkingTokens": 18000
     },
