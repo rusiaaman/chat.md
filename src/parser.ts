@@ -277,10 +277,11 @@ export function parseDocument(
       // Tool execute blocks (results) are treated as user messages for history context
       if (content) {
         // Process tool_execute blocks to potentially inline file content from links
+        // and extract images as proper image content objects
         const processedContent = processToolResultContent(content, document);
         messages.push({
           role: "user", // Represent tool result as user message for context
-          content: [{ type: "text", value: processedContent }],
+          content: processedContent,
         });
       }
       // Empty tool_execute blocks are ignored here (handled by endIdx check)
@@ -639,15 +640,15 @@ export function findAssistantBlocks(
 }
 
 /**
- * Process tool result content - replacing markdown links with file content when appropriate
- * Specifically for <tool_result> blocks containing a single markdown link
+ * Process tool result content - extracting images and replacing markdown links with file content when appropriate
+ * Returns Content[] to properly handle both text and images
  */
 function processToolResultContent(
   content: string,
   document?: vscode.TextDocument,
-): string {
+): Content[] {
   if (!document) {
-    return content; // Can't resolve paths without document context
+    return [{ type: "text", value: content }];
   }
 
   // Check if this is a tool result block
@@ -655,17 +656,56 @@ function processToolResultContent(
     /<tool_result>([\s\S]*?)<\/tool_result>/,
   );
   if (!toolResultMatch) {
-    return content; // Not a tool result block
+    return [{ type: "text", value: content }];
   }
 
   const toolResultContent = toolResultMatch[1].trim();
 
-  // Look for a markdown link as the ONLY content inside the tool result tags
+  // Check for image markdown syntax: ![Tool generated image](path) or ![Tool generated image N](path)
+  const imageMarkdownRegex = /!\[Tool generated image( \d+)?\]\(([^)]+)\)/g;
+  const imageMatches = [...toolResultContent.matchAll(imageMarkdownRegex)];
+
+  // If we have images, process them as separate content objects
+  if (imageMatches.length > 0) {
+    const contentArray: Content[] = [];
+    let lastIndex = 0;
+
+    for (const match of imageMatches) {
+      const fullMatch = match[0];
+      const imagePath = match[2];
+      const matchIndex = match.index!;
+
+      // Add text before this image (if any)
+      if (matchIndex > lastIndex) {
+        const textBefore = toolResultContent.substring(lastIndex, matchIndex).trim();
+        if (textBefore) {
+          contentArray.push({ type: "text", value: textBefore });
+        }
+      }
+
+      // Add the image
+      contentArray.push({ type: "image", path: imagePath });
+      log(`Extracted image from tool result: ${imagePath}`);
+
+      lastIndex = matchIndex + fullMatch.length;
+    }
+
+    // Add any remaining text after the last image
+    if (lastIndex < toolResultContent.length) {
+      const textAfter = toolResultContent.substring(lastIndex).trim();
+      if (textAfter) {
+        contentArray.push({ type: "text", value: textAfter });
+      }
+    }
+
+    return contentArray;
+  }
+
+  // Look for a markdown link as the ONLY content inside the tool result tags (text file result)
   // First strip code fences if present
   const withoutCodeFences = toolResultContent.replace(
     /^```[\s\S]*?```$/g,
     (match) => {
-      // Extract content from within code fences
       const fenceMatch = match.match(/```(?:.*?)?\n([\s\S]*?)\n```/);
       return fenceMatch ? fenceMatch[1].trim() : match;
     },
@@ -676,7 +716,7 @@ function processToolResultContent(
   const linkMatch = linkOnlyContent.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
 
   if (!linkMatch) {
-    return content; // Not a single markdown link or other content exists
+    return [{ type: "text", value: content }];
   }
 
   const linkText = linkMatch[1];
@@ -684,7 +724,7 @@ function processToolResultContent(
 
   // Process both "Tool Result" and "MCP Prompt" links
   if (!linkText.startsWith("Tool Result") && !linkText.startsWith("MCP Prompt:")) {
-    return content;
+    return [{ type: "text", value: content }];
   }
 
   const linkType = linkText.startsWith("Tool Result") ? "tool result" : "MCP prompt";
@@ -695,28 +735,24 @@ function processToolResultContent(
 
   if (!fileExists(resolvedPath)) {
     log(`File not found: ${resolvedPath}`);
-    return content;
+    return [{ type: "text", value: content }];
   }
 
   const fileContent = readFileAsText(resolvedPath);
   if (!fileContent) {
     log(`Could not read file: ${resolvedPath}`);
-    return content;
+    return [{ type: "text", value: content }];
   }
 
   log(`Successfully loaded content from ${linkType} file: ${linkTarget}`);
 
-  // For tool results, they're wrapped in tool_result tags
-  if (linkText.startsWith("Tool Result")) {
-    return content.replace(
-      /<tool_result>[\s\S]*?<\/tool_result>/,
-      `<tool_result>\n${fileContent}\n</tool_result>`,
-    );
-  }
+  // Return the file content as text
+  const replacedContent = content.replace(
+    /<tool_result>[\s\S]*?<\/tool_result>/,
+    `<tool_result>\n${fileContent}\n</tool_result>`,
+  );
   
-  // For MCP prompts, we just replace the link with the content directly
-  // Since they're already in the user's document as regular text
-  return fileContent;
+  return [{ type: "text", value: replacedContent }];
 }
 
 /**
