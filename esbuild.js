@@ -95,13 +95,12 @@ async function build() {
       define: {
         'process.env.NODE_ENV': production ? '"production"' : '"development"'
       },
+      // Prefer CommonJS builds from packages that provide both ESM and CJS
+      mainFields: ['module', 'main'],
       // Tree shaking optimizations
       treeShaking: true,
-      // Optimize for size in production
-      ...(production && {
-        mangleProps: /^_/,  // Mangle private properties
-        drop: ['console', 'debugger'], // Remove console logs and debugger statements
-      }),
+      // Keep identifiers readable to avoid breaking third-party SDK internals
+      keepNames: true,
     });
 
     if (watch) {

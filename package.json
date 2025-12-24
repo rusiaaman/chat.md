@@ -111,7 +111,7 @@
         "chatmd.apiConfigs": {
           "type": "object",
           "description": "Dictionary of named API configurations",
-            "additionalProperties": {
+          "additionalProperties": {
             "type": "object",
             "properties": {
               "type": {
@@ -236,7 +236,7 @@
           "enum": [
             "none",
             "minimal",
-            "low", 
+            "low",
             "medium",
             "high"
           ],
@@ -312,7 +312,7 @@
     "@types/vscode": "^1.60.0",
     "@typescript-eslint/eslint-plugin": "^4.1.1",
     "@typescript-eslint/parser": "^4.1.1",
-    "esbuild": "^0.19.11",
+    "esbuild": "^0.27.2",
     "eslint": "^7.9.0",
     "glob": "^7.1.6",
     "patch-package": "^8.0.0",
