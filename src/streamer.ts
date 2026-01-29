@@ -96,6 +96,7 @@ export class StreamingService {
     // Queue to store batches ready for emission
     const batchQueue: string[][] = [];
     let streamEnded = false;
+    let streamError: Error | null = null; // Track errors from the stream
 
     const emitCurrentBatch = () => {
       if (tokenBatch.length > 0) {
@@ -139,6 +140,8 @@ export class StreamingService {
         }
       } catch (error) {
         log(`Batching: stream processing error: ${error}`);
+        // Store the error to be re-thrown after yielding remaining batches
+        streamError = error instanceof Error ? error : new Error(String(error));
       } finally {
         log('Batching: stream ended');
         streamEnded = true;
@@ -183,6 +186,13 @@ export class StreamingService {
       }
       
       log('Batching: all batches emitted, wrapper complete');
+      
+      // After all batches are emitted, re-throw any error that occurred during stream processing
+      // This ensures max_tokens errors and other important errors are propagated to the caller
+      if (streamError) {
+        log(`Batching: re-throwing stream error after all batches emitted: ${streamError.message}`);
+        throw streamError;
+      }
       
     } finally {
       // Cleanup
