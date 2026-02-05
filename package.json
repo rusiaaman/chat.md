@@ -2,7 +2,7 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files. Features include tool integration, auto-execution control, and customizable behavior.",
-  "version": "0.3.6",
+  "version": "0.3.7",
   "publisher": "AmanRusia",
   "license": "MIT",
   "icon": "./images/icon.png",
