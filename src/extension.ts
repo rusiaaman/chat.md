@@ -1501,17 +1501,6 @@ function setupDocumentListener(
 
     // Don't set up duplicates
     if (!documentListeners.has(key)) {
-      // Make sure the document is shown in an editor
-      // This helps ensure document edits can be applied
-      vscode.window.showTextDocument(document, { preview: false }).then(
-        () => {
-          log(`Document shown in editor: ${document.fileName}`);
-        },
-        (err: Error) => {
-          log(`Error showing document: ${err}`);
-        },
-      );
-
       const listener = new DocumentListener(document);
       const disposable = listener.startListening();
       documentListeners.set(key, disposable);
