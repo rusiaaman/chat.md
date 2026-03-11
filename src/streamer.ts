@@ -214,7 +214,7 @@ export class StreamingService {
    * This can be called by external components holding a reference to the streamer
    */
   public cancelStreaming(streamer: StreamerState): void {
-    if (streamer) {
+    if (streamer && streamer.isActive) {
       log("Explicitly cancelling active streamer");
       // Set to inactive regardless of current state to ensure cancellation works
       // during retries, waiting periods, or normal streaming
