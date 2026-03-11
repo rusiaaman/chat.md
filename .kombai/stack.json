@@ -1,0 +1,18 @@
+// Kombai Tech Stack Configuration
+// Each value must be a string or an array of strings.
+// Example: "Framework": "Vite" or "Project Type": ["React", "Vue"]
+{
+  "Project Type": "VSCode Extension",
+  "Language": "TypeScript",
+  "Build Tool": "esbuild",
+  "Server Runtime": "Node.js v14",
+  "Package Manager": "npm",
+  "Schema Validation": "Zod",
+  "component_indexes": [
+    {
+      "type": "local",
+      "path": "src",
+      "name": "src"
+    }
+  ]
+}

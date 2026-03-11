@@ -85,26 +85,31 @@ export class McpClientManager {
   private async initializeLazyServers(
     mcpServers: Record<string, McpServerConfig>,
   ): Promise<void> {
-    for (const [serverId, config] of Object.entries(mcpServers)) {
-      try {
-        log(`Initializing server ${serverId} in lazy mode - fetching tools and disconnecting`);
-        
-        // Connect temporarily
-        await this.connectServer(serverId, config);
-        
-        // Tools and prompts are already fetched in connectServer
-        log(`Server ${serverId}: fetched ${this.serverTools.get(serverId)?.size || 0} tools and ${this.serverPrompts.get(serverId)?.size || 0} prompts`);
-        
-        // Disconnect immediately to implement lazy loading
-        await this.disconnectServerKeepingToolInfo(serverId);
-        
-        log(`Server ${serverId} disconnected - will be started on first tool use`);
-      } catch (error) {
-        log(`Failed to initialize lazy server ${serverId}: ${error}`);
-        // Keep the server in not-started state for potential retry later
-        this.lazyServerStates.set(serverId, 'not-started');
-      }
-    }
+    const initPromises = Object.entries(mcpServers).map(
+      async ([serverId, config]) => {
+        try {
+          log(`Initializing server ${serverId} in lazy mode - fetching tools and disconnecting`);
+          
+          // Connect temporarily
+          await this.connectServer(serverId, config);
+          
+          // Tools and prompts are already fetched in connectServer
+          log(`Server ${serverId}: fetched ${this.serverTools.get(serverId)?.size || 0} tools and ${this.serverPrompts.get(serverId)?.size || 0} prompts`);
+          
+          // Disconnect immediately to implement lazy loading
+          await this.disconnectServerKeepingToolInfo(serverId);
+          
+          log(`Server ${serverId} disconnected - will be started on first tool use`);
+        } catch (error) {
+          log(`Failed to initialize lazy server ${serverId}: ${error}`);
+          // Keep the server in not-started state for potential retry later
+          this.lazyServerStates.set(serverId, 'not-started');
+        }
+      },
+    );
+    // Initialize all servers concurrently so one hanging/failing server
+    // does not block the others
+    await Promise.allSettled(initPromises);
   }
 
   /**
