@@ -44,8 +44,9 @@ export class McpClientManager {
   
   // Lazy loading state management
   private serverConfigs: Record<string, McpServerConfig> = {};
-  private lazyServerStates: Map<string, 'not-started' | 'connecting' | 'connected'> = new Map();
+  private lazyServerStates: Map<string, 'not-started' | 'connecting' | 'connected' | 'errored'> = new Map();
   private pendingConnections: Map<string, Promise<void>> = new Map();
+  private serverErrors: Map<string, string> = new Map(); // Store last error message per server
 
   // Initialize MCP clients from configuration with lazy loading
   public async initializeClients(
@@ -101,9 +102,15 @@ export class McpClientManager {
           
           log(`Server ${serverId} disconnected - will be started on first tool use`);
         } catch (error) {
-          log(`Failed to initialize lazy server ${serverId}: ${error}`);
-          // Keep the server in not-started state for potential retry later
-          this.lazyServerStates.set(serverId, 'not-started');
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log(`Failed to initialize lazy server ${serverId}: ${errorMsg}`);
+          // Mark the server as errored so the background refresh can retry it
+          this.lazyServerStates.set(serverId, 'errored');
+          this.serverErrors.set(serverId, errorMsg);
+          // Notify user so the failure isn't silent
+          vscode.window.showWarningMessage(
+            `MCP server "${serverId}" failed to load: ${errorMsg}. Will retry automatically.`,
+          );
         }
       },
     );
@@ -494,7 +501,7 @@ export class McpClientManager {
   }
 
   // Get all configured servers with their connection states
-  public getAllConfiguredServers(): Array<{id: string, state: 'not-started' | 'connecting' | 'connected'}> {
+  public getAllConfiguredServers(): Array<{id: string, state: 'not-started' | 'connecting' | 'connected' | 'errored'}> {
     return Object.keys(this.serverConfigs).map(serverId => ({
       id: serverId,
       state: this.lazyServerStates.get(serverId) || 'not-started'
@@ -520,8 +527,11 @@ export class McpClientManager {
       }
     }
     
-    if (state === 'not-started') {
-      // Start the connection
+    if (state === 'not-started' || state === 'errored') {
+      // Start the connection (or retry after error)
+      if (state === 'errored') {
+        log(`Retrying errored server ${serverId} on demand`);
+      }
       this.lazyServerStates.set(serverId, 'connecting');
       
       const connectionPromise = this.connectLazyServer(serverId);
@@ -530,10 +540,13 @@ export class McpClientManager {
       try {
         await connectionPromise;
         this.lazyServerStates.set(serverId, 'connected');
+        this.serverErrors.delete(serverId);
         log(`Server ${serverId} successfully connected on demand`);
       } catch (error) {
-        this.lazyServerStates.set(serverId, 'not-started');
-        log(`Failed to connect server ${serverId} on demand: ${error}`);
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        this.lazyServerStates.set(serverId, 'errored');
+        this.serverErrors.set(serverId, errorMsg);
+        log(`Failed to connect server ${serverId} on demand: ${errorMsg}`);
         throw error;
       } finally {
         this.pendingConnections.delete(serverId);
@@ -873,6 +886,32 @@ export class McpClientManager {
         } catch (error) {
           failCount++;
           log(`Failed to refresh tools/prompts for server ${serverId}: ${error}`);
+        }
+      }
+    }
+
+    // Retry errored servers in the background
+    for (const [serverId, state] of this.lazyServerStates.entries()) {
+      if (state === 'errored') {
+        log(`Background retry for errored server ${serverId}`);
+        try {
+          const config = this.serverConfigs[serverId];
+          if (!config) {
+            continue;
+          }
+          // Connect, fetch tools/prompts, then disconnect for lazy loading
+          await this.connectServer(serverId, config);
+          log(`Errored server ${serverId} recovered: fetched ${this.serverTools.get(serverId)?.size || 0} tools`);
+          await this.disconnectServerKeepingToolInfo(serverId);
+          this.serverErrors.delete(serverId);
+          vscode.window.showInformationMessage(
+            `MCP server "${serverId}" recovered successfully.`,
+          );
+        } catch (error) {
+          const errorMsg = error instanceof Error ? error.message : String(error);
+          log(`Background retry failed for errored server ${serverId}: ${errorMsg}`);
+          this.serverErrors.set(serverId, errorMsg);
+          // Stay in errored state, will retry on next refresh cycle
         }
       }
     }
@@ -1236,6 +1275,7 @@ export class McpClientManager {
     this.sseRetryCount.clear();
     this.lazyServerStates.clear();
     this.pendingConnections.clear();
+    this.serverErrors.clear();
     this.serverConfigs = {};
   }
 
@@ -1250,10 +1290,13 @@ export class McpClientManager {
       .filter(([_, state]) => state === 'connected').length;
     const lazyServers = Array.from(this.lazyServerStates.entries())
       .filter(([_, state]) => state === 'not-started').length;
+    const erroredServers = Array.from(this.lazyServerStates.entries())
+      .filter(([_, state]) => state === 'errored').length;
 
     lines.push(`Total configured MCP servers: ${totalConfiguredServers}`);
     lines.push(`Currently connected servers: ${connectedServers}`);
     lines.push(`Lazy (not yet started) servers: ${lazyServers}`);
+    lines.push(`Errored servers: ${erroredServers}`);
     lines.push(`Total registered tools: ${this.tools.size}`);
     lines.push(`Total registered prompts: ${this.prompts.size}`);
     lines.push("");
@@ -1271,6 +1314,12 @@ export class McpClientManager {
 
       lines.push(`Server: ${serverId}`);
       lines.push(`  State: ${state}`);
+      if (state === 'errored') {
+        const errorMsg = this.serverErrors.get(serverId);
+        if (errorMsg) {
+          lines.push(`  Last error: ${errorMsg}`);
+        }
+      }
       if (client) {
         lines.push(`  Transport type: ${transportType}`);
       }
