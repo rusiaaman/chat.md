@@ -1,6 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { Tool, Prompt } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
@@ -16,8 +17,15 @@ export interface McpServerConfig {
   command?: string;
   args?: string[];
 
-  // For SSE transport
+  // For SSE transport (legacy) or Streamable HTTP transport
   url?: string;
+
+  // Transport type for URL-based servers: "streamable-http", "sse", or "auto" (default)
+  // "auto" tries Streamable HTTP first, then falls back to SSE
+  transport?: "streamable-http" | "sse" | "auto";
+
+  // Custom headers to send with HTTP requests (Streamable HTTP only)
+  headers?: Record<string, string>;
 }
 
 export class McpClientManager {
@@ -199,8 +207,20 @@ export class McpClientManager {
     config1: McpServerConfig,
     config2: McpServerConfig,
   ): boolean {
-    // Compare URL (for SSE servers)
+    // Compare URL (for URL-based servers)
     if (config1.url !== config2.url) {
+      return false;
+    }
+
+    // Compare transport type
+    if ((config1.transport || "auto") !== (config2.transport || "auto")) {
+      return false;
+    }
+
+    // Compare custom headers
+    const headers1 = config1.headers || {};
+    const headers2 = config2.headers || {};
+    if (JSON.stringify(headers1) !== JSON.stringify(headers2)) {
       return false;
     }
 
@@ -269,31 +289,54 @@ export class McpClientManager {
         // Validate URL format
         const parsedUrl = new URL(config.url);
         log(
-          `Parsed SSE URL: ${parsedUrl.href} (protocol: ${parsedUrl.protocol}, host: ${parsedUrl.host}, path: ${parsedUrl.pathname})`,
+          `Parsed URL: ${parsedUrl.href} (protocol: ${parsedUrl.protocol}, host: ${parsedUrl.host}, path: ${parsedUrl.pathname})`,
         );
 
-        // SSE transport - pass the URL object, not string
-        log(
-          `Connecting to MCP server ${serverId} with SSE URL: ${parsedUrl.href}`,
-        );
-        transport = new SSEClientTransport(parsedUrl);
+        const transportMode = config.transport || "auto";
+        log(`Transport mode for ${serverId}: ${transportMode}`);
 
-        // Log transport details
-        log(`Created SSE transport for ${serverId}`);
-
-        // Set up reconnection logic for SSE with improved rate limit handling
-        this.setupSSEReconnection(
-          serverId,
-          config,
-          transport as SSEClientTransport,
-        );
+        if (transportMode === "streamable-http") {
+          // Explicitly use Streamable HTTP transport
+          transport = this.createStreamableHttpTransport(serverId, parsedUrl, config);
+        } else if (transportMode === "sse") {
+          // Explicitly use legacy SSE transport
+          transport = this.createSseTransport(serverId, parsedUrl, config);
+        } else {
+          // "auto" mode: try Streamable HTTP first, fall back to SSE
+          try {
+            log(`Auto mode: trying Streamable HTTP transport for ${serverId}`);
+            transport = this.createStreamableHttpTransport(serverId, parsedUrl, config);
+            
+            // Try to connect - if it fails, we'll fall back to SSE
+            const testClient = new Client(
+              { name: "filechat", version: "0.1.0" },
+              { capabilities: { tools: {}, prompts: {} } },
+            );
+            
+            try {
+              await testClient.connect(transport);
+              // Success! Close the test client and recreate transport for actual use
+              await testClient.close();
+              log(`Streamable HTTP transport works for ${serverId}, using it`);
+              // Recreate transport since the test client consumed it
+              transport = this.createStreamableHttpTransport(serverId, parsedUrl, config);
+            } catch (streamableError) {
+              log(`Streamable HTTP failed for ${serverId}: ${streamableError}. Falling back to SSE.`);
+              // Fall back to legacy SSE transport
+              transport = this.createSseTransport(serverId, parsedUrl, config);
+            }
+          } catch (error) {
+            log(`Error creating Streamable HTTP transport for ${serverId}, falling back to SSE: ${error}`);
+            transport = this.createSseTransport(serverId, parsedUrl, config);
+          }
+        }
       } catch (error) {
-        log(`Error creating SSE transport for server ${serverId}: ${error}`);
+        log(`Error creating transport for server ${serverId}: ${error}`);
         log(
           `Invalid URL format: "${config.url}". URLs must include protocol (http:// or https://)`,
         );
         throw new Error(
-          `Invalid URL format for SSE server ${serverId}: ${error instanceof Error ? error.message : String(error)}`,
+          `Invalid URL for server ${serverId}: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     } else if (config.command) {
@@ -669,6 +712,58 @@ export class McpClientManager {
 
     // If loop completes without finding the tool
     return `Error: Tool "${name}" not found on any server.`;
+  }
+
+  /**
+   * Creates a Streamable HTTP transport for a server
+   */
+  private createStreamableHttpTransport(
+    serverId: string,
+    parsedUrl: URL,
+    config: McpServerConfig,
+  ): StreamableHTTPClientTransport {
+    log(`Creating Streamable HTTP transport for ${serverId} at ${parsedUrl.href}`);
+    
+    const requestInit: RequestInit = {};
+    if (config.headers) {
+      requestInit.headers = config.headers;
+    }
+
+    const transport = new StreamableHTTPClientTransport(parsedUrl, {
+      requestInit: Object.keys(requestInit).length > 0 ? requestInit : undefined,
+    });
+
+    // Set up error and close handlers for reconnection
+    transport.onerror = (error) => {
+      log(`Streamable HTTP connection error for server ${serverId}: ${error}`);
+      this.attemptReconnect(serverId, config);
+    };
+
+    transport.onclose = () => {
+      log(`Streamable HTTP connection closed for server ${serverId}`);
+      // Don't auto-reconnect on close - the transport handles reconnection internally
+    };
+
+    log(`Created Streamable HTTP transport for ${serverId}`);
+    return transport;
+  }
+
+  /**
+   * Creates a legacy SSE transport for a server
+   */
+  private createSseTransport(
+    serverId: string,
+    parsedUrl: URL,
+    config: McpServerConfig,
+  ): SSEClientTransport {
+    log(`Creating SSE transport for ${serverId} at ${parsedUrl.href}`);
+    const transport = new SSEClientTransport(parsedUrl);
+
+    // Set up reconnection logic for SSE
+    this.setupSSEReconnection(serverId, config, transport);
+
+    log(`Created SSE transport for ${serverId}`);
+    return transport;
   }
 
   /**
@@ -1163,7 +1258,9 @@ export class McpClientManager {
       const state = this.lazyServerStates.get(serverId) || 'unknown';
       const client = this.clients.get(serverId);
       const transport = this.transports.get(serverId);
-      const transportType = transport instanceof StdioClientTransport ? "stdio" : "sse";
+      const transportType = transport instanceof StdioClientTransport ? "stdio" 
+        : transport instanceof StreamableHTTPClientTransport ? "streamable-http" 
+        : "sse";
       const toolCount = this.serverTools.get(serverId)?.size || 0;
       const promptCount = this.serverPrompts.get(serverId)?.size || 0;
 

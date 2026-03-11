@@ -186,7 +186,20 @@
               },
               "url": {
                 "type": "string",
-                "description": "URL of the SSE endpoint (for SSE transport)"
+                "description": "URL of the MCP endpoint (for Streamable HTTP or legacy SSE transport)"
+              },
+              "transport": {
+                "type": "string",
+                "enum": ["streamable-http", "sse", "auto"],
+                "description": "Transport type for URL-based servers: 'streamable-http' (new), 'sse' (legacy), or 'auto' (tries Streamable HTTP first, falls back to SSE). Default: 'auto'",
+                "default": "auto"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Custom HTTP headers to send with requests (Streamable HTTP only)"
               },
               "env": {
                 "type": "object",
