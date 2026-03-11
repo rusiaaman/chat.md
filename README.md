@@ -180,14 +180,52 @@ For local MCP servers running in the same environment as VS Code:
 }
 ```
 
-### Remote MCP Servers (SSE)
+### Remote MCP Servers (Streamable HTTP)
 
-For remote MCP servers accessible via HTTP/Server-Sent Events:
+chat.md supports the new **Streamable HTTP** transport from the [MCP spec 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http), which replaces the older HTTP+SSE transport. This is the recommended way to connect to remote MCP servers.
 
 ```json
 "chatmd.mcpServers": {
   "remote-mcp": {
-    "url": "http://localhost:3000/sse"
+    "url": "https://example.com/mcp",
+    "transport": "streamable-http"
+  }
+}
+```
+
+You can also pass custom HTTP headers (e.g. for authentication):
+
+```json
+"chatmd.mcpServers": {
+  "remote-mcp": {
+    "url": "https://example.com/mcp",
+    "transport": "streamable-http",
+    "headers": {
+      "Authorization": "Bearer your-token-here"
+    }
+  }
+}
+```
+
+#### Transport auto-detection
+
+By default, the `transport` field is `"auto"` — chat.md will try the new Streamable HTTP transport first, and automatically fall back to the legacy SSE transport if the server doesn't support it. You can explicitly set the transport to `"streamable-http"`, `"sse"`, or `"auto"`:
+
+| Value | Behavior |
+|-------|----------|
+| `"auto"` (default) | Tries Streamable HTTP first, falls back to SSE |
+| `"streamable-http"` | Uses only the new Streamable HTTP transport |
+| `"sse"` | Uses only the legacy SSE transport |
+
+### Remote MCP Servers (Legacy SSE)
+
+For older remote MCP servers that only support the deprecated HTTP+SSE transport:
+
+```json
+"chatmd.mcpServers": {
+  "remote-mcp": {
+    "url": "http://localhost:3000/sse",
+    "transport": "sse"
   }
 }
 ```
@@ -198,6 +236,7 @@ You can also add environment variables if needed:
 "chatmd.mcpServers": {
   "remote-mcp": {
     "url": "http://localhost:3000/sse",
+    "transport": "sse",
     "env": {
       "API_KEY": "your-api-key-here"
     }
@@ -205,7 +244,7 @@ You can also add environment variables if needed:
 }
 ```
 
-The AI will automatically discover available tools from both local and remote servers and know how to use them! Tool lists are refreshed automatically every 5 seconds to keep them up-to-date.
+The AI will automatically discover available tools from both local and remote servers and know how to use them! Tool lists are refreshed automatically every 5 seconds to keep them up-to-date. All MCP servers are initialized concurrently, so a slow or failing server won't block the others.
 
 ## The Philosophy
 
