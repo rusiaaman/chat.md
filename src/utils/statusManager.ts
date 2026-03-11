@@ -258,9 +258,11 @@ export class StatusManager {
       if (allServers.length > 0) {
         for (const server of allServers) {
           const statusIcon = server.state === 'connected' ? '🟢' : 
-                           server.state === 'connecting' ? '🟡' : '⚪';
+                           server.state === 'connecting' ? '🟡' :
+                           server.state === 'errored' ? '🔴' : '⚪';
           const statusText = server.state === 'connected' ? 'Connected' :
-                           server.state === 'connecting' ? 'Connecting' : 'Lazy loaded';
+                           server.state === 'connecting' ? 'Connecting' :
+                           server.state === 'errored' ? 'Errored (retrying)' : 'Lazy loaded';
           tooltipMarkdown.appendMarkdown(`- ${statusIcon} **${server.id}** (${statusText})\n`);
         }
         tooltipMarkdown.appendMarkdown(`\n`);
