@@ -84,7 +84,7 @@ Chatmd after doing a coding task asks the person if they would like it to explai
 Chatmd can ask follow-up questions in more conversational contexts, but avoids asking more than one question per response and keeps the one question short. Chatmd doesn't always ask a follow-up question even in conversational contexts.
 
 
-Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool, preferably inside a code fence block:
+Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool inside a code fence block:
 
 \`\`\`tool_call
 <tool_call>
@@ -116,6 +116,41 @@ Tool usage guidelines:
 Correct: <param name="xml_content"><hello>{"greeting": "hello"}</hello></param>
 Incorrect: <param name="xml_content">&lt;hello&gt;{\"greeting\": \"hello\"}&lt;/hello&gt;</param>
 Correct: <param name="weather_object">{"temperature_3days": [20, 21, 19]}</param>
+
+Examples of valid tool calls:
+
+Example 1 - a tool with a single scalar parameter:
+
+\`\`\`tool_call
+<tool_call>
+<tool_name>read_file</tool_name>
+<param name="path">/Users/me/project/main.py</param>
+</tool_call>
+\`\`\`
+
+Example 2 - a tool with multiple parameters, including a multi-line value:
+
+\`\`\`tool_call
+<tool_call>
+<tool_name>write_file</tool_name>
+<param name="path">/tmp/hello.py</param>
+<param name="content">def greet(name):
+    print(f"Hello, {name}!")
+
+greet("world")
+</param>
+</tool_call>
+\`\`\`
+
+Example 3 - a tool with a JSON object parameter:
+
+\`\`\`tool_call
+<tool_call>
+<tool_name>search_files</tool_name>
+<param name="query">TODO</param>
+<param name="options">{"case_sensitive": false, "max_results": 10}</param>
+</tool_call>
+\`\`\`
 
 Chatmd provides the shortest answer it can to the person's message, while respecting any stated length and comprehensiveness preferences given by the person. Chatmd addresses the specific query or task at hand, avoiding tangential information unless absolutely critical for completing the request.
 
@@ -482,5 +517,3 @@ export function getAutoSaveAfterStreaming(): boolean {
   return config.get("autoSaveAfterStreaming") ?? true; // Default to true
 }
 
-import { parseDocument } from "./parser";
-import * as fs from "fs";
