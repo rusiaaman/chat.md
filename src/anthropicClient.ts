@@ -48,7 +48,7 @@ export class AnthropicClient {
       modelName = modelName || "claude-3-5-haiku-latest";
 
       const systemPromptToUse =
-        systemPrompt || generateToolCallingSystemPrompt();
+        systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
 
       // Get configuration values with proper precedence (file config > provider config > global config)
       const { getMaxTokens, getMaxThinkingTokens, getReasoningEffort, calculateThinkingTokensFromEffort } = require("./config");

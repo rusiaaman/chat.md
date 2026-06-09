@@ -3,11 +3,31 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
-import { Tool, Prompt } from "@modelcontextprotocol/sdk/types.js";
+import {
+  LoggingMessageNotificationSchema,
+  ProgressNotificationSchema,
+  Prompt,
+  PromptListChangedNotificationSchema,
+  ResourceListChangedNotificationSchema,
+  ResourceUpdatedNotificationSchema,
+  Tool,
+  ToolListChangedNotificationSchema,
+} from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
-import * as path from "path";
-import * as fs from "fs";
+import {
+  McpPromptResult,
+  McpReadResourceResult,
+  McpRenderableContent,
+  McpResource,
+  McpResourceTemplate,
+  McpToolExecutionResult,
+} from "./types";
 import * as vscode from "vscode";
+import {
+  executeSystemTool,
+  getSystemToolDefinitions,
+  isSystemTool,
+} from "./systemTools";
 
 export interface McpServerConfig {
   // For both transport types
@@ -34,6 +54,11 @@ export class McpClientManager {
   private prompts: Map<string, Prompt> = new Map(); // Store prompts by name
   private serverTools: Map<string, Map<string, Tool>> = new Map();
   private serverPrompts: Map<string, Map<string, Prompt>> = new Map(); // Store prompts by server
+  private resources: Map<string, McpResource> = new Map();
+  private resourceTemplates: Map<string, McpResourceTemplate> = new Map();
+  private serverResources: Map<string, Map<string, McpResource>> = new Map();
+  private serverResourceTemplates: Map<string, Map<string, McpResourceTemplate>> = new Map();
+  private resourceSubscriptions: Map<string, Set<string>> = new Map(); // serverId -> Set of URIs
   private transports: Map<string, Transport> = new Map();
   private sseRetryIntervals: Map<string, NodeJS.Timeout> = new Map();
   private sseMaxRetries: number = 5;
@@ -47,6 +72,7 @@ export class McpClientManager {
   private lazyServerStates: Map<string, 'not-started' | 'connecting' | 'connected' | 'errored'> = new Map();
   private pendingConnections: Map<string, Promise<void>> = new Map();
   private serverErrors: Map<string, string> = new Map(); // Store last error message per server
+  private resourceUpdatedHandler: ((serverId: string, uri: string) => void) | null = null;
 
   // Initialize MCP clients from configuration with lazy loading
   public async initializeClients(
@@ -65,6 +91,11 @@ export class McpClientManager {
     this.prompts.clear();
     this.serverTools.clear();
     this.serverPrompts.clear();
+    this.resources.clear();
+    this.resourceTemplates.clear();
+    this.serverResources.clear();
+    this.serverResourceTemplates.clear();
+    this.resourceSubscriptions.clear();
     this.lazyServerStates.clear();
     this.pendingConnections.clear();
 
@@ -322,9 +353,9 @@ export class McpClientManager {
             // Try to connect - if it fails, we'll fall back to SSE
             const testClient = new Client(
               { name: "filechat", version: "0.1.0" },
-              { capabilities: { tools: {}, prompts: {} } },
+              { capabilities: {} },
             );
-            
+
             try {
               await testClient.connect(transport);
               // Success! Close the test client and recreate transport for actual use
@@ -376,10 +407,7 @@ export class McpClientManager {
         version: "0.1.0",
       },
       {
-        capabilities: {
-          tools: {}, // Request tools capability
-          prompts: {}, // Also request prompts capability
-        },
+        capabilities: {},
       },
     );
 
@@ -390,6 +418,100 @@ export class McpClientManager {
       log(`Successfully connected to MCP server ${serverId}`);
 
       this.clients.set(serverId, client);
+
+      // Register Progress notifications
+      try {
+        client.setNotificationHandler(
+          ProgressNotificationSchema,
+          (notification) => {
+            const params = notification.params;
+            log(`[Progress][${serverId}] Token: ${params.progressToken}, value: ${params.progress}, total: ${params.total}, msg: ${params.message || ""}`);
+          }
+        );
+      } catch (err) {
+        log(`Failed to set progress notification handler for ${serverId}: ${err}`);
+      }
+
+      // Register Logging notifications
+      try {
+        client.setNotificationHandler(
+          LoggingMessageNotificationSchema,
+          (notification) => {
+            const params = notification.params;
+            log(`[Server Log][${serverId}][${params.level || "info"}] [${params.logger || "default"}]: ${typeof params.data === "object" ? JSON.stringify(params.data) : String(params.data)}`);
+          }
+        );
+      } catch (err) {
+        log(`Failed to set logging notification handler for ${serverId}: ${err}`);
+      }
+
+      // Register Tool List Changed notification
+      try {
+        client.setNotificationHandler(
+          ToolListChangedNotificationSchema,
+          async () => {
+            log(`[Notification][${serverId}] Tools list changed, refreshing...`);
+            try {
+              await this.refreshServerTools(serverId, client);
+            } catch (err) {
+              log(`Failed to refresh tools on list changed: ${err}`);
+            }
+          }
+        );
+      } catch (err) {
+        log(`Failed to set tools list_changed notification handler for ${serverId}: ${err}`);
+      }
+
+      // Register Prompt List Changed notification
+      try {
+        client.setNotificationHandler(
+          PromptListChangedNotificationSchema,
+          async () => {
+            log(`[Notification][${serverId}] Prompts list changed, refreshing...`);
+            try {
+              await this.refreshServerPrompts(serverId, client);
+            } catch (err) {
+              log(`Failed to refresh prompts on list changed: ${err}`);
+            }
+          }
+        );
+      } catch (err) {
+        log(`Failed to set prompts list_changed notification handler for ${serverId}: ${err}`);
+      }
+
+      // Register Resource List Changed notification
+      try {
+        client.setNotificationHandler(
+          ResourceListChangedNotificationSchema,
+          async () => {
+            log(`[Notification][${serverId}] Resources list changed, refreshing...`);
+            try {
+              await this.refreshServerResources(serverId, client);
+              await this.refreshServerResourceTemplates(serverId, client);
+            } catch (err) {
+              log(`Failed to refresh resources on list changed: ${err}`);
+            }
+          }
+        );
+      } catch (err) {
+        log(`Failed to set resources list_changed notification handler for ${serverId}: ${err}`);
+      }
+
+      // Register Resource Updated notification
+      try {
+        client.setNotificationHandler(
+          ResourceUpdatedNotificationSchema,
+          (notification) => {
+            const resourceUri = notification.params.uri;
+            log(`[Notification][${serverId}] Resource updated: ${resourceUri}`);
+            if (this.resourceUpdatedHandler) {
+              this.resourceUpdatedHandler(serverId, resourceUri);
+            }
+          }
+        );
+      } catch (err) {
+        log(`Failed to set resource updated notification handler for ${serverId}: ${err}`);
+      }
 
       // Get available tools
       log(`Requesting tool list from server ${serverId}...`);
@@ -440,6 +562,29 @@ export class McpClientManager {
       } else {
         log(`Server ${serverId} does not support prompts capability`);
       }
+
+      // Check if server supports resources capability
+      if (serverCapabilities?.resources) {
+        try {
+          await this.refreshServerResources(serverId, client);
+          await this.refreshServerResourceTemplates(serverId, client);
+          await this.restoreResourceSubscriptions(serverId, client);
+        } catch (resError) {
+          log(`Error fetching resources/templates from server ${serverId}: ${resError}`);
+        }
+      } else {
+        log(`Server ${serverId} does not support resources capability`);
+      }
+
+      // Set logging level if supported
+      if (serverCapabilities?.logging) {
+        try {
+          await client.setLoggingLevel("info");
+          log(`Set logging level to 'info' on server ${serverId}`);
+        } catch (logError) {
+          log(`Failed to set logging level on server ${serverId}: ${logError}`);
+        }
+      }
     } catch (error) {
       log(`Error connecting to MCP server ${serverId}: ${error}`);
 
@@ -477,7 +622,7 @@ export class McpClientManager {
 
   // Get all tool objects with their original schemas (flat list)
   public getAllTools(): Tool[] {
-    return Array.from(this.tools.values());
+    return [...getSystemToolDefinitions(), ...Array.from(this.tools.values())];
   }
 
   // Get all prompt objects (flat list)
@@ -507,6 +652,15 @@ export class McpClientManager {
       state: this.lazyServerStates.get(serverId) || 'not-started'
     }));
   }
+
+  public getConfiguredServerIds(): string[] {
+    return Object.keys(this.serverConfigs);
+  }
+
+  public setResourceUpdatedHandler(handler: (serverId: string, uri: string) => void): void {
+    this.resourceUpdatedHandler = handler;
+  }
+
   /**
    * Ensures a server is connected, starting it lazily if needed
    */
@@ -574,9 +728,15 @@ export class McpClientManager {
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<McpToolExecutionResult | string> {
     log(`executeToolCall called with document=${document ? 'provided' : 'not provided'}`);
-    
+
+    if (isSystemTool(fullName)) {
+      return executeSystemTool(fullName, params, (serverId, uri) =>
+        this.readResource(serverId, uri),
+      );
+    }
+
     // Additional check for ReadImage tool specifically
     if (fullName.includes("ReadImage")) {
       log(`SPECIAL HANDLING FOR ReadImage TOOL:`);
@@ -627,7 +787,11 @@ export class McpClientManager {
 
     // Get the specific tool definition from the server's map
     const serverToolMap = this.serverTools.get(serverName);
-    const tool = serverToolMap?.get(actualToolName);
+    if (!serverToolMap) {
+      return `Error: Tool registry for server "${serverName}" is unavailable.`;
+    }
+
+    const tool = serverToolMap.get(actualToolName);
     if (!tool) {
       return `Error: Tool "${actualToolName}" not found on server "${serverName}".`;
     }
@@ -640,6 +804,7 @@ export class McpClientManager {
         serverName,
         actualToolName,
         params,
+        serverToolMap,
         document,
         signal,
       );
@@ -687,7 +852,7 @@ export class McpClientManager {
     params: Record<string, string>,
     document?: vscode.TextDocument | null,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<McpToolExecutionResult | string> {
     log(`Executing legacy fallback for tool "${name}"`);
     // Find which server has this tool and execute it
     for (const [serverId, serverToolMap] of this.serverTools.entries()) {
@@ -715,6 +880,7 @@ export class McpClientManager {
           serverId,
           name,
           params,
+          serverToolMap,
           document,
           signal,
         );
@@ -882,6 +1048,8 @@ export class McpClientManager {
         try {
           await this.refreshServerTools(serverId, client);
           await this.refreshServerPrompts(serverId, client);
+          await this.refreshServerResources(serverId, client);
+          await this.refreshServerResourceTemplates(serverId, client);
           successCount++;
         } catch (error) {
           failCount++;
@@ -1067,6 +1235,249 @@ export class McpClientManager {
   }
 
   /**
+   * Refreshes the resources list for a specific server
+   */
+  public async refreshServerResources(
+    serverId: string,
+    client: Client,
+  ): Promise<void> {
+    try {
+      const resourcesResult = await this.listResources(serverId, undefined, client);
+      log(`Received ${resourcesResult.resources.length} resources from server ${serverId}`);
+
+      let serverResourceMap = this.serverResources.get(serverId);
+      if (!serverResourceMap) {
+        serverResourceMap = new Map<string, McpResource>();
+        this.serverResources.set(serverId, serverResourceMap);
+      }
+
+      for (const uri of serverResourceMap.keys()) {
+        this.resources.delete(uri);
+      }
+      serverResourceMap.clear();
+
+      for (const resource of resourcesResult.resources) {
+        this.resources.set(resource.uri, resource);
+        serverResourceMap.set(resource.uri, resource);
+      }
+    } catch (error) {
+      log(`Error refreshing resources for server ${serverId}: ${error}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Refreshes the resource templates list for a specific server
+   */
+  public async refreshServerResourceTemplates(
+    serverId: string,
+    client: Client,
+  ): Promise<void> {
+    try {
+      const templatesResult = await this.listResourceTemplates(serverId, undefined, client);
+      log(`Received ${templatesResult.resourceTemplates.length} resource templates from server ${serverId}`);
+
+      let serverTemplateMap = this.serverResourceTemplates.get(serverId);
+      if (!serverTemplateMap) {
+        serverTemplateMap = new Map<string, McpResourceTemplate>();
+        this.serverResourceTemplates.set(serverId, serverTemplateMap);
+      }
+
+      for (const uriTemplate of serverTemplateMap.keys()) {
+        this.resourceTemplates.delete(uriTemplate);
+      }
+      serverTemplateMap.clear();
+
+      for (const template of templatesResult.resourceTemplates) {
+        this.resourceTemplates.set(template.uriTemplate, template);
+        serverTemplateMap.set(template.uriTemplate, template);
+      }
+    } catch (error) {
+      log(`Error refreshing resource templates for server ${serverId}: ${error}`);
+      throw error;
+    }
+  }
+
+  public async listResources(
+    serverId: string,
+    cursor: string | undefined,
+    clientOverride?: Client,
+  ): Promise<{ resources: McpResource[]; nextCursor?: string }> {
+    const client = await this.getClientForServer(serverId, clientOverride);
+    const aggregatedResources: McpResource[] = [];
+    let nextCursor = cursor;
+
+    do {
+      const params = nextCursor
+        ? { cursor: nextCursor, _meta: { progressToken: this.createProgressToken(serverId, "resources-list") } }
+        : { _meta: { progressToken: this.createProgressToken(serverId, "resources-list") } };
+      const response = await client.listResources(params, {
+        onprogress: (progress) => {
+          log(`[Progress][${serverId}] resources/list ${JSON.stringify(progress)}`);
+        },
+      });
+
+      if (response.resources) {
+        aggregatedResources.push(...(response.resources as McpResource[]));
+      }
+
+      nextCursor = response.nextCursor;
+    } while (nextCursor);
+
+    return { resources: aggregatedResources, nextCursor };
+  }
+
+  public async listResourceTemplates(
+    serverId: string,
+    cursor: string | undefined,
+    clientOverride?: Client,
+  ): Promise<{ resourceTemplates: McpResourceTemplate[]; nextCursor?: string }> {
+    const client = await this.getClientForServer(serverId, clientOverride);
+    const aggregatedTemplates: McpResourceTemplate[] = [];
+    let nextCursor = cursor;
+
+    do {
+      const params = nextCursor
+        ? { cursor: nextCursor, _meta: { progressToken: this.createProgressToken(serverId, "resources-templates-list") } }
+        : { _meta: { progressToken: this.createProgressToken(serverId, "resources-templates-list") } };
+      const response = await client.listResourceTemplates(params, {
+        onprogress: (progress) => {
+          log(`[Progress][${serverId}] resources/templates/list ${JSON.stringify(progress)}`);
+        },
+      });
+
+      if (response.resourceTemplates) {
+        aggregatedTemplates.push(...(response.resourceTemplates as McpResourceTemplate[]));
+      }
+
+      nextCursor = response.nextCursor;
+    } while (nextCursor);
+
+    return { resourceTemplates: aggregatedTemplates, nextCursor };
+  }
+
+  public async subscribeResource(serverId: string, uri: string): Promise<void> {
+    const client = await this.getClientForServer(serverId, undefined);
+    log(`Subscribing to resource: ${uri} on server ${serverId}`);
+    await client.subscribeResource({
+      uri,
+      _meta: { progressToken: this.createProgressToken(serverId, "resource-subscribe") },
+    });
+
+    let subscriptions = this.resourceSubscriptions.get(serverId);
+    if (!subscriptions) {
+      subscriptions = new Set();
+      this.resourceSubscriptions.set(serverId, subscriptions);
+    }
+    subscriptions.add(uri);
+  }
+
+  public async unsubscribeResource(serverId: string, uri: string): Promise<void> {
+    const client = await this.getClientForServer(serverId, undefined);
+    log(`Unsubscribing from resource: ${uri} on server ${serverId}`);
+    await client.unsubscribeResource({
+      uri,
+      _meta: { progressToken: this.createProgressToken(serverId, "resource-unsubscribe") },
+    });
+
+    const subscriptions = this.resourceSubscriptions.get(serverId);
+    if (subscriptions) {
+      subscriptions.delete(uri);
+    }
+  }
+
+  public async readResource(serverId: string, uri: string): Promise<McpReadResourceResult> {
+    log(`readResource requested for serverId=${serverId}, uri=${uri}`);
+    const client = await this.getClientForServer(serverId, undefined);
+    return client.readResource(
+      {
+        uri,
+        _meta: { progressToken: this.createProgressToken(serverId, "resource-read") },
+      },
+      {
+        onprogress: (progress) => {
+          log(`[Progress][${serverId}] resources/read ${JSON.stringify(progress)}`);
+        },
+      },
+    ) as Promise<McpReadResourceResult>;
+  }
+
+  public getAllResources(): McpResource[] {
+    return Array.from(this.resources.values());
+  }
+
+  public getAllResourceTemplates(): McpResourceTemplate[] {
+    return Array.from(this.resourceTemplates.values());
+  }
+
+  public getGroupedResources(): Map<string, Map<string, McpResource>> {
+    return this.serverResources;
+  }
+
+  public async getResourcesForServer(serverId: string): Promise<McpResource[]> {
+    await this.ensureServerConnected(serverId);
+    const client = this.clients.get(serverId);
+    if (!client) {
+      throw new Error(`MCP server "${serverId}" not found or not connected.`);
+    }
+
+    const serverCapabilities = client.getServerCapabilities();
+    if (!serverCapabilities?.resources) {
+      return [];
+    }
+
+    await this.refreshServerResources(serverId, client);
+    const serverResourceMap = this.serverResources.get(serverId);
+    return serverResourceMap ? Array.from(serverResourceMap.values()) : [];
+  }
+
+  public getGroupedResourceTemplates(): Map<string, Map<string, McpResourceTemplate>> {
+    return this.serverResourceTemplates;
+  }
+
+  private createProgressToken(serverId: string, operation: string): string {
+    return `${serverId}-${operation}-${Date.now()}`;
+  }
+
+  private async getClientForServer(
+    serverId: string,
+    clientOverride?: Client,
+  ): Promise<Client> {
+    if (clientOverride) {
+      return clientOverride;
+    }
+
+    await this.ensureServerConnected(serverId);
+    const client = this.clients.get(serverId);
+    if (!client) {
+      throw new Error(`Client ${serverId} not found or failed to connect`);
+    }
+
+    return client;
+  }
+
+  private async restoreResourceSubscriptions(
+    serverId: string,
+    client: Client,
+  ): Promise<void> {
+    const subscriptions = this.resourceSubscriptions.get(serverId);
+    if (!subscriptions || subscriptions.size === 0) {
+      return;
+    }
+
+    for (const uri of subscriptions) {
+      try {
+        await client.subscribeResource({
+          uri,
+          _meta: { progressToken: this.createProgressToken(serverId, "resource-restore-subscribe") },
+        });
+      } catch (error) {
+        log(`Failed to restore resource subscription for ${serverId}:${uri} - ${error}`);
+      }
+    }
+  }
+
+  /**
    * Disconnects server while keeping tool and prompt information for lazy loading
    */
   private async disconnectServerKeepingToolInfo(serverId: string): Promise<void> {
@@ -1102,7 +1513,7 @@ export class McpClientManager {
     // Just update the server state
     this.lazyServerStates.set(serverId, 'not-started');
 
-    log(`Server ${serverId} disconnected but tools/prompts retained for lazy loading`);
+    log(`Server ${serverId} disconnected but tools, prompts, and cached resources were retained for lazy loading`);
   }
 
   /**
@@ -1177,6 +1588,26 @@ export class McpClientManager {
       this.serverPrompts.delete(serverId);
     }
 
+    // Remove resources for this server
+    const serverResourceMap = this.serverResources.get(serverId);
+    if (serverResourceMap) {
+      for (const [resourceUri, _] of serverResourceMap.entries()) {
+        this.resources.delete(resourceUri);
+      }
+      this.serverResources.delete(serverId);
+    }
+
+    // Remove resource templates for this server
+    const serverTemplateMap = this.serverResourceTemplates.get(serverId);
+    if (serverTemplateMap) {
+      for (const [uriTemplate, _] of serverTemplateMap.entries()) {
+        this.resourceTemplates.delete(uriTemplate);
+      }
+      this.serverResourceTemplates.delete(serverId);
+    }
+
+    this.resourceSubscriptions.delete(serverId);
+
     // Clear lazy loading state
     this.lazyServerStates.delete(serverId);
 
@@ -1184,70 +1615,80 @@ export class McpClientManager {
   }
 
   /**
-   * Retrieves a prompt from a server and returns the formatted content
+   * Retrieves a prompt from a server and preserves the MCP content structure.
    * @param fullName The full prompt name (serverName.promptName)
    * @param args The arguments for the prompt (if any)
-   * @returns The prompt content as a string
+   * @returns The prompt result, or an error message string
    */
   public async getPrompt(
     fullName: string,
     args?: Record<string, string>,
-  ): Promise<string> {
+  ): Promise<McpPromptResult | string> {
     log(`getPrompt called for ${fullName} with args: ${JSON.stringify(args || {})}`);
-    
-    // Parse the fullName to get serverName and actualPromptName
+
     const dotIndex = fullName.indexOf(".");
     if (dotIndex <= 0 || dotIndex >= fullName.length - 1) {
       return `Error: Prompt name "${fullName}" does not follow the expected "serverName.promptName" format.`;
     }
-    
+
     const serverName = fullName.substring(0, dotIndex);
     const promptName = fullName.substring(dotIndex + 1);
     log(`Parsed prompt name: server="${serverName}", prompt="${promptName}"`);
-    
-    // Ensure server is connected for prompt execution
+
     try {
       await this.ensureServerConnected(serverName);
     } catch (error) {
       return `Error: Failed to connect to MCP server "${serverName}": ${error}`;
     }
-    
-    // Get the specific client for the server
+
     const client = this.clients.get(serverName);
     if (!client) {
       return `Error: MCP server "${serverName}" not found or not connected.`;
     }
-    
-    // Check if the server supports prompts
+
     const serverCapabilities = client.getServerCapabilities();
     if (!serverCapabilities?.prompts) {
       return `Error: Server "${serverName}" does not support prompts.`;
     }
-    
+
     try {
-      // Get the prompt from the server
       log(`Requesting prompt "${promptName}" from server "${serverName}"`);
-      const promptResult = await client.getPrompt({
-        name: promptName,
-        arguments: args
-      });
-      
-      // Extract and format the prompt content
-      if (promptResult && promptResult.messages) {
-        // Format messages into a string
-        let result = '';
-        for (const message of promptResult.messages) {
-          // Don't add "# %% user" block, just use the content directly
-          if (message.role === 'user') {
-            result += `${message.content.text}\n\n`;
-          } else if (message.role === 'assistant') {
-            result += `# %% assistant\n${message.content.text}\n\n`;
-          }
-        }
-        return result.trim();
+      const promptResult = await client.getPrompt(
+        {
+          name: promptName,
+          arguments: args,
+          _meta: { progressToken: this.createProgressToken(serverName, "prompt-get") },
+        },
+        {
+          onprogress: (progress) => {
+            log(`[Progress][${serverName}] prompts/get ${JSON.stringify(progress)}`);
+          },
+        },
+      );
+
+      if (!promptResult || !promptResult.messages) {
+        return `Error: Invalid prompt result format from server "${serverName}"`;
       }
-      
-      return `Error: Invalid prompt result format from server "${serverName}"`;
+
+      return {
+        description: promptResult.description,
+        messages: promptResult.messages.map((message) => {
+          const contentItems = Array.isArray(message.content)
+            ? message.content
+            : [message.content];
+
+          return {
+            role: message.role,
+            content: contentItems.map((contentItem) => {
+              if (typeof contentItem === "string") {
+                return { type: "text", text: contentItem } as McpRenderableContent;
+              }
+
+              return contentItem as McpRenderableContent;
+            }),
+          };
+        }),
+      };
     } catch (error) {
       log(`Error getting prompt ${promptName} from server ${serverName}: ${error}`);
       return `Error: Failed to get prompt "${promptName}" from server "${serverName}": ${error}`;
@@ -1269,8 +1710,13 @@ export class McpClientManager {
     this.clients.clear();
     this.tools.clear();
     this.prompts.clear();
+    this.resources.clear();
+    this.resourceTemplates.clear();
     this.serverTools.clear();
     this.serverPrompts.clear();
+    this.serverResources.clear();
+    this.serverResourceTemplates.clear();
+    this.resourceSubscriptions.clear();
     this.transports.clear();
     this.sseRetryCount.clear();
     this.lazyServerStates.clear();
@@ -1360,16 +1806,17 @@ export class McpClientManager {
     serverId: string,
     toolName: string,
     params: Record<string, string>,
+    serverToolMap: Map<string, Tool>,
     document?: vscode.TextDocument | null,
     signal?: AbortSignal,
-  ): Promise<string> {
+  ): Promise<McpToolExecutionResult> {
     try {
       log(
         `Executing tool "${toolName}" on server "${serverId}" with string parameters: ${JSON.stringify(params)}`,
       );
 
       // Process parameters according to schema-aware parsing
-      const processedParams = this._parseFinalValue(toolName, Object.entries(params));
+      const processedParams = this._parseFinalValue(toolName, serverToolMap, Object.entries(params));
 
       // Listen for abort signal to log cancellation
       if (signal) {
@@ -1378,175 +1825,34 @@ export class McpClientManager {
         });
       }
       
+      const progressToken = `progress-${toolName}-${Date.now()}`;
       const result = await client.callTool(
         {
-          name: toolName, // Use the actual tool name here
+          name: toolName,
           arguments: processedParams,
+          _meta: { progressToken }
         }, 
-        undefined, // Use default result schema
-        { signal } // Pass the abort signal in the options
+        undefined,
+        {
+          signal,
+          onprogress: (progress) => {
+            log(`[Progress][${serverId}] tools/call ${JSON.stringify(progress)}`);
+          },
+        }
       );
 
-      // Process result content which may include both text and images
-      if (result && result.content && Array.isArray(result.content)) {
-        // Check if there are any image items in the content
-        const hasImageContent = result.content.some((item: any) => item.type === "image");
-        
-        if (hasImageContent) {
-          // If there are images, process the mixed content using a special handler
-          // Make sure we pass the document parameter to processMixedToolResult
-          return this.processMixedToolResult(result.content, serverId, toolName, document);
-        } else {
-          // Process text-only content as before
-          const resultText = result.content
-            .filter((item: any) => item.type === "text")
-            .map((item: any) => item.text)
-            .join("\n");
-
-          return resultText;
-        }
-      }
-
-      return "Error: Invalid result format from MCP tool";
+      return {
+        serverId,
+        toolName,
+        isError: !!result.isError,
+        content: (result.content as McpRenderableContent[]) || [],
+        structuredContent: result.structuredContent
+      };
     } catch (error) {
       // Logged by the caller, rethrow to be handled there
       throw error;
     }
-    }
-  
-    /**
-     * Process tool result that contains mixed content (text and images)
-     * Saves images to disk and returns a formatted result with markdown links
-     * @param content The content array from the tool result
-     * @param serverId The server ID that executed the tool
-     * @param toolName The name of the tool that was executed
-     * @param document The current document (for resolving relative paths)
-     * @returns A formatted string with text content and markdown links to saved images
-     */
-    private processMixedToolResult(
-      content: any[],
-      serverId: string,
-      toolName: string,
-      document?: vscode.TextDocument | null
-    ): string {
-      try {
-        log(`Processing mixed content result from tool ${toolName} on server ${serverId}`);
-        
-        // Create cmdassets directory:
-        // If we have a document, create directory relative to it
-        // Otherwise fall back to extension root
-        let assetsDir;
-        let relativePath;
-        
-        if (document) {
-          // Get directory of the current document and create cmdassets within it
-          const docDir = path.dirname(document.uri.fsPath);
-          assetsDir = path.join(docDir, "cmdassets");
-          relativePath = "cmdassets"; // Relative to the chat document
-          log(`Using document-relative assets directory: ${assetsDir}`);
-        } else {
-          // Fallback to extension root if no document provided
-          const rootDir = path.resolve(__dirname, "..", "..");
-          assetsDir = path.join(rootDir, "samples", "cmdassets");
-          relativePath = path.join("samples", "cmdassets");
-          log(`No document provided, using extension root assets directory: ${assetsDir}`);
-        }
-        
-        if (!fs.existsSync(assetsDir)) {
-          fs.mkdirSync(assetsDir, { recursive: true });
-          log(`Created assets directory: ${assetsDir}`);
-        }
-        
-        // Process each content item
-        const processedParts: string[] = [];
-        // Track the number of images to provide sequential numbering
-        let imageCount = 0;
-        // Track if the previous item was text to optimize spacing
-        let prevItemWasText = false;
-        
-        for (const item of content) {
-          if (item.type === "text") {
-            // Add text content directly
-            // If previous item was also text, we may want to preserve some formatting
-            if (prevItemWasText && processedParts.length > 0) {
-              // If the text starts with a list, heading, or other markdown structure, 
-              // we need a paragraph break
-              if (/^[#\-\*\d]/.test(item.text.trimStart())) {
-                processedParts.push(item.text);
-              } else {
-                // For continuing text, append to the previous text with just a space in between
-                processedParts[processedParts.length - 1] += "\n\n" + item.text;
-              }
-            } else {
-              processedParts.push(item.text);
-            }
-            prevItemWasText = true;
-          } 
-          else if (item.type === "image" && item.data && item.mimeType) {
-            try {
-              // Increment image counter
-              imageCount++;
-              
-              // For image content, save the image to disk
-              const date = new Date();
-              const timestamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}${String(date.getSeconds()).padStart(2, "0")}`;
-              const randomSuffix = Math.random().toString(36).substring(2, 8);
-              
-              // Determine file extension based on MIME type
-              let fileExtension = ".png"; // Default
-              if (item.mimeType === "image/jpeg" || item.mimeType === "image/jpg") {
-                fileExtension = ".jpg";
-              } else if (item.mimeType === "image/gif") {
-                fileExtension = ".gif";
-              } else if (item.mimeType === "image/webp") {
-                fileExtension = ".webp";
-              }
-              
-              const filename = `tool-image-${timestamp}-${randomSuffix}${fileExtension}`;
-              const imagePath = path.join(assetsDir, filename);
-              
-              // Decode base64 data and save to file
-              const imageBuffer = Buffer.from(item.data, 'base64');
-              fs.writeFileSync(imagePath, imageBuffer);
-              
-              log(`Saved image #${imageCount} from tool result to: ${imagePath}`);
-              
-              // Create a markdown link to the image using the relative path with sequential numbering
-              const relativeImagePath = path.join(relativePath, filename).replace(/\\/g, "/");
-              // If there are multiple images, add numbering to the alt text
-              const altText = content.filter(i => i.type === "image").length > 1 
-                ? `Tool generated image ${imageCount}` 
-                : `Tool generated image`;
-              const markdownLink = `![${altText}](${relativeImagePath})`;
-              
-              // Add the markdown link to the processed parts
-              processedParts.push(markdownLink);
-              prevItemWasText = false;
-            } catch (imageError) {
-              log(`Error saving image from tool result: ${imageError}`);
-              processedParts.push(`[Error saving image ${imageCount}: ${imageError}]`);
-              prevItemWasText = true; // Error message is text
-            }
-          }
-          else if (item.type === "image") {
-            // Image without required data
-            imageCount++; // Still count it for consistency
-            log(`Image content missing required fields: ${JSON.stringify(item)}`);
-            processedParts.push(`[Image ${imageCount} data invalid or missing]`);
-            prevItemWasText = true; // Error message is text
-          }
-        }
-        
-        // Intelligently join the content:
-        // This approach maintains proper markdown formatting while avoiding excessive spacing
-        const result = processedParts.join("\n\n");
-        log(`Processed ${processedParts.length} content items (${imageCount} images)`);
-        return result;
-      } catch (error) {
-        log(`Error processing mixed tool result: ${error}`);
-        return `Error processing tool result: ${error}`;
-      }
-    }
+  }
 
     // Schema-aware JSON parsing methods
     private _schemaAllows(schema: any, type: "string" | "number" | "integer" | "boolean" | "null"): boolean {
@@ -1657,8 +1963,8 @@ export class McpClientManager {
       return value;
     }
 
-    private _parseFinalValue(toolName: string, params: Array<[string, string]>): Record<string, any> {
-      const tool = this.tools.get(toolName);
+    private _parseFinalValue(toolName: string, serverToolMap: Map<string, Tool>, params: Array<[string, string]>): Record<string, any> {
+      const tool = serverToolMap.get(toolName);
       
       if (tool) {
         const jsonSchema = tool.inputSchema;

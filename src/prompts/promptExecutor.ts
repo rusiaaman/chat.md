@@ -1,9 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "path";
-import * as fs from "fs";
 import { log } from "../extension";
 import { mcpClientManager } from "../extension";
 import { ensureDirectoryExists, writeFile } from "../utils/fileUtils";
+import { formatPromptResult } from "../utils/mcpResultFormatter";
 
 /**
  * Inserts a prompt into the current editor at the cursor position
@@ -34,17 +34,20 @@ export async function insertPrompt(
 
     // Get the full prompt content from the MCP client
     log(`Getting prompt content from MCP for ${promptId} with args: ${JSON.stringify(args)}`);
-    const promptText = await mcpClientManager.getPrompt(promptId, args);
-    if (promptText.startsWith("Error:")) {
-      log(`Error getting prompt content: ${promptText}`);
-      vscode.window.showErrorMessage(promptText);
+    const promptResult = await mcpClientManager.getPrompt(promptId, args);
+    if (typeof promptResult === "string") {
+      log(`Error getting prompt content: ${promptResult}`);
+      vscode.window.showErrorMessage(promptResult);
       return;
     }
+
+    const docDir = path.dirname(editor.document.uri.fsPath);
+    const promptText = await formatPromptResult(promptResult, docDir);
 
     // Check if the prompt is large (exceeds 30 lines)
     const lineCountThreshold = 30;
     const lines = promptText.split("\n");
-    
+
     if (lines.length > lineCountThreshold) {
       log(`Prompt exceeds ${lineCountThreshold} lines, saving to file.`);
       

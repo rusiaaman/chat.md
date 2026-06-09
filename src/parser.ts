@@ -711,7 +711,9 @@ function processToolResultContent(
     },
   );
 
-  // Check if we have a single markdown link
+  // Check if we have a single markdown link pointing to a local file.
+  // Tool results should get the same auto-attach behavior as user markdown links,
+  // including embedded resources materialized into cmdassets/.
   const linkOnlyContent = withoutCodeFences.trim();
   const linkMatch = linkOnlyContent.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
 
@@ -721,22 +723,23 @@ function processToolResultContent(
 
   const linkText = linkMatch[1];
   const linkTarget = linkMatch[2];
-
-  // Process both "Tool Result" and "MCP Prompt" links
-  if (!linkText.startsWith("Tool Result") && !linkText.startsWith("MCP Prompt:")) {
-    return [{ type: "text", value: content }];
-  }
-
-  const linkType = linkText.startsWith("Tool Result") ? "tool result" : "MCP prompt";
-  log(`Found a ${linkType} with single markdown link to: ${linkTarget}`);
-
-  // Resolve the path and read the file
   const resolvedPath = resolveFilePath(linkTarget, document);
 
   if (!fileExists(resolvedPath)) {
-    log(`File not found: ${resolvedPath}`);
     return [{ type: "text", value: content }];
   }
+
+  if (isImageFile(resolvedPath)) {
+    log(`Found tool result image link to local file: ${linkTarget}`);
+    return [{ type: "image", path: linkTarget }];
+  }
+
+  const linkType = linkText.startsWith("Tool Result")
+    ? "tool result"
+    : linkText.startsWith("MCP Prompt:")
+      ? "MCP prompt"
+      : "embedded resource";
+  log(`Found a ${linkType} with single markdown link to local file: ${linkTarget}`);
 
   const fileContent = readFileAsText(resolvedPath);
   if (!fileContent) {

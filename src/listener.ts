@@ -8,7 +8,8 @@ import {
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
-import { StreamerState, MessageParam } from "./types"; // Added MessageParam and StreamerState
+import { StreamerState, MessageParam, McpToolExecutionResult } from "./types"; // Added MessageParam and StreamerState
+import { formatMcpResult } from "./utils/mcpResultFormatter";
 import {
   getApiKey, // Keep existing config functions
   // getAnthropicApiKey, // No longer directly used in startStreaming based on latest snippet
@@ -518,7 +519,10 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       }
 
       // Append the result to the execution log
-      executionLog += `## Tool Execution Result\n\n\`\`\`\n${rawResult}\n\`\`\`\n`;
+      const loggedToolResult = typeof rawResult === "string"
+        ? rawResult
+        : JSON.stringify(rawResult, null, 2);
+      executionLog += `## Tool Execution Result\n\n\`\`\`\n${loggedToolResult}\n\`\`\`\n`;
       fs.writeFileSync(executionLogPath, executionLog);
       log(`Tool execution result appended to log: ${executionLogPath}`);
 
@@ -559,18 +563,55 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    * @param isPreformattedError Indicates if rawResult is already formatted (e.g., an error message).
    */
   private async insertToolResult(
-    rawResult: string,
+    rawResult: McpToolExecutionResult | string,
     isPreformattedError = false,
   ): Promise<void> {
 
     const text = this.document.getText();
     let contentToInsert = "";
+    let shouldInsertAsMarkdown = false;
     const lineCountThreshold = 30;
 
     if (isPreformattedError) {
       // If it's a preformatted error, use it directly
-      contentToInsert = rawResult;
+      contentToInsert = rawResult as string;
       log("Inserting preformatted error message.");
+    } else if (typeof rawResult === "object" && rawResult !== null) {
+      log("Formatting structured McpToolExecutionResult.");
+      const docDir = path.dirname(this.document.uri.fsPath);
+      const formattedMarkdown = await formatMcpResult(rawResult, docDir);
+      
+      const lines = formattedMarkdown.split("\n");
+      if (lines.length > lineCountThreshold) {
+        log(`Formatted rich result exceeds ${lineCountThreshold} lines, saving to file.`);
+        try {
+          const assetsDir = path.join(docDir, "cmdassets");
+          ensureDirectoryExists(assetsDir);
+
+          const timestamp = new Date()
+            .toISOString()
+            .replace(/:/g, "")
+            .replace(/-/g, "")
+            .replace("T", "-")
+            .replace(/\..+Z/, "");
+          const randomString = Math.random().toString(36).substring(2, 8);
+          const filename = `tool-result-${timestamp}-${randomString}.md`;
+          const relativeFilePath = path.join("cmdassets", filename);
+          const fullFilePath = path.join(assetsDir, filename);
+
+          writeFile(fullFilePath, formattedMarkdown);
+          log(`Saved formatted rich result to: ${fullFilePath}`);
+
+          const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, "/")})`;
+          contentToInsert = formatToolResult(markdownLink);
+        } catch (fileError) {
+          log(`Error saving rich tool result to file: ${fileError}`);
+          contentToInsert = formatToolResult(formattedMarkdown);
+        }
+      } else {
+        contentToInsert = formatToolResult(formattedMarkdown);
+      }
+      shouldInsertAsMarkdown = true;
     } else {
       // Check if the result contains image markdown links (from MCP tool image output)
       const containsImageMarkdown = rawResult.includes("![Tool generated image]");
@@ -578,6 +619,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       if (containsImageMarkdown) {
         log("Tool result contains image markdown, preserving it as-is.");
         contentToInsert = formatToolResult(rawResult);
+        shouldInsertAsMarkdown = true;
       } else {
         // Process the raw tool result as before (for text-only content)
         const lines = rawResult.split("\n");
@@ -671,32 +713,18 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     );
 
     // Create an edit that replaces the empty content with the result and adds a new assistant block after
-    // Determine whether to use code fences based on content type
-    let isMarkdownLink =
-      (rawResult.split("\n").length > lineCountThreshold &&
-      contentToInsert.includes("[Tool Result]")) || 
-      contentToInsert.includes("![Tool generated image]");
+    const resultText = typeof rawResult === "string" ? rawResult : "";
+    const isMarkdownLink =
+      shouldInsertAsMarkdown ||
+      (resultText.split("\n").length > lineCountThreshold && contentToInsert.includes("[Tool Result]"));
 
-    // Determine how to handle the content:
-    // 1. If it contains multiple images, we need special handling to ensure proper rendering
-    // 2. If it's a markdown link or contains image markdown, don't wrap in code fences
-    // 3. Otherwise, wrap in code fences for better display of code/text content
-    const hasMultipleImages = (contentToInsert.match(/!\[Tool generated image \d+\]/g)?.length || 0) > 1;
-    
     let textToInsert;
-    if (hasMultipleImages) {
-      // For multiple images, keep the tool_result tags but don't add code fences
-      // This ensures images are properly displayed with their numbering
+    if (isMarkdownLink) {
       textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
-      log(`Inserting content with multiple numbered images (${hasMultipleImages} images detected)`);
-    } else if (isMarkdownLink) {
-      // For regular markdown links or single images
-      textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
-      log(`Inserting content with markdown links/images (no code fences)`);
+      log("Inserting markdown result without code fences");
     } else {
-      // For regular text content, wrap in code fences
       textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
-      log(`Inserting plain text content with code fences`);
+      log("Inserting plain text content with code fences");
     }
     // If the block wasn't just the marker but had whitespace, adjust insertion
     const existingContent = text.substring(insertOffset, actualEndOffset);
@@ -785,12 +813,14 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           .join("\n\n");
         
         // Replace the content with combined text
-        const newContent = updatedMessages[updatedMessages.length - 1].content.filter(c => c.type !== "text");
+        const newContent: MessageParam["content"] = updatedMessages[updatedMessages.length - 1].content.filter(
+          (c) => c.type !== "text",
+        );
         newContent.push({
           type: "text",
-          value: existingAssistantContent + existingContent.trim()
+          value: existingAssistantContent + existingContent.trim(),
         });
-        
+
         updatedMessages[updatedMessages.length - 1].content = newContent;
       } else {
         // Add new assistant message with the partial response
@@ -808,8 +838,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     const { getDefaultSystemPrompt, generateToolCallingSystemPrompt } = require("./config");
     const defaultSystemPrompt = getDefaultSystemPrompt();
     const mcpGroupedTools = mcpClientManager.getGroupedTools();
-    const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools);
-    
+    const mcpGroupedResources = mcpClientManager.getGroupedResources();
+    const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
+
     const finalSystemPrompt = [
       defaultSystemPrompt,
       customSystemPrompt,
@@ -948,7 +979,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       const defaultSystemPrompt = getDefaultSystemPrompt();
       // Tool prompt generation (as per current structure)
       const mcpGroupedTools = mcpClientManager.getGroupedTools();
-      const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools);
+      const mcpGroupedResources = mcpClientManager.getGroupedResources();
+      const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
       // Combine
       const finalSystemPrompt = [
           defaultSystemPrompt,
