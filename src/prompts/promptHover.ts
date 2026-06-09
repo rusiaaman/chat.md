@@ -76,15 +76,14 @@ export class PromptHoverHandler {
   public static async showPromptsList(): Promise<void> {
     // Get all prompts from the MCP client
     const groupedPrompts = mcpClientManager.getGroupedPrompts();
-    const totalPrompts = mcpClientManager.getAllPrompts().length;
-    const connectedServers = mcpClientManager.getConnectedServers();
-    
-    // Only show warning if there are no servers connected
-    if (connectedServers.length === 0) {
-      vscode.window.showInformationMessage('No MCP servers are connected');
+    const configuredServers = mcpClientManager.getConfiguredServerIds();
+
+    // Only show warning if there are no configured servers
+    if (configuredServers.length === 0) {
+      vscode.window.showInformationMessage('No MCP servers are configured');
       // Continue to show the panel anyway to display the "no servers" message
     }
-    
+
     // If a hover panel is already showing, dispose it
     if (this.hoverPanel) {
       this.hoverPanel.dispose();
@@ -169,22 +168,22 @@ export class PromptHoverHandler {
   private static getPromptsHtml(
     groupedPrompts: Map<string, Map<string, any>>
   ): string {
-    // Get list of connected servers
-    const connectedServers = mcpClientManager.getConnectedServers();
+    // Get list of configured servers
+    const configuredServers = mcpClientManager.getConfiguredServerIds();
     
     // Generate the servers section
     let serversHtml = '';
-    serversHtml += `<div class="section-title">Connected MCP Servers</div>`;
+    serversHtml += `<div class="section-title">Configured MCP Servers</div>`;
     serversHtml += `<div class="server-list">`;
     
-    if (connectedServers.length > 0) {
-      for (const serverId of connectedServers) {
+    if (configuredServers.length > 0) {
+      for (const serverId of configuredServers) {
         serversHtml += `<div class="server-item">${serverId}</div>`;
       }
     } else {
-      serversHtml += `<div class="no-servers">No servers currently connected</div>`;
+      serversHtml += `<div class="no-servers">No servers currently configured</div>`;
     }
-    
+
     serversHtml += `</div>`;
     
     // Generate the prompts section

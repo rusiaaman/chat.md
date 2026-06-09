@@ -190,10 +190,11 @@ export class StreamingService {
       // After all batches are emitted, re-throw any error that occurred during stream processing
       // This ensures max_tokens errors and other important errors are propagated to the caller
       if (streamError) {
-        log(`Batching: re-throwing stream error after all batches emitted: ${streamError.message}`);
+        const errorMessage = String(streamError);
+        log(`Batching: re-throwing stream error after all batches emitted: ${errorMessage}`);
         throw streamError;
       }
-      
+
     } finally {
       // Cleanup
       if (batchTimer) {
@@ -772,7 +773,7 @@ export class StreamingService {
                   .join("\n\n");
 
                 // Create a new content array with the combined text
-                const newContent = existingContent.filter(
+                const newContent: import("./types").MessageParam["content"] = existingContent.filter(
                   (c) => c.type !== "text",
                 );
                 newContent.push({

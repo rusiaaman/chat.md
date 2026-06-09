@@ -1,6 +1,8 @@
 import * as vscode from "vscode";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
+import { getSystemToolDefinitions } from "./systemTools";
+import { McpResource } from "./types";
 
 /**
  * API Configuration interface
@@ -21,29 +23,36 @@ export interface ApiConfig {
 export type ApiConfigs = Record<string, ApiConfig>;
 
 /**
- * Generate system prompt for tool calling, including MCP tools grouped by server
- * @param mcpGroupedTools Map where keys are server IDs and values are maps of tools from that server
- * @returns The system prompt string
+ * Generate system prompt for tool calling, including built-in system tools,
+ * MCP tools grouped by server, and advertised MCP resources.
  */
 export function generateToolCallingSystemPrompt(
-  mcpGroupedTools: Map<string, Map<string, Tool>> = new Map(),
+  mcpGroupedTools: Map<string, Map<string, Tool>>,
+  mcpGroupedResources: Map<string, Map<string, McpResource>>,
 ): string {
-  let mcpToolsDescription = "";
-  let toolIndex = 1; // Overall tool index
+  let toolsDescription = "";
+  let toolIndex = 1;
 
-  // Iterate through each server and its tools
+  for (const tool of getSystemToolDefinitions()) {
+    toolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${tool.description || ""}
+   Input Schema:
+   \`\`\`json
+${JSON.stringify(tool.inputSchema, null, 2)}
+   \`\`\`
+`;
+    toolIndex++;
+  }
+
   for (const [serverId, serverToolMap] of mcpGroupedTools.entries()) {
     if (serverToolMap.size === 0) {
-      continue; // Skip servers with no tools
+      continue;
     }
 
-    mcpToolsDescription += `\n\n## Tools from server: ${serverId}\n`;
+    toolsDescription += `\n\n## Tools from server: ${serverId}\n`;
 
     for (const tool of serverToolMap.values()) {
-      mcpToolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${
-        tool.description || ""
-      }
-   Input Schema: 
+      toolsDescription += `\n${toolIndex}. tool_name: \`${tool.name}\`\n ${tool.description || ""}
+   Input Schema:
    \`\`\`json
 ${JSON.stringify(tool.inputSchema, null, 2)}
    \`\`\`
@@ -52,28 +61,7 @@ ${JSON.stringify(tool.inputSchema, null, 2)}
     }
   }
 
-  // Return a different message if no tools are available
-  if (mcpGroupedTools.size === 0 || toolIndex === 1) {
-    // Check if map is empty or no tools were added
-    return `The assistant is called 'Chatmd'. 
-
-Chat md is a coding assistant that strives to complete user request independently but stops to ask necessary questions to the user. If the specifications are clear it goes ahead and does a given task till completion.
-
-Chatmd after doing a coding task asks the person if they would like it to explain or break down the code. It does not explain or break down the code unless the person requests it.
-
-Chatmd can ask follow-up questions in more conversational contexts, but avoids asking more than one question per response and keeps the one question short. Chatmd doesn't always ask a follow-up question even in conversational contexts.
-
-Currently, no external tools are available.
-If the user asks you to perform actions requiring external data or services, politely explain that
-you don't have access to external tools at the moment and suggest they check their configuration.
-
-
-Chatmd provides the shortest answer it can to the person's message, while respecting any stated length and comprehensiveness preferences given by the person. Chatmd addresses the specific query or task at hand, avoiding tangential information unless absolutely critical for completing the request.
-
-Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses on key info instead of trying to be comprehensive. If Chatmd can answer the human in 1-3 sentences or a short paragraph, it does. If Chatmd can write a natural language list of a few comma separated items instead of a numbered or bullet-pointed list, it does so. Chatmd tries to stay focused and share fewer, high quality examples or ideas rather than many.
-
-`;
-  }
+  const resourcesDescription = buildAdvertisedResourceSection(mcpGroupedResources);
 
   return `The assistant is called 'Chatmd'. 
 
@@ -98,10 +86,12 @@ Note: you should always give both \`\`\`tool_call and <tool_call>.
 IMPORTANT FORMATTING REQUIREMENTS:
 1. Always use double quotes around parameter names: name="paramName" but parameter values should be unquoted.
 2. Parameter values can be inline (no newlines required)
-3. Parameter names must exactly match those in the tool's schema without server name (only tool name).
+3. Parameter names must exactly match those in the tool's schema.
 4. Always place the tool call within code fence blocks.
 
-Available tools:${mcpToolsDescription}
+Available tools:${toolsDescription}
+
+${resourcesDescription}
 
 After calling a tool, wait for the result.
 
@@ -112,6 +102,7 @@ Tool usage guidelines:
 - Make sure to use correct parameter names with quotes (name="paramName")
 - In <param> value for scalar parameters (string, number, boolean), write values directly without quotes
 - For object/array type parameters, use properly encoded JSON format
+- Use \`system.fetch_mcp_resource\` when you need to read the contents of one of the advertised MCP resources. Pass the exact \`serverId\` and resource \`uri\` shown above.
 
 Correct: <param name="xml_content"><hello>{"greeting": "hello"}</hello></param>
 Incorrect: <param name="xml_content">&lt;hello&gt;{\"greeting\": \"hello\"}&lt;/hello&gt;</param>
@@ -159,6 +150,33 @@ Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses
 `;
 }
 
+function buildAdvertisedResourceSection(
+  mcpGroupedResources: Map<string, Map<string, McpResource>>,
+): string {
+  const resourceSections: string[] = [];
+
+  for (const [serverId, serverResourceMap] of mcpGroupedResources.entries()) {
+    if (serverResourceMap.size === 0) {
+      continue;
+    }
+
+    const resourceLines = Array.from(serverResourceMap.values()).map((resource) => {
+      const label = resource.title || resource.name || resource.uri;
+      const detailParts = [resource.description, resource.mimeType].filter(Boolean);
+      const detail = detailParts.length > 0 ? ` — ${detailParts.join(" · ")}` : "";
+      return `- serverId=\`${serverId}\`, uri=\`${resource.uri}\`, label=${label}${detail}`;
+    });
+
+    resourceSections.push(`## Advertised resources from server: ${serverId}\n${resourceLines.join("\n")}`);
+  }
+
+  if (resourceSections.length === 0) {
+    return "No MCP resources are currently advertised.";
+  }
+
+  return `Advertised MCP resources:\n\n${resourceSections.join("\n\n")}`;
+}
+
 /**
  * Returns the default system prompt text defining Chatmd's persona and basic instructions,
  * without any tool-specific information.
@@ -184,7 +202,8 @@ Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses
  * It's generally better to call generateToolCallingSystemPrompt directly when tools are involved.
  */
 export const TOOL_CALLING_SYSTEM_PROMPT = generateToolCallingSystemPrompt(
-  new Map(), // Generate with no tools by default
+  new Map(),
+  new Map(),
 );
 
 /**

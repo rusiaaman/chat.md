@@ -4,6 +4,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { mcpClientManager } from "../mcpClientManager";
 import { statusManager } from "../extension";
+import { McpToolExecutionResult } from "../types";
 
 // Track active tool executions for cancellation
 const activeToolExecutions = new Map<string, AbortController>();
@@ -60,7 +61,7 @@ export async function executeToolCall(
   params: Record<string, string>,
   document?: vscode.TextDocument | null,
   rawToolCall?: string,
-): Promise<string> {
+): Promise<McpToolExecutionResult | string> {
   log(`Executing tool: ${toolName} with params: ${JSON.stringify(params)}`);
   log(`Document passed to executeToolCall: ${document ? 'yes' : 'no'}`);
   
@@ -124,16 +125,6 @@ export async function executeToolCall(
       abortController.signal
     );
     
-    if (
-      result &&
-      !result.startsWith("Error: Tool") &&
-      !result.startsWith("Error: No server")
-    ) {
-      // If we got a successful result from MCP, return it
-      return result;
-    }
-    
-    // Otherwise, return the error from MCP
     return result;
   } catch (mcpError) {
     // Check if this is an AbortError from cancellation

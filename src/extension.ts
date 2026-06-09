@@ -23,6 +23,7 @@ import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
 import { cancelCurrentToolExecution } from "./tools/toolExecutor";
 import { getNewChatPaths } from "./utils/chatDirUtils";
+import { McpResourceDocumentProvider } from "./mcpResourceProvider";
 import {
   generateChatTemplate,
   getCurrentContext,
@@ -377,6 +378,18 @@ export function activate(contextParam: vscode.ExtensionContext) {
   // Register status manager
   statusManager.register(context);
 
+  // Register MCP Resource Document Provider
+  const resourceProvider = new McpResourceDocumentProvider();
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      McpResourceDocumentProvider.scheme,
+      resourceProvider,
+    )
+  );
+  mcpClientManager.setResourceUpdatedHandler((serverId, uri) => {
+    resourceProvider.update(McpResourceDocumentProvider.encodeUri(serverId, uri));
+  });
+
   // Check if an API configuration is selected, prompt to configure if not
   checkApiConfiguration();
 
@@ -605,6 +618,99 @@ export function activate(contextParam: vscode.ExtensionContext) {
     vscode.commands.registerCommand("filechat.refreshMcpTools", async () => {
       await initializeMcpClients();
       vscode.window.showInformationMessage("MCP tools refreshed successfully");
+    }),
+
+    vscode.commands.registerCommand("filechat.showMcpResources", async () => {
+      log("COMMAND TRIGGERED: filechat.showMcpResources");
+      const serverIds = mcpClientManager.getConfiguredServerIds();
+      if (serverIds.length === 0) {
+        vscode.window.showWarningMessage("No MCP servers are currently configured.");
+        return;
+      }
+
+      const serverItems = serverIds.map((id) => ({
+        label: id,
+        description: `Browse advertised resources for server '${id}'`,
+      }));
+
+      const selectedServer = await vscode.window.showQuickPick(serverItems, {
+        placeHolder: "Select an MCP server to browse resources",
+      });
+
+      if (!selectedServer) return;
+
+      const serverId = selectedServer.label;
+      let resources;
+      try {
+        resources = await mcpClientManager.getResourcesForServer(serverId);
+      } catch (error) {
+        vscode.window.showErrorMessage(`Failed to load resources for '${serverId}': ${error}`);
+        return;
+      }
+
+      if (resources.length === 0) {
+        vscode.window.showInformationMessage(`No resources advertised by server '${serverId}'`);
+        return;
+      }
+
+      const resourceItems = resources.map((res) => ({
+        label: res.name || res.uri,
+        description: res.uri,
+        detail: res.description,
+        resource: res,
+      }));
+
+      const selectedResource = await vscode.window.showQuickPick(resourceItems, {
+        placeHolder: `Select a resource from ${serverId} to open`,
+      });
+
+      if (!selectedResource) return;
+
+      const uri = McpResourceDocumentProvider.encodeUri(serverId, selectedResource.resource.uri);
+      try {
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+      } catch (err) {
+        vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+      }
+    }),
+
+    vscode.commands.registerCommand("filechat.openMcpResource", async (args) => {
+      log(`COMMAND TRIGGERED: filechat.openMcpResource with args: ${JSON.stringify(args)}`);
+      if (args && args.serverId && args.uri) {
+        const uri = McpResourceDocumentProvider.encodeUri(args.serverId, args.uri);
+        try {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+          vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+        }
+      } else {
+        const uriInput = await vscode.window.showInputBox({
+          prompt: "Enter resource URI to open",
+          placeHolder: "e.g., file:///project/src/main.rs"
+        });
+        if (!uriInput) return;
+        
+        const serverIds = mcpClientManager.getConfiguredServerIds();
+        if (serverIds.length === 0) {
+          vscode.window.showErrorMessage("No configured MCP servers are available");
+          return;
+        }
+
+        const serverId = await vscode.window.showQuickPick(serverIds, {
+          placeHolder: "Select the server that handles this URI"
+        });
+        if (!serverId) return;
+
+        const uri = McpResourceDocumentProvider.encodeUri(serverId, uriInput);
+        try {
+          const doc = await vscode.workspace.openTextDocument(uri);
+          await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+          vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+        }
+      }
     }),
 
     vscode.commands.registerCommand("filechat.mcpDiagnostics", async () => {

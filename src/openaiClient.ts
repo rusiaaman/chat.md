@@ -64,7 +64,7 @@ export class OpenAIClient {
     try {
       // First prepare messages with system prompt
       const systemPromptToUse =
-        systemPrompt || generateToolCallingSystemPrompt();
+        systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
       const systemMessage = { role: "system", content: systemPromptToUse };
 
       // Format regular messages

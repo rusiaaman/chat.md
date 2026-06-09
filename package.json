@@ -61,6 +61,14 @@
         "title": "chat.md: Refresh MCP Tools"
       },
       {
+        "command": "filechat.showMcpResources",
+        "title": "chat.md: Show MCP Resources"
+      },
+      {
+        "command": "filechat.openMcpResource",
+        "title": "chat.md: Open MCP Resource"
+      },
+      {
         "command": "filechat.configureMcpServer",
         "title": "chat.md: Configure MCP Server"
       },
