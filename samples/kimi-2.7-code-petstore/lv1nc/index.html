@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PetHaven — Where Every Tail Finds Its Tale</title>
+  <meta name="description" content="Premium pet store, grooming, vet care and adoption services.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,500;0,600;0,700;1,500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="loader">
+    <div class="loader-paw">
+      <svg viewBox="0 0 512 512" fill="currentColor"><path d="M226 116c-35 0-64 29-64 64s29 64 64 64 64-29 64-64-29-64-64-64zm-96 64c-26 0-48 22-48 48s22 48 48 48 48-22 48-48-22-48-48-48zm192 0c-26 0-48 22-48 48s22 48 48 48 48-22 48-48-22-48-48-48zm-151 128c-44 0-80 36-80 80 0 40 80 128 80 128s80-88 80-128c0-44-36-80-80-80zm192-64c-35 0-64 29-64 64s29 64 64 64 64-29 64-64-29-64-64-64z"/></svg>
+    </div>
+  </div>
+
+  <div class="cursor"><span></span></div>
+
+  <nav class="nav">
+    <a href="#" class="logo">
+      <span class="logo-icon">🐾</span>
+      <span class="logo-text">PetHaven</span>
+    </a>
+    <ul class="nav-links">
+      <li><a href="#about" data-hover>About</a></li>
+      <li><a href="#products" data-hover>Shop</a></li>
+      <li><a href="#services" data-hover>Services</a></li>
+      <li><a href="#stories" data-hover>Stories</a></li>
+    </ul>
+    <a href="#contact" class="nav-cta magnetic">Book a Visit</a>
+  </nav>
+
+  <main>
+    <section class="hero" id="hero">
+      <canvas id="hero-canvas"></canvas>
+      <div class="hero-content">
+        <p class="eyebrow">Est. 2024 — Premium Pet Lifestyle</p>
+        <h1 class="hero-title split">Where Every Tail Finds Its Tale</h1>
+        <p class="hero-sub">Curated nutrition, expert grooming, and a community that loves pets as much as you do.</p>
+        <div class="hero-actions">
+          <a href="#products" class="btn btn-primary magnetic">Explore Shop</a>
+          <a href="#services" class="btn btn-outline magnetic">Our Services</a>
+        </div>
+      </div>
+      <div class="hero-media">
+        <div class="hero-img img-1" data-speed="0.08">
+          <img src="https://images.unsplash.com/photo-1587300003388-59208cc962cb?auto=format&fit=crop&w=600&q=80" alt="Happy dog">
+        </div>
+        <div class="hero-img img-2" data-speed="0.14">
+          <img src="https://images.unsplash.com/photo-1514888286974-6c03e2ca1dba?auto=format&fit=crop&w=600&q=80" alt="Curious cat">
+        </div>
+        <div class="hero-img img-3" data-speed="0.18">
+          <img src="https://images.unsplash.com/photo-1425082661705-1834bfd09dca?auto=format&fit=crop&w=600&q=80" alt="Cute hamster">
+        </div>
+      </div>
+      <div class="scroll-hint">Scroll to explore</div>
+    </section>
+
+    <div class="marquee">
+      <div class="marquee-track">
+        <span>Premium Nutrition</span>
+        <span>Expert Grooming</span>
+        <span>Vet Consultations</span>
+        <span>Adoption Events</span>
+        <span>Playful Toys</span>
+        <span>Luxury Bedding</span>
+        <span>Premium Nutrition</span>
+        <span>Expert Grooming</span>
+        <span>Vet Consultations</span>
+        <span>Adoption Events</span>
+        <span>Playful Toys</span>
+        <span>Luxury Bedding</span>
+      </div>
+    </div>
+
+    <section class="about section" id="about">
+      <div class="about-visual">
+        <div class="about-img">
+          <img src="https://images.unsplash.com/photo-1548199973-03cce0bbc87b?auto=format&fit=crop&w=900&q=80" alt="Dogs running">
+        </div>
+        <div class="about-stat card-float">
+          <strong>12k+</strong>
+          <span>Happy pets served</span>
+        </div>
+      </div>
+      <div class="about-text">
+        <p class="eyebrow">Our Story</p>
+        <h2 class="section-title">We don't just sell products — we nurture bonds.</h2>
+        <p>From grain-free diets to soothing grooming sessions, every corner of PetHaven is designed around the wellbeing of your companion. Our team of vets, groomers, and trainers work together so you can focus on the moments that matter.</p>
+        <div class="stats">
+          <div><strong>24/7</strong><span>Emergency care</span></div>
+          <div><strong>50+</strong><span>Certified experts</span></div>
+          <div><strong>4.9</strong><span>Average rating</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="products section" id="products">
+      <header class="section-header">
+        <p class="eyebrow">Curated Picks</p>
+        <h2 class="section-title">Everything they need, nothing they don't.</h2>
+        <a href="#" class="link-arrow">View all products</a>
+      </header>
+      <div class="product-grid">
+        <article class="product-card" data-tilt>
+          <div class="product-img">
+            <img src="https://images.unsplash.com/photo-1589924691195-41432c84c161?auto=format&fit=crop&w=500&q=80" alt="Premium kibble">
+          </div>
+          <div class="product-info">
+            <h3>Grain-Free Salmon Kibble</h3>
+            <p>Omega-rich recipe for shiny coats.</p>
+            <span class="price">$34.00</span>
+          </div>
+        </article>
+        <article class="product-card" data-tilt>
+          <div class="product-img">
+            <img src="https://images.unsplash.com/photo-1576201836106-db1758fd1c97?auto=format&fit=crop&w=500&q=80" alt="Cat tower">
+          </div>
+          <div class="product-info">
+            <h3>Modular Cat Tower</h3>
+            <p>Climb, scratch, nap — repeat.</p>
+            <span class="price">$129.00</span>
+          </div>
+        </article>
+        <article class="product-card" data-tilt>
+          <div class="product-img">
+            <img src="https://images.unsplash.com/photo-1601758228041-f3b2795255f1?auto=format&fit=crop&w=500&q=80" alt="Dog leash">
+          </div>
+          <div class="product-info">
+            <h3>Explorer Harness Set</h3>
+            <p>Comfort-fit for every adventure.</p>
+            <span class="price">$58.00</span>
+          </div>
+        </article>
+        <article class="product-card" data-tilt>
+          <div class="product-img">
+            <img src="https://images.unsplash.com/photo-1591873295874-500e5c970809?auto=format&fit=crop&w=500&q=80" alt="Pet treats">
+          </div>
+          <div class="product-info">
+            <h3>Organic Training Bites</h3>
+            <p>Single-ingredient, guilt-free rewards.</p>
+            <span class="price">$12.00</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="services section" id="services">
+      <div class="services-intro">
+        <p class="eyebrow">Full-Care Services</p>
+        <h2 class="section-title">A spa day, check-up, and school — all under one roof.</h2>
+      </div>
+      <div class="service-list">
+        <div class="service-item" data-reveal>
+          <span class="service-num">01</span>
+          <h3>Grooming Spa</h3>
+          <p>Baths, trims, nail care and aromatherapy — stress-free from drop-off to pick-up.</p>
+        </div>
+        <div class="service-item" data-reveal>
+          <span class="service-num">02</span>
+          <h3>Vet Clinic</h3>
+          <p>Wellness exams, vaccinations, dental care and 24/7 emergency support.</p>
+        </div>
+        <div class="service-item" data-reveal>
+          <span class="service-num">03</span>
+          <h3>Training School</h3>
+          <p>Puppy basics, obedience, agility and one-on-one behavioral coaching.</p>
+        </div>
+        <div class="service-item" data-reveal>
+          <span class="service-num">04</span>
+          <h3>Boarding Hotel</h3>
+          <p>Spacious suites, daily playtime, live cam access and cuddles on request.</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="stories section" id="stories">
+      <div class="story-card">
+        <div class="story-img">
+          <img src="https://images.unsplash.com/photo-1517849845537-4d257902454a?auto=format&fit=crop&w=700&q=80" alt="Dog with owner">
+        </div>
+        <div class="story-content">
+          <p class="eyebrow">Adoption Story</p>
+          <h2 class="section-title">"We found our family here."</h2>
+          <p>Meet Bailey — adopted in January, spoiled ever since. PetHaven's matchmaking program pairs personalities with lifestyles, so every adoption is a forever home.</p>
+          <a href="#" class="link-arrow">Read Bailey's story</a>
+        </div>
+      </div>
+    </section>
+
+    <section class="newsletter section" id="contact">
+      <div class="newsletter-inner">
+        <h2 class="section-title">Join the PetHaven pack.</h2>
+        <p>Get weekly tips, new arrivals, and exclusive offers — no spam, just pawsitivity.</p>
+        <form class="newsletter-form" onsubmit="event.preventDefault();">
+          <input type="email" placeholder="your@email.com" required>
+          <button type="submit" class="btn btn-primary magnetic">Subscribe</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="footer-grid">
+      <div>
+        <a href="#" class="logo"><span class="logo-icon">🐾</span><span class="logo-text">PetHaven</span></a>
+        <p>Premium pet lifestyle, care and community.</p>
+      </div>
+      <div>
+        <h4>Shop</h4>
+        <a href="#">Food</a>
+        <a href="#">Toys</a>
+        <a href="#">Beds</a>
+        <a href="#">Grooming</a>
+      </div>
+      <div>
+        <h4>Care</h4>
+        <a href="#">Grooming</a>
+        <a href="#">Vet Clinic</a>
+        <a href="#">Training</a>
+        <a href="#">Boarding</a>
+      </div>
+      <div>
+        <h4>Connect</h4>
+        <a href="#">Instagram</a>
+        <a href="#">TikTok</a>
+        <a href="#">Newsletter</a>
+        <a href="#">Visit us</a>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>© 2024 PetHaven.</span>
+      <span>Designed with paws on the keyboard.</span>
+    </div>
+  </footer>
+
+  <script src="https://unpkg.com/lenis@1.1.13/dist/lenis.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/gsap.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.5/ScrollTrigger.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>
