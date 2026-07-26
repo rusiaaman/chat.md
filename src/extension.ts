@@ -68,7 +68,7 @@ function findGitRoot(startPath: string): string | undefined {
   }
 }
 
-function ensureChatMdGitignore(workspaceRoot: string): void {
+export function ensureChatMdGitignore(workspaceRoot: string): void {
   const gitRoot = findGitRoot(workspaceRoot);
   if (!gitRoot) {
     return;
@@ -444,11 +444,6 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
   // Call the function that updates the status bar display
   updateStreamingStatusBar(); // Ensure this runs after setting the name
-
-  // Keep generated chat.md files out of repositories by default.
-  for (const workspaceFolder of vscode.workspace.workspaceFolders || []) {
-    ensureChatMdGitignore(workspaceFolder.uri.fsPath);
-  }
 
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: "**/*.chat.md" };

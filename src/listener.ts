@@ -19,7 +19,13 @@ import {
   getDefaultSystemPrompt, // Add function to get default system prompt
 } from "./config";
 import * as path from "path";
-import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
+import {
+  ensureChatMdGitignore,
+  log,
+  mcpClientManager,
+  statusManager,
+  requestStatusBarUpdate,
+} from "./extension";
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall, findAllToolCalls } from "./tools/toolCallParser"; // Keep existing imports
 import {
@@ -874,6 +880,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    * Start streaming response from LLM. Handles parsing, errors, prompt assembly, and initiation.
    */
   private async startStreaming(): Promise<void> {
+    // Keep generated files ignored in the Git repository containing this chat file.
+    // Do not let Git discovery or .gitignore I/O delay the API request.
+    void Promise.resolve().then(() =>
+      ensureChatMdGitignore(path.dirname(this.document.uri.fsPath)),
+    );
+
     // Prevent concurrent streams for the same document
     const activeStreamer = this.getActiveStreamer();
     if (activeStreamer) {
