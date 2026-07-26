@@ -87,23 +87,6 @@ function stripTrailingWhitespace(blocks: Content[]): Content[] {
   return result;
 }
 
-/**
- * Select the single thinking block to send: the first one carrying a replayable
- * payload, else the first one at all. Ordering follows the document, so an
- * out-of-order signature that landed in a later section still wins over an earlier
- * summary-only section.
- */
-export function selectThinkingBlock(
-  blocks: ThinkingContent[],
-  apiStyle: ApiStyle,
-): ThinkingContent | undefined {
-  const withPayload = blocks.find((block) => payloadUsableForApi(block, apiStyle));
-  if (withPayload) {
-    return withPayload;
-  }
-  return blocks[0];
-}
-
 export function cleanMessagesForApi(
   messages: readonly MessageParam[],
   options: CleanupOptions,
@@ -126,27 +109,37 @@ export function cleanMessagesForApi(
         const candidates = thinkingBlocks.filter((block) =>
           thinkingMatchesModel(block, options.modelName),
         );
-        const chosen = selectThinkingBlock(candidates, options.apiStyle);
+
+        // Find the first thinking block with non-empty opaque/encrypted content
+        const withOpaque = candidates.find(
+          (block) => block.payload && payloadUsableForApi(block, options.apiStyle),
+        );
+
         const others = blocks.filter((block) => !isThinking(block));
 
-        const usable = chosen
-          ? payloadUsableForApi(chosen, options.apiStyle)
-          : false;
-
-        if (!chosen || (!usable && options.apiStyle === "anthropic")) {
-          // Anthropic rejects thinking blocks it did not sign, so unsigned
-          // thinking is display only.
-          blocks = others;
+        if (withOpaque) {
+          // Opaque content exists — text is irrelevant, set it to empty string
+          const normalised: ThinkingContent = {
+            type: "thinking",
+            value: "",
+            model: withOpaque.model,
+            hash: withOpaque.hash,
+            payload: withOpaque.payload,
+          };
+          blocks = [normalised, ...others];
         } else {
-          const normalised: ThinkingContent = usable
-            ? chosen
-            : { type: "thinking", value: chosen.value, model: chosen.model };
-          // Thinking always goes first: Anthropic requires it and it keeps the
-          // replayed turn identical in shape to how it was produced.
-          blocks =
-            !usable && normalised.value.trim() === ""
-              ? others
-              : [normalised, ...others];
+          // No opaque content — use the first thinking block as raw text
+          const first = candidates[0];
+          if (first && first.value.trim() !== "") {
+            const normalised: ThinkingContent = {
+              type: "thinking",
+              value: first.value,
+              model: first.model,
+            };
+            blocks = [normalised, ...others];
+          } else {
+            blocks = others;
+          }
         }
       }
     }

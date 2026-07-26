@@ -42,8 +42,6 @@ export interface ThinkingPayload {
   kind: ThinkingPayloadKind;
   /** Anthropic: opaque signature for a thinking block */
   signature?: string;
-  /** Anthropic: exact thinking text the signature was produced for */
-  text?: string;
   /** Anthropic: opaque data of a redacted_thinking block */
   data?: string;
   /** OpenAI Responses: reasoning item id (rs_...) */

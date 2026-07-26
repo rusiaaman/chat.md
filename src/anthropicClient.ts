@@ -328,7 +328,6 @@ export class AnthropicClient {
                   model: modelName,
                   kind: "anthropic_signature",
                   signature: data.delta.signature,
-                  text: thinkingText,
                 };
                 thinkingText = "";
                 yield [encodeThinkingPayloadToken(payload)];
@@ -424,11 +423,10 @@ export class AnthropicClient {
         if (payload?.kind === "anthropic_redacted" && payload.data) {
           blocks.push({ type: "redacted_thinking", data: payload.data });
         } else if (payload?.kind === "anthropic_signature" && payload.signature) {
-          // Prefer the exact text captured with the signature; the document copy is
-          // trimmed for display and would not verify.
+          // When opaque content exists, text is irrelevant to the API
           blocks.push({
             type: "thinking",
-            thinking: payload.text ?? "",
+            thinking: "",
             signature: payload.signature,
           });
         } else {
