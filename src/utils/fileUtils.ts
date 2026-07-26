@@ -1,35 +1,24 @@
 import * as path from "path";
 import * as fs from "fs";
 import * as vscode from "vscode";
-import { MessageParam } from "../types";
+import { ChatHistoryFile, ChatHistoryUsage, MessageParam } from "../types";
 
 /**
- * Resolves file paths that may be relative to the current document
+ * Resolves file paths that may be relative to the current document.
  */
 export function resolveFilePath(
   filePath: string,
   document: vscode.TextDocument,
 ): string {
-  // If path starts with ~ replace with home dir
   if (filePath.startsWith("~")) {
     return filePath.replace(/^~/, process.env.HOME || "");
   }
-
-  // If it's an absolute path, return as is
   if (path.isAbsolute(filePath)) {
     return filePath;
   }
-
-  // Try to resolve relative to the document
-  const documentDir = path.dirname(document.uri.fsPath);
-  const resolvedPath = path.resolve(documentDir, filePath);
-
-  return resolvedPath;
+  return path.resolve(path.dirname(document.uri.fsPath), filePath);
 }
 
-/**
- * Check if a file exists and is accessible
- */
 export function fileExists(filePath: string): boolean {
   try {
     fs.accessSync(filePath, fs.constants.R_OK);
@@ -39,10 +28,6 @@ export function fileExists(filePath: string): boolean {
   }
 }
 
-/**
- * Read file as a buffer, handling errors gracefully
- * Returns undefined if file can't be read
- */
 export function readFileAsBuffer(filePath: string): Buffer | undefined {
   try {
     return fs.readFileSync(filePath);
@@ -52,10 +37,6 @@ export function readFileAsBuffer(filePath: string): Buffer | undefined {
   }
 }
 
-/**
- * Read text file content as string
- * Returns undefined if file can't be read
- */
 export function readFileAsText(filePath: string): string | undefined {
   try {
     return fs.readFileSync(filePath, "utf8");
@@ -65,146 +46,141 @@ export function readFileAsText(filePath: string): string | undefined {
   }
 }
 
-/**
- * Check if a file is an image based on extension
- */
 export function isImageFile(filePath: string): boolean {
-  const ext = path.extname(filePath).toLowerCase();
-  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(ext);
+  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
+    path.extname(filePath).toLowerCase(),
+  );
 }
 
-/**
- * Ensure a directory exists, creating it if necessary
- */
 export function ensureDirectoryExists(dirPath: string): void {
   if (!fs.existsSync(dirPath)) {
-    try {
-      fs.mkdirSync(dirPath, { recursive: true });
-    } catch (error) {
-      console.error(`Error creating directory ${dirPath}:`, error);
-      throw error; // Re-throw the error to indicate failure
-    }
+    fs.mkdirSync(dirPath, { recursive: true });
   } else if (!fs.statSync(dirPath).isDirectory()) {
     throw new Error(`Path exists but is not a directory: ${dirPath}`);
   }
 }
 
-/**
- * Write text content to a file
- * Throws error on failure
- */
 export function writeFile(filePath: string, content: string): void {
-  try {
-    fs.writeFileSync(filePath, content, "utf8");
-  } catch (error) {
-    console.error(`Error writing file ${filePath}:`, error);
-    throw error; // Re-throw the error
-  }
+  fs.writeFileSync(filePath, content, "utf8");
 }
 
 /**
- * Save chat history to a file for debugging purposes
- * @param document The document containing the chat
- * @param messages The messages to be sent to the LLM
- * @param action The action being performed (e.g., "before_llm_call")
- * @param additionalContent Optional additional content to append to the file
- * @param systemPrompt Optional system prompt to include at the top
+ * Returns the configured asset directory. Relative paths are resolved against
+ * the chat document directory; absolute paths are used as-is.
  */
+export function getAssetsDirectory(docDir: string): string {
+  const configured = vscode.workspace
+    .getConfiguration("chatmd")
+    .get<string>("assetsPath", "cmdassets");
+  if (configured.startsWith("~")) {
+    return path.resolve(configured.replace(/^~/, process.env.HOME || ""));
+  }
+  return path.isAbsolute(configured)
+    ? configured
+    : path.resolve(docDir, configured);
+}
+
+export function getAssetsRelativePath(docDir: string, fileName: string): string {
+  return path
+    .relative(docDir, path.join(getAssetsDirectory(docDir), fileName))
+    .replace(/\\/g, "/");
+}
+
+function getChatMdCacheDirectory(): string {
+  const cacheRoot =
+    process.env.XDG_CACHE_HOME ||
+    path.join(process.env.HOME || process.cwd(), ".cache");
+  return path.join(cacheRoot, "chat.md");
+}
+
+function createHistoryFileName(document: vscode.TextDocument): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const baseName = path
+    .basename(document.fileName)
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  return `${baseName}-${timestamp}-${Math.random().toString(36).slice(2, 8)}.json`;
+}
+
 export function saveChatHistory(
   document: vscode.TextDocument,
   messages: readonly MessageParam[],
-  action: string,
-  systemPrompt?: string, // Added systemPrompt parameter
-  additionalContent?: string,
+  _action: string,
+  systemPrompt = "",
+  metadata: Record<string, unknown> = {},
 ): string {
   try {
-    // Create .cmd_history directory relative to the chat document
-    const docDir = path.dirname(document.uri.fsPath);
-    const historyDir = path.join(docDir, ".cmd_history");
+    const historyDir = getChatMdCacheDirectory();
     ensureDirectoryExists(historyDir);
-
-    // Create a timestamp-based filename
-    const timestamp = new Date()
-      .toISOString()
-      .replace(/:/g, "-")
-      .replace(/\..+Z/, "");
-    const filename = `history_${timestamp}_${action}.md`;
-    const filePath = path.join(historyDir, filename);
-
-    // Format messages into a readable markdown format
-    let content = `# Chat History Debug Log\n\n`;
-    content += `- **Timestamp:** ${new Date().toISOString()}\n`;
-    content += `- **Action:** ${action}\n`;
-    content += `- **Document:** ${document.fileName}\n\n`;
-
-    // Add System Prompt if provided
-    if (systemPrompt) {
-      content += `## System Prompt\n\n\`\`\`\n${systemPrompt}\n\`\`\`\n\n`;
-    }
-
-    content += `## Messages\n\n`;
-    messages.forEach((msg, index) => {
-      content += `### ${index + 1}. ${msg.role.toUpperCase()}\n\n`;
-
-      msg.content.forEach((item) => {
-        if (item.type === "text") {
-          content += `\`\`\`\n${item.value}\n\`\`\`\n\n`;
-        } else if (item.type === "image") {
-          content += `[Image: ${item.path}]\n\n`;
-        }
-      });
-    });
-
-    // Add additional content if provided
-    if (additionalContent) {
-      content += `## Additional Content\n\n\`\`\`\n${additionalContent}\n\`\`\`\n`;
-    }
-
-    // Write to file
-    writeFile(filePath, content);
-
+    const filePath = path.join(historyDir, createHistoryFileName(document));
+    const history: ChatHistoryFile = {
+      system: systemPrompt,
+      history: [...messages],
+      usage: null,
+      cost: null,
+      metadata: {
+        document: document.uri.fsPath,
+        createdAt: new Date().toISOString(),
+        ...metadata,
+      },
+    };
+    writeFile(filePath, JSON.stringify(history, null, 2) + "\n");
     return filePath;
   } catch (error) {
     console.error("Error saving chat history:", error);
-    // Don't throw - we want this to be non-blocking
     return "";
   }
 }
 
-/**
- * Append content to an existing chat history file
- * @param historyFilePath Path to the history file
- * @param content Content to append
- */
 export function appendToChatHistory(
   historyFilePath: string,
   content: string,
 ): void {
-  try {
-    if (!historyFilePath || !fileExists(historyFilePath)) {
-      return;
+  updateChatHistory(historyFilePath, (history) => {
+    const lastMessage = history.history[history.history.length - 1];
+    if (lastMessage?.role === "assistant") {
+      const text = lastMessage.content.find((item) => item.type === "text");
+      if (text && text.type === "text") {
+        text.value += content;
+      } else {
+        lastMessage.content.push({ type: "text", value: content });
+      }
+    } else {
+      history.history.push({
+        role: "assistant",
+        content: [{ type: "text", value: content }],
+      });
     }
+  });
+}
 
-    // Read existing content
-    const existingContent = readFileAsText(historyFilePath) || "";
-
-    // Append new content (raw tokens)
-    const updatedContent = existingContent + content;
-
-    // Write back to file
-    writeFile(historyFilePath, updatedContent);
+export function updateChatHistory(
+  historyFilePath: string,
+  update: (history: ChatHistoryFile) => void,
+): void {
+  try {
+    if (!historyFilePath || !fileExists(historyFilePath)) return;
+    const parsed = JSON.parse(readFileAsText(historyFilePath) || "") as ChatHistoryFile;
+    update(parsed);
+    writeFile(historyFilePath, JSON.stringify(parsed, null, 2) + "\n");
   } catch (error) {
-    console.error("Error appending to chat history:", error);
-    // Don't throw - we want this to be non-blocking
+    console.error("Error updating chat history:", error);
   }
 }
 
-/**
- * Get the log file path for a specific MCP server
- * @param logBasePath The base path for MCP logs
- * @param serverId The ID of the MCP server
- * @returns The full path to the log file for the server
- */
-export function getMcpServerLogPath(logBasePath: string, serverId: string): string {
+export function updateChatHistoryUsage(
+  historyFilePath: string,
+  usage: ChatHistoryUsage | undefined,
+): void {
+  if (!usage) return;
+  updateChatHistory(historyFilePath, (history) => {
+    history.usage = usage;
+    history.metadata.completedAt = new Date().toISOString();
+  });
+}
+
+export function getMcpServerLogPath(
+  logBasePath: string,
+  serverId: string,
+): string {
   return path.join(logBasePath, `${serverId}.log`);
 }

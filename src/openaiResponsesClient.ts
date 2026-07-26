@@ -20,6 +20,7 @@ import { cleanMessagesForApi } from "./utils/messageCleanup";
  * reasoning context on gpt-* and o-series models.
  */
 export class OpenAIResponsesClient {
+  public lastUsage: Record<string, unknown> | undefined;
   private readonly apiUrl: string;
 
   constructor(
@@ -52,6 +53,7 @@ export class OpenAIResponsesClient {
     configName?: string,
     fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
+    this.lastUsage = undefined;
     log(`Starting OpenAI Responses request with ${messages.length} messages`);
 
     try {
@@ -227,6 +229,14 @@ export class OpenAIResponsesClient {
           }
 
           eventCount++;
+          if (data.response?.usage || data.usage) {
+            const usage = data.response?.usage || data.usage;
+            this.lastUsage = {
+              inputTokens: usage.input_tokens,
+              outputTokens: usage.output_tokens,
+              cacheReadTokens: usage.input_tokens_details?.cached_tokens,
+            };
+          }
 
           switch (data.type) {
             case "response.output_text.delta": {

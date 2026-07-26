@@ -8,7 +8,12 @@ import {
   McpToolExecutionResult,
 } from "../types";
 import { log } from "../extension";
-import { ensureDirectoryExists, writeFile } from "./fileUtils";
+import {
+  ensureDirectoryExists,
+  getAssetsDirectory,
+  getAssetsRelativePath,
+  writeFile,
+} from "./fileUtils";
 
 /**
  * Formats a rich MCP tool execution result into markdown text,
@@ -101,7 +106,7 @@ async function formatRenderableContent(
   assetLabel: string,
   sourceServerId: string | undefined,
 ): Promise<string[]> {
-  const assetsDir = path.join(docDir, "cmdassets");
+  const assetsDir = getAssetsDirectory(docDir);
   ensureDirectoryExists(assetsDir);
 
   const parts: string[] = [];
@@ -117,13 +122,13 @@ async function formatRenderableContent(
 
     if (item.type === "image") {
       imageCount += 1;
-      parts.push(saveBinaryAsset(item.data, item.mimeType, assetsDir, `${assetLabel}-image`, `![${assetLabel} image ${imageCount}]`));
+      parts.push(saveBinaryAsset(item.data, item.mimeType, docDir, assetsDir, `${assetLabel}-image`, `![${assetLabel} image ${imageCount}]`));
       continue;
     }
 
     if (item.type === "audio") {
       audioCount += 1;
-      parts.push(saveBinaryAsset(item.data, item.mimeType, assetsDir, `${assetLabel}-audio`, `[${assetLabel} audio ${audioCount}]`));
+      parts.push(saveBinaryAsset(item.data, item.mimeType, docDir, assetsDir, `${assetLabel}-audio`, `[${assetLabel} audio ${audioCount}]`));
       continue;
     }
 
@@ -140,7 +145,7 @@ async function formatRenderableContent(
 
     resourceCount += 1;
     const resourceLabel = `${assetLabel}-resource-${resourceCount}`;
-    parts.push(renderEmbeddedResource(item.resource, assetsDir, resourceLabel));
+    parts.push(renderEmbeddedResource(item.resource, docDir, assetsDir, resourceLabel));
   }
 
   return parts.filter((part) => part.trim().length > 0);
@@ -148,6 +153,7 @@ async function formatRenderableContent(
 
 function renderEmbeddedResource(
   resource: { uri: string; mimeType?: string; text?: string; blob?: string },
+  docDir: string,
   assetsDir: string,
   resourceLabel: string,
 ): string {
@@ -162,7 +168,7 @@ function renderEmbeddedResource(
     const filePath = path.join(assetsDir, fileName);
     writeFile(filePath, resource.text);
     log(`Saved embedded text resource to: ${filePath}`);
-    return `[Embedded Resource: ${resource.uri}](cmdassets/${fileName})`;
+    return `[Embedded Resource: ${resource.uri}](${getAssetsRelativePath(docDir, fileName)})`;
   }
 
   if (resource.blob !== undefined) {
@@ -173,7 +179,7 @@ function renderEmbeddedResource(
     const buffer = Buffer.from(resource.blob, "base64");
     fs.writeFileSync(filePath, buffer);
     log(`Saved embedded binary resource to: ${filePath}`);
-    return `[Embedded Binary Resource: ${resource.uri}](cmdassets/${fileName})`;
+    return `[Embedded Binary Resource: ${resource.uri}](${getAssetsRelativePath(docDir, fileName)})`;
   }
 
   return `[Embedded Resource: ${resource.uri}]`;
@@ -182,6 +188,7 @@ function renderEmbeddedResource(
 function saveBinaryAsset(
   data: string,
   mimeType: string,
+  docDir: string,
   assetsDir: string,
   assetLabel: string,
   markdownPrefix: string,
@@ -192,7 +199,7 @@ function saveBinaryAsset(
   const buffer = Buffer.from(data, "base64");
   fs.writeFileSync(filePath, buffer);
   log(`Saved MCP asset to: ${filePath}`);
-  return `${markdownPrefix}(cmdassets/${fileName})`;
+  return `${markdownPrefix}(${getAssetsRelativePath(docDir, fileName)})`;
 }
 
 function createAssetFileName(assetLabel: string, extension: string): string {

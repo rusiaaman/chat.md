@@ -22,7 +22,10 @@ import {
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
-import { appendToChatHistory } from "./utils/fileUtils";
+import {
+  appendToChatHistory,
+  updateChatHistoryUsage,
+} from "./utils/fileUtils";
 import {
   parseToolCall,
   checkForCompletedToolCall,
@@ -566,6 +569,16 @@ export class StreamingService {
     );
   }
 
+  public getLastUsage(): Record<string, unknown> | undefined {
+    if (this.provider === "anthropic") {
+      return this.anthropicClient?.lastUsage;
+    }
+    if (this.openaiResponsesClient?.lastUsage) {
+      return this.openaiResponsesClient.lastUsage;
+    }
+    return this.openaiClient?.lastUsage;
+  }
+
   public async streamResponse(
     messages: readonly MessageParam[],
     streamer: StreamerState,
@@ -907,6 +920,7 @@ export class StreamingService {
             }
           }
 
+          updateChatHistoryUsage(streamer.historyFilePath || "", this.getLastUsage());
           log(
             `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}${bufferingMode ? " (buffered tool calls)" : ""}`,
           );

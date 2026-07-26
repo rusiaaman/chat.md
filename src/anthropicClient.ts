@@ -23,6 +23,7 @@ import {
  * Client for communicating with the Anthropic API
  */
 export class AnthropicClient {
+  public lastUsage: Record<string, unknown> | undefined;
   private readonly apiUrl = "https://api.anthropic.com/v1/messages";
   private readonly apiVersion = "2023-06-01"; // This version should work for streaming
 
@@ -40,6 +41,7 @@ export class AnthropicClient {
     configName?: string,
     fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
+    this.lastUsage = undefined;
     log(`Starting API request with ${messages.length} messages`);
 
     try {
@@ -352,8 +354,24 @@ export class AnthropicClient {
                   yield [encodeThinkingToken(block.thinking)];
                 }
               } else if (data.type === "message_delta") {
+                if (data.usage) {
+                  this.lastUsage = {
+                    ...(this.lastUsage || {}),
+                    outputTokens: data.usage.output_tokens,
+                    cacheReadTokens: data.usage.cache_read_input_tokens,
+                    cacheWriteTokens: data.usage.cache_creation_input_tokens,
+                  };
+                }
                 log(`Message delta received: ${JSON.stringify(data.delta)}`);
               } else if (data.type === "message_start") {
+                if (data.message?.usage) {
+                  this.lastUsage = {
+                    inputTokens: data.message.usage.input_tokens,
+                    outputTokens: data.message.usage.output_tokens,
+                    cacheReadTokens: data.message.usage.cache_read_input_tokens,
+                    cacheWriteTokens: data.message.usage.cache_creation_input_tokens,
+                  };
+                }
                 log(`Message start received: ${JSON.stringify(data.message)}`);
               } else if (data.type === "message_stop") {
                 log("Received message_stop event");

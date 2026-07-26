@@ -1,7 +1,5 @@
 import { log, requestStatusBarUpdate, onActiveFileChanged } from "../extension";
 import * as vscode from "vscode";
-import * as path from "path";
-import * as fs from "fs";
 import { mcpClientManager } from "../mcpClientManager";
 import { statusManager } from "../extension";
 import { McpToolExecutionResult } from "../types";
@@ -13,49 +11,6 @@ const activeToolExecutions = new Map<string, AbortController>();
 let currentToolExecution: string | null = null;
 // Track cancelled executions to ignore any late responses
 const cancelledExecutions = new Set<string>();
-
-/**
- * Saves the parsed tool call to a log file for debugging
- * @param toolName The name of the tool being called
- * @param params The parameters of the tool call
- * @param rawToolCall The raw XML of the tool call
- */
-function saveToolCallLog(
-  toolName: string,
-  params: Record<string, string>,
-  rawToolCall: string,
-): void {
-  try {
-    // Create samples/cmdassets directory if it doesn't exist
-    const rootDir = path.resolve(__dirname, "..", "..");
-    const assetsDir = path.join(rootDir, "samples", "cmdassets");
-
-    if (!fs.existsSync(assetsDir)) {
-      fs.mkdirSync(assetsDir, { recursive: true });
-    }
-
-    // Create a timestamp-based filename
-    const date = new Date();
-    const timestamp = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}${String(date.getMinutes()).padStart(2, "0")}${String(date.getSeconds()).padStart(2, "0")}`;
-    const randomSuffix = Math.random().toString(36).substring(2, 8);
-    const filename = `tool-call-${timestamp}-${randomSuffix}.txt`;
-    const filePath = path.join(assetsDir, filename);
-
-    // Format the log content
-    let content = `# Tool Call Log\n\n`;
-    content += `Timestamp: ${date.toISOString()}\n`;
-    content += `Tool Name: ${toolName}\n\n`;
-    content += `## Parsed Parameters\n\`\`\`json\n${JSON.stringify(params, null, 2)}\n\`\`\`\n\n`;
-    content += `## Raw Tool Call XML\n\`\`\`xml\n${rawToolCall}\n\`\`\`\n`;
-
-    // Write to file
-    fs.writeFileSync(filePath, content, "utf8");
-    log(`Tool call log saved to: ${filePath}`);
-  } catch (error) {
-    log(`Error saving tool call log: ${error}`);
-    // Don't throw - we want this to be non-blocking
-  }
-}
 
 export async function executeToolCall(
   toolName: string,
@@ -109,11 +64,6 @@ export async function executeToolCall(
     }
     
     log(`ReadImage with file_path=${params.file_path} and document context from ${document.fileName}`);
-  }
-
-  // Save the parsed tool call to a log file if we have the raw XML
-  if (rawToolCall) {
-    saveToolCallLog(toolName, params, rawToolCall);
   }
 
   // Execute through MCP

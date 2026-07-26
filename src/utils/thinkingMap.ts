@@ -14,13 +14,13 @@ import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 import { ThinkingMapEntry, ThinkingMapFile, ThinkingPayload } from "../types";
+import { getAssetsDirectory } from "./fileUtils";
 
-const ASSETS_DIR = "cmdassets";
 const MAP_FILE_NAME = "thinking_map.json";
 
 /** Absolute path of the map for a document directory */
 export function getThinkingMapPath(docDir: string): string {
-  return path.join(docDir, ASSETS_DIR, MAP_FILE_NAME);
+  return path.join(getAssetsDirectory(docDir), MAP_FILE_NAME);
 }
 
 /** Deterministic JSON so the same payload always hashes to the same value */

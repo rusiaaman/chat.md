@@ -19,7 +19,6 @@ import {
   getDefaultSystemPrompt, // Add function to get default system prompt
 } from "./config";
 import * as path from "path";
-import * as fs from "fs"; // Keep fs for file operations
 import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall, findAllToolCalls } from "./tools/toolCallParser"; // Keep existing imports
@@ -27,6 +26,8 @@ import {
   ensureDirectoryExists, // Keep existing imports
   writeFile, // Keep existing imports
   saveChatHistory, // Keep existing imports
+  getAssetsDirectory,
+  getAssetsRelativePath,
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 
@@ -412,34 +413,6 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 \`\`\`
 `;
 
-      // Create a history entry that captures the tool execution process
-      const docDir = path.dirname(this.document.uri.fsPath);
-      const historyDir = path.join(docDir, ".cmd_history");
-      if (!fs.existsSync(historyDir)) {
-        fs.mkdirSync(historyDir, { recursive: true });
-      }
-
-      const timestamp = new Date()
-        .toISOString()
-        .replace(/:/g, "-")
-        .replace(/\..+Z/, "");
-      const executionLogPath = path.join(
-        historyDir,
-        `tool_execution_${timestamp}.md`,
-      );
-
-      // Log pre-execution information
-      let executionLog = `# Tool Call Execution Flow\n\n`;
-      executionLog += `- **Timestamp:** ${new Date().toISOString()}\n`;
-      executionLog += `- **Document:** ${this.document.fileName}\n`;
-      executionLog += `- **Tool Name:** ${parsedToolCall.name}\n\n`;
-
-      executionLog += `## Raw Tool Call XML\n\n\`\`\`xml\n${toolCallXml}\n\`\`\`\n\n`;
-      executionLog += `## Parsed Parameters\n\n\`\`\`json\n${JSON.stringify(parsedToolCall.params, null, 2)}\n\`\`\`\n\n`;
-
-      // Write pre-execution information
-      fs.writeFileSync(executionLogPath, executionLog);
-      log(`Tool execution flow log created: ${executionLogPath}`);
 
       // Execute the tool, passing the raw tool call XML for logging
       const rawResult = await executeToolCall(
@@ -456,25 +429,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         // Remove the empty tool_execute block
         this.removeLastEmptyBlock("tool_execute");
         
-        // Log cancellation in the execution log file
-        executionLog += `## Tool Execution Cancelled\n\nTool execution was cancelled by user.\n`;
-        fs.writeFileSync(executionLogPath, executionLog);
-        log(`Tool cancellation recorded in log: ${executionLogPath}`);
-        
         // Set status back to idle
         vscode.window.showInformationMessage("Tool execution cancelled, but it may still have gone through successfully");
         
         // Don't insert anything into the document
         return;
       }
-
-      // Append the result to the execution log
-      const loggedToolResult = typeof rawResult === "string"
-        ? rawResult
-        : JSON.stringify(rawResult, null, 2);
-      executionLog += `## Tool Execution Result\n\n\`\`\`\n${loggedToolResult}\n\`\`\`\n`;
-      fs.writeFileSync(executionLogPath, executionLog);
-      log(`Tool execution result appended to log: ${executionLogPath}`);
 
       // Insert the raw result (insertToolResult will handle formatting/linking)
       await this.insertToolResult(rawResult);
@@ -575,7 +535,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       if (lines.length > lineCountThreshold) {
         log(`Formatted rich result exceeds ${lineCountThreshold} lines, saving to file.`);
         try {
-          const assetsDir = path.join(docDir, "cmdassets");
+          const assetsDir = getAssetsDirectory(docDir);
           ensureDirectoryExists(assetsDir);
 
           const timestamp = new Date()
@@ -586,7 +546,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
             .replace(/\..+Z/, "");
           const randomString = Math.random().toString(36).substring(2, 8);
           const filename = `tool-result-${timestamp}-${randomString}.md`;
-          const relativeFilePath = path.join("cmdassets", filename);
+          const relativeFilePath = getAssetsRelativePath(docDir, filename);
           const fullFilePath = path.join(assetsDir, filename);
 
           writeFile(fullFilePath, formattedMarkdown);
@@ -619,7 +579,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           log(`Result exceeds ${lineCountThreshold} lines, saving to file.`);
           try {
             const docDir = path.dirname(this.document.uri.fsPath);
-            const assetsDir = path.join(docDir, "cmdassets");
+            const assetsDir = getAssetsDirectory(docDir);
             ensureDirectoryExists(assetsDir);
 
             const timestamp = new Date()
@@ -630,7 +590,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
               .replace(/\..+Z/, "");
             const randomString = Math.random().toString(36).substring(2, 8);
             const filename = `tool-result-${timestamp}-${randomString}.txt`;
-            const relativeFilePath = path.join("cmdassets", filename);
+            const relativeFilePath = getAssetsRelativePath(docDir, filename);
             const fullFilePath = path.join(assetsDir, filename);
 
             writeFile(fullFilePath, rawResult);
@@ -991,6 +951,17 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         messages,
         "before_llm_call",
         finalSystemPrompt, // Use the combined prompt
+        {
+          provider: perFileConfigName
+            ? require("./config").getProviderForConfig(perFileConfigName)
+            : require("./config").getProvider(),
+          model: perFileConfigName
+            ? require("./config").getModelNameForConfig(perFileConfigName)
+            : require("./config").getModelName(),
+          config: perFileConfigName
+            ? perFileConfigName
+            : require("./config").getSelectedConfigName(),
+        },
       );
       log(`Saved chat history (before call) to: ${historyFilePath}`);
 

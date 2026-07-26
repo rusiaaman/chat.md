@@ -86,6 +86,7 @@ class ReasoningDetailsAccumulator {
  * Client for communicating with the OpenAI API
  */
 export class OpenAIClient {
+  public lastUsage: Record<string, unknown> | undefined;
   private readonly apiUrl: string;
 
   constructor(
@@ -129,6 +130,7 @@ export class OpenAIClient {
     configName?: string,
     fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
+    this.lastUsage = undefined;
     log(`Starting OpenAI API request with ${messages.length} messages`);
 
     try {
@@ -175,6 +177,7 @@ export class OpenAIClient {
         model: modelName,
         messages: allMessages,
         stream: true,
+        stream_options: { include_usage: true },
       };
 
       // Add reasoning_effort parameter if configured
@@ -443,6 +446,13 @@ export class OpenAIClient {
               if (jsonData.trim()) {
                 try {
                   const data = JSON.parse(jsonData);
+                  if (data.usage) {
+                    this.lastUsage = {
+                      inputTokens: data.usage.prompt_tokens,
+                      outputTokens: data.usage.completion_tokens,
+                      cacheReadTokens: data.usage.prompt_tokens_details?.cached_tokens,
+                    };
+                  }
 
                   // OpenAI's format has choices with delta that contains content
                   if (data.choices && data.choices.length > 0) {

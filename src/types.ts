@@ -214,6 +214,22 @@ export interface MessageParam {
 /**
  * State of a streaming response
  */
+export interface ChatHistoryUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  [key: string]: unknown;
+}
+
+export interface ChatHistoryFile {
+  system: string;
+  history: MessageParam[];
+  usage: ChatHistoryUsage | null;
+  cost: number | null;
+  metadata: Record<string, unknown>;
+}
+
 export interface StreamerState {
   messageIndex: number;
   tokens: string[];
