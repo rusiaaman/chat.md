@@ -49,7 +49,7 @@ Looking at your utils.js file, I see several opportunities for optimization:
 ### 🔌 Universal Model Support
 
 - **Anthropic Claude**: All models (Opus, Sonnet, Haiku)
-- **OpenAI**: GPT-4, GPT-3.5, and future models
+- **OpenAI**: GPT-4, GPT-3.5, o-series, and support for OpenAI Responses API
 - **Custom APIs**: Any OpenAI-compatible endpoint (Azure, Google Gemini, etc.)
 - **Quick Switching**: Toggle between different models in between a conversation.
 
@@ -121,6 +121,7 @@ chat.md supports a three-level configuration system with the following precedenc
 Configure parameters at the beginning of any `.chat.md` file:
 ```
 selectedConfig="my-provider"
+openaiApi="responses"
 reasoningEffort="high"
 maxTokens=4000
 maxThinkingTokens=20000
@@ -132,8 +133,9 @@ Your system prompt here
 ### VS Code Settings
 Access these through VS Code's settings UI or settings.json:
 
-- `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL, plus optional reasoning/token settings)
+- `chatmd.apiConfigs`: Named API configurations (provider, API key, model, base URL, optional reasoning/token settings, plus `openaiApi`: `"auto" | "chat" | "responses"`)
 - `chatmd.selectedConfig`: Active API configuration
+- `chatmd.openaiApi`: OpenAI API mode - `"auto"` (uses Responses API for OpenAI hosted gpt/o-series, Chat Completions elsewhere), `"responses"`, or `"chat"`
 - `chatmd.mcpServers`: Configure MCP tool servers
 - `chatmd.reasoningEffort`: Global reasoning depth (none, minimal, low, medium, high)
 - `chatmd.maxTokens`: Global maximum response tokens
@@ -269,6 +271,7 @@ vscode json settings
       "type": "openai",
       "apiKey": "",
       "model_name": "gpt-5.2",
+      "openaiApi": "responses",
       "reasoningEffort": "none"
     },
     "gemini-2.5pro": {
