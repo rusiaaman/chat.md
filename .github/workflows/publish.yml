@@ -32,7 +32,15 @@ jobs:
       - name: Build extension
         run: npm run vscode:prepublish
 
+      - name: Build VSIX package
+        run: npm run build:vsix
+
       - name: Publish to Visual Studio Marketplace
-        run: vsce publish -p $VSCE_PAT
+        run: vsce publish -p "$VSCE_PAT"
         env:
           VSCE_PAT: ${{ secrets.VSCE_PAT }}
+
+      - name: Publish to Open VSX Registry
+        run: npx --yes ovsx publish ./*.vsix -p "$OVSX_PAT"
+        env:
+          OVSX_PAT: ${{ secrets.OVSX_PAT }}

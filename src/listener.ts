@@ -5,6 +5,7 @@ import {
   hasEmptyToolExecuteBlock,
   ParsedDocumentResult, // Import the return type interface
   findAllAssistantBlocks, // Add this import for resumeStreaming
+  parseAssistantContent,
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
@@ -18,15 +19,37 @@ import {
   getDefaultSystemPrompt, // Add function to get default system prompt
 } from "./config";
 import * as path from "path";
-import * as fs from "fs"; // Keep fs for file operations
-import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
+import {
+  ensureChatMdGitignore,
+  log,
+  mcpClientManager,
+  statusManager,
+  requestStatusBarUpdate,
+} from "./extension";
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
-import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
+import { parseToolCall, findAllToolCalls } from "./tools/toolCallParser"; // Keep existing imports
 import {
   ensureDirectoryExists, // Keep existing imports
   writeFile, // Keep existing imports
   saveChatHistory, // Keep existing imports
+  getAssetsDirectory,
+  getAssetsRelativePath,
 } from "./utils/fileUtils";
+import { stripThinkingSections } from "./utils/thinkingBlocks";
+
+/**
+ * Counts the `# %% tool_execute` block markers in a chunk of text.
+ * Used to figure out how many tool calls of an assistant block already ran.
+ */
+function countToolExecuteBlocks(text: string): number {
+  return (text.match(/^# %% tool_execute[ \t]*$/gm) || []).length;
+}
+
+/*
+ * Tool calls are collected with findAllToolCalls from tools/toolCallParser, which
+ * shares its pattern with the streaming detector and the parser. Keeping a separate
+ * regex here previously let the listener collect calls that parseToolCall rejected.
+ */
 
 /**
  * Listens for document changes and manages streaming LLM responses.
@@ -340,90 +363,12 @@ export class DocumentListener {
         `Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? "..." : ""}"`,
       );
 
-      // Look for tool call XML - find the LAST match instead of first
-      // Support both fenced and non-fenced tool calls
+      // Look for tool call XML - the assistant block may contain several tool calls
+      // (parallel tool calls), so collect all of them in order of appearance.
+      // Thinking sections are excluded: reasoning about a tool call is not a call.
+      const toolCalls = findAllToolCalls(stripThinkingSections(assistantResponse));
 
-      // Match for properly fenced tool calls (with opening and closing fences)
-      // Allow for any annotation after the triple backticks
-      const properlyFencedToolCallRegex =
-        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/gs;
-
-      // Match for partially fenced tool calls (with opening fence but missing closing fence)
-      // Allow for any annotation after the triple backticks
-      const partiallyFencedToolCallRegex =
-        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/gs;
-
-      // Match for non-fenced tool calls
-      const nonFencedToolCallRegex =
-        /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/gs;
-
-      // Find all matches for all patterns
-      let properlyFencedMatch;
-      let lastProperlyFencedMatch = null;
-      let partiallyFencedMatch;
-      let lastPartiallyFencedMatch = null;
-      let nonFencedMatch;
-      let lastNonFencedMatch = null;
-
-      // Find all properly fenced matches
-      while (
-        (properlyFencedMatch =
-          properlyFencedToolCallRegex.exec(assistantResponse)) !== null
-      ) {
-        lastProperlyFencedMatch = properlyFencedMatch;
-      }
-
-      // Find all partially fenced matches
-      while (
-        (partiallyFencedMatch =
-          partiallyFencedToolCallRegex.exec(assistantResponse)) !== null
-      ) {
-        lastPartiallyFencedMatch = partiallyFencedMatch;
-      }
-
-      // Find all non-fenced matches
-      while (
-        (nonFencedMatch = nonFencedToolCallRegex.exec(assistantResponse)) !==
-        null
-      ) {
-        lastNonFencedMatch = nonFencedMatch;
-      }
-
-      // Determine which match to use (last one found, prioritizing in order: properly fenced, partially fenced, non-fenced)
-      let toolCallMatch = null;
-
-      // Find the last position of any match
-      const positions = [];
-      if (lastProperlyFencedMatch)
-        positions.push({
-          type: "properly-fenced",
-          match: lastProperlyFencedMatch,
-          index: lastProperlyFencedMatch.index,
-        });
-      if (lastPartiallyFencedMatch)
-        positions.push({
-          type: "partially-fenced",
-          match: lastPartiallyFencedMatch,
-          index: lastPartiallyFencedMatch.index,
-        });
-      if (lastNonFencedMatch)
-        positions.push({
-          type: "non-fenced",
-          match: lastNonFencedMatch,
-          index: lastNonFencedMatch.index,
-        });
-
-      // Sort by position in descending order (last in the text first)
-      positions.sort((a, b) => b.index - a.index);
-
-      if (positions.length > 0) {
-        toolCallMatch = positions[0].match;
-        log(
-          `Using last ${positions[0].type} tool call at position ${positions[0].index}`,
-        );
-      }
-
-      if (!toolCallMatch) {
+      if (toolCalls.length === 0) {
         log("No tool call found in assistant response");
         const errorResult = formatToolResult(
           "Error: No tool call found in assistant response",
@@ -432,7 +377,19 @@ export class DocumentListener {
         return;
       }
 
-      const toolCallXml = toolCallMatch[0];
+      // Each tool call gets its own tool_execute block, matched up positionally:
+      // the number of tool_execute blocks already present between the assistant
+      // block and this empty one tells us which tool call to run now.
+      const assistantBlockEnd = lastMatch.index + lastMatch[0].length;
+      const alreadyExecuted = countToolExecuteBlocks(
+        text.substring(assistantBlockEnd, toolExecutePosition),
+      );
+      const toolCallIndex = Math.min(alreadyExecuted, toolCalls.length - 1);
+      log(
+        `Assistant block contains ${toolCalls.length} tool call(s), ${alreadyExecuted} already executed, executing #${toolCallIndex + 1}`,
+      );
+
+      const toolCallXml = toolCalls[toolCallIndex];
       log(
         `Found tool call: "${toolCallXml.substring(0, 100)}${toolCallXml.length > 100 ? "..." : ""}"`,
       );
@@ -462,34 +419,6 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 \`\`\`
 `;
 
-      // Create a history entry that captures the tool execution process
-      const docDir = path.dirname(this.document.uri.fsPath);
-      const historyDir = path.join(docDir, ".cmd_history");
-      if (!fs.existsSync(historyDir)) {
-        fs.mkdirSync(historyDir, { recursive: true });
-      }
-
-      const timestamp = new Date()
-        .toISOString()
-        .replace(/:/g, "-")
-        .replace(/\..+Z/, "");
-      const executionLogPath = path.join(
-        historyDir,
-        `tool_execution_${timestamp}.md`,
-      );
-
-      // Log pre-execution information
-      let executionLog = `# Tool Call Execution Flow\n\n`;
-      executionLog += `- **Timestamp:** ${new Date().toISOString()}\n`;
-      executionLog += `- **Document:** ${this.document.fileName}\n`;
-      executionLog += `- **Tool Name:** ${parsedToolCall.name}\n\n`;
-
-      executionLog += `## Raw Tool Call XML\n\n\`\`\`xml\n${toolCallXml}\n\`\`\`\n\n`;
-      executionLog += `## Parsed Parameters\n\n\`\`\`json\n${JSON.stringify(parsedToolCall.params, null, 2)}\n\`\`\`\n\n`;
-
-      // Write pre-execution information
-      fs.writeFileSync(executionLogPath, executionLog);
-      log(`Tool execution flow log created: ${executionLogPath}`);
 
       // Execute the tool, passing the raw tool call XML for logging
       const rawResult = await executeToolCall(
@@ -506,25 +435,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         // Remove the empty tool_execute block
         this.removeLastEmptyBlock("tool_execute");
         
-        // Log cancellation in the execution log file
-        executionLog += `## Tool Execution Cancelled\n\nTool execution was cancelled by user.\n`;
-        fs.writeFileSync(executionLogPath, executionLog);
-        log(`Tool cancellation recorded in log: ${executionLogPath}`);
-        
         // Set status back to idle
         vscode.window.showInformationMessage("Tool execution cancelled, but it may still have gone through successfully");
         
         // Don't insert anything into the document
         return;
       }
-
-      // Append the result to the execution log
-      const loggedToolResult = typeof rawResult === "string"
-        ? rawResult
-        : JSON.stringify(rawResult, null, 2);
-      executionLog += `## Tool Execution Result\n\n\`\`\`\n${loggedToolResult}\n\`\`\`\n`;
-      fs.writeFileSync(executionLogPath, executionLog);
-      log(`Tool execution result appended to log: ${executionLogPath}`);
 
       // Insert the raw result (insertToolResult will handle formatting/linking)
       await this.insertToolResult(rawResult);
@@ -557,6 +473,46 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
   }
 
   /**
+   * Counts how many tool calls of the assistant block governing the given
+   * tool_execute block still need to be executed, treating the block at
+   * `toolExecutePosition` as the one being executed right now.
+   */
+  private countPendingToolCalls(
+    text: string,
+    toolExecutePosition: number,
+  ): number {
+    const textBefore = text.substring(0, toolExecutePosition);
+    const assistantBlockRegex = /# %% assistant\s+([\s\S]*?)(?=\n# %%|$)/g;
+
+    let match;
+    let lastAssistantMatch: RegExpExecArray | null = null;
+    while ((match = assistantBlockRegex.exec(textBefore)) !== null) {
+      lastAssistantMatch = match;
+    }
+
+    if (!lastAssistantMatch) {
+      return 0;
+    }
+
+    const toolCalls = findAllToolCalls(
+      stripThinkingSections(lastAssistantMatch[1].trim()),
+    );
+    if (toolCalls.length <= 1) {
+      return 0;
+    }
+
+    const assistantBlockEnd =
+      lastAssistantMatch.index + lastAssistantMatch[0].length;
+    // Tool_execute blocks before this one, plus the one being filled right now
+    const executed =
+      countToolExecuteBlocks(
+        text.substring(assistantBlockEnd, toolExecutePosition),
+      ) + 1;
+
+    return Math.max(0, toolCalls.length - executed);
+  }
+
+  /**
    * Insert tool result (or error) into the document and add a new assistant block.
    * If the result is large, it saves it to a file and inserts a link.
    * @param rawResult The raw string content returned by the tool, or a pre-formatted error message.
@@ -585,7 +541,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       if (lines.length > lineCountThreshold) {
         log(`Formatted rich result exceeds ${lineCountThreshold} lines, saving to file.`);
         try {
-          const assetsDir = path.join(docDir, "cmdassets");
+          const assetsDir = getAssetsDirectory(docDir);
           ensureDirectoryExists(assetsDir);
 
           const timestamp = new Date()
@@ -596,7 +552,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
             .replace(/\..+Z/, "");
           const randomString = Math.random().toString(36).substring(2, 8);
           const filename = `tool-result-${timestamp}-${randomString}.md`;
-          const relativeFilePath = path.join("cmdassets", filename);
+          const relativeFilePath = getAssetsRelativePath(docDir, filename);
           const fullFilePath = path.join(assetsDir, filename);
 
           writeFile(fullFilePath, formattedMarkdown);
@@ -629,7 +585,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           log(`Result exceeds ${lineCountThreshold} lines, saving to file.`);
           try {
             const docDir = path.dirname(this.document.uri.fsPath);
-            const assetsDir = path.join(docDir, "cmdassets");
+            const assetsDir = getAssetsDirectory(docDir);
             ensureDirectoryExists(assetsDir);
 
             const timestamp = new Date()
@@ -640,7 +596,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
               .replace(/\..+Z/, "");
             const randomString = Math.random().toString(36).substring(2, 8);
             const filename = `tool-result-${timestamp}-${randomString}.txt`;
-            const relativeFilePath = path.join("cmdassets", filename);
+            const relativeFilePath = getAssetsRelativePath(docDir, filename);
             const fullFilePath = path.join(assetsDir, filename);
 
             writeFile(fullFilePath, rawResult);
@@ -712,7 +668,23 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       `Calculated insertion range: Start(${startPos.line},${startPos.character}), End(${endPos.line},${endPos.character})`,
     );
 
-    // Create an edit that replaces the empty content with the result and adds a new assistant block after
+    // Create an edit that replaces the empty content with the result, followed by the
+    // next block. With parallel tool calls the same assistant block can hold several
+    // tool calls, so if any of them are still pending we add another tool_execute
+    // block instead of an assistant block, and only start the next API call once all
+    // of them have been executed.
+    const pendingToolCalls = this.countPendingToolCalls(
+      text,
+      lastEmptyBlock.position,
+    );
+    const nextBlockMarker =
+      pendingToolCalls > 0 ? "# %% tool_execute" : "# %% assistant";
+    if (pendingToolCalls > 0) {
+      log(
+        `${pendingToolCalls} tool call(s) still pending in the assistant block, adding another tool_execute block`,
+      );
+    }
+
     const resultText = typeof rawResult === "string" ? rawResult : "";
     const isMarkdownLink =
       shouldInsertAsMarkdown ||
@@ -720,10 +692,10 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
     let textToInsert;
     if (isMarkdownLink) {
-      textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
+      textToInsert = `\n${contentToInsert.trim()}\n\n${nextBlockMarker}\n`;
       log("Inserting markdown result without code fences");
     } else {
-      textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
+      textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n${nextBlockMarker}\n`;
       log("Inserting plain text content with code fences");
     }
     // If the block wasn't just the marker but had whitespace, adjust insertion
@@ -806,27 +778,15 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       
       // Check if the last message is from the assistant
       if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
-        // Append to existing assistant message
-        const existingAssistantContent = updatedMessages[updatedMessages.length - 1].content
-          .filter((c) => c.type === "text")
-          .map((c) => (c as any).value)
-          .join("\n\n");
-        
-        // Replace the content with combined text
-        const newContent: MessageParam["content"] = updatedMessages[updatedMessages.length - 1].content.filter(
-          (c) => c.type !== "text",
-        );
-        newContent.push({
-          type: "text",
-          value: existingAssistantContent + existingContent.trim(),
-        });
-
-        updatedMessages[updatedMessages.length - 1].content = newContent;
+        // parseDocument already parsed this very block (thinking sections included),
+        // so appending the raw block text would duplicate it and leak the "## %%"
+        // markers into the API payload.
+        log("Last parsed message already carries the partial assistant content");
       } else {
         // Add new assistant message with the partial response
         updatedMessages.push({
           role: "assistant",
-          content: [{ type: "text", value: existingContent.trim() }]
+          content: parseAssistantContent(existingContent.trim(), this.document),
         });
       }
     }
@@ -920,6 +880,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    * Start streaming response from LLM. Handles parsing, errors, prompt assembly, and initiation.
    */
   private async startStreaming(): Promise<void> {
+    // Keep generated files ignored in the Git repository containing this chat file.
+    // Do not let Git discovery or .gitignore I/O delay the API request.
+    void Promise.resolve().then(() =>
+      ensureChatMdGitignore(path.dirname(this.document.uri.fsPath)),
+    );
+
     // Prevent concurrent streams for the same document
     const activeStreamer = this.getActiveStreamer();
     if (activeStreamer) {
@@ -997,6 +963,17 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         messages,
         "before_llm_call",
         finalSystemPrompt, // Use the combined prompt
+        {
+          provider: perFileConfigName
+            ? require("./config").getProviderForConfig(perFileConfigName)
+            : require("./config").getProvider(),
+          model: perFileConfigName
+            ? require("./config").getModelNameForConfig(perFileConfigName)
+            : require("./config").getModelName(),
+          config: perFileConfigName
+            ? perFileConfigName
+            : require("./config").getSelectedConfigName(),
+        },
       );
       log(`Saved chat history (before call) to: ${historyFilePath}`);
 

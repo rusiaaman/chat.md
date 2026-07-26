@@ -15,6 +15,11 @@ export interface ApiConfig {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   maxTokens?: number;
   maxThinkingTokens?: number;
+  /**
+   * Which OpenAI API flavour to use. "auto" picks the Responses API for OpenAI
+   * hosted gpt and o-series models, and chat completions everywhere else.
+   */
+  openaiApi?: "auto" | "chat" | "responses";
 }
 
 /**
@@ -72,22 +77,21 @@ Chatmd after doing a coding task asks the person if they would like it to explai
 Chatmd can ask follow-up questions in more conversational contexts, but avoids asking more than one question per response and keeps the one question short. Chatmd doesn't always ask a follow-up question even in conversational contexts.
 
 
-Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool inside a code fence block:
+Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool:
 
-\`\`\`tool_call
-<tool_call>
-<tool_name>toolName</tool_name>
-<param name="paramName">paramValue</param>
-</tool_call>
-\`\`\`
+<cmd:tool_call>
+<cmd:tool_name>toolName</cmd:tool_name>
+<cmd:param name="paramName">paramValue</cmd:param>
+</cmd:tool_call>
 
-Note: you should always give both \`\`\`tool_call and <tool_call>.
+Tool calls must use the exact cmd format and must not be wrapped in triple-backtick fences.
 
 IMPORTANT FORMATTING REQUIREMENTS:
 1. Always use double quotes around parameter names: name="paramName" but parameter values should be unquoted.
 2. Parameter values can be inline (no newlines required)
 3. Parameter names must exactly match those in the tool's schema.
-4. Always place the tool call within code fence blocks.
+4. Place the tool call directly in the response without code fences.
+5. The closing </cmd:tool_call> tag must start on its own line. A tool call written entirely on one line is not recognised.
 
 Available tools:${toolsDescription}
 
@@ -95,53 +99,49 @@ ${resourcesDescription}
 
 After calling a tool, wait for the result.
 
+When several independent tools are needed, emit them as multiple tool calls back to back in the same response, one complete <cmd:tool_call> block after another with nothing else between them. They are all executed and their results are returned before your next turn, so prefer this over one tool call per turn whenever the calls don't depend on each other's results.
+
 Tool usage guidelines:
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.
 - You don't need to quote characters like "<", ">", "&", etc. in parameter values.
 - You should use CDATA tag in the parameter value if it contains conflicting XML tags only, not for special characters.
 - Make sure to use correct parameter names with quotes (name="paramName")
-- In <param> value for scalar parameters (string, number, boolean), write values directly without quotes
+- In <cmd:param> value for scalar parameters (string, number, boolean), write values directly without quotes
 - For object/array type parameters, use properly encoded JSON format
 - Use \`system.fetch_mcp_resource\` when you need to read the contents of one of the advertised MCP resources. Pass the exact \`serverId\` and resource \`uri\` shown above.
 
-Correct: <param name="xml_content"><hello>{"greeting": "hello"}</hello></param>
-Incorrect: <param name="xml_content">&lt;hello&gt;{\"greeting\": \"hello\"}&lt;/hello&gt;</param>
-Correct: <param name="weather_object">{"temperature_3days": [20, 21, 19]}</param>
+Correct: <cmd:param name="xml_content"><hello>{"greeting": "hello"}</hello></cmd:param>
+Incorrect: <cmd:param name="xml_content">&lt;hello&gt;{\"greeting\": \"hello\"}&lt;/hello&gt;</cmd:param>
+Correct: <cmd:param name="weather_object">{"temperature_3days": [20, 21, 19]}</cmd:param>
 
 Examples of valid tool calls:
 
 Example 1 - a tool with a single scalar parameter:
 
-\`\`\`tool_call
-<tool_call>
-<tool_name>read_file</tool_name>
-<param name="path">/Users/me/project/main.py</param>
-</tool_call>
-\`\`\`
+<cmd:tool_call>
+<cmd:tool_name>read_file</cmd:tool_name>
+<cmd:param name="path">/Users/me/project/main.py</cmd:param>
+</cmd:tool_call>
 
 Example 2 - a tool with multiple parameters, including a multi-line value:
 
-\`\`\`tool_call
-<tool_call>
-<tool_name>write_file</tool_name>
-<param name="path">/tmp/hello.py</param>
-<param name="content">def greet(name):
+<cmd:tool_call>
+<cmd:tool_name>write_file</cmd:tool_name>
+<cmd:param name="path">/tmp/hello.py</cmd:param>
+<cmd:param name="content">def greet(name):
     print(f"Hello, {name}!")
 
 greet("world")
-</param>
-</tool_call>
-\`\`\`
+</cmd:param>
+</cmd:tool_call>
 
 Example 3 - a tool with a JSON object parameter:
 
-\`\`\`tool_call
-<tool_call>
-<tool_name>search_files</tool_name>
-<param name="query">TODO</param>
-<param name="options">{"case_sensitive": false, "max_results": 10}</param>
-</tool_call>
-\`\`\`
+<cmd:tool_call>
+<cmd:tool_name>search_files</cmd:tool_name>
+<cmd:param name="query">TODO</cmd:param>
+<cmd:param name="options">{"case_sensitive": false, "max_results": 10}</cmd:param>
+</cmd:tool_call>
 
 Chatmd provides the shortest answer it can to the person's message, while respecting any stated length and comprehensiveness preferences given by the person. Chatmd addresses the specific query or task at hand, avoiding tangential information unless absolutely critical for completing the request.
 
@@ -525,6 +525,73 @@ export function getMaxTokens(configName?: string, fileConfig?: Record<string, an
   const globalValue = config.get<number>("maxTokens") || 8000;
   log(`Using maxTokens from global config: ${globalValue}`);
   return globalValue;
+}
+
+/**
+ * Resolves the model name using the same precedence as the API clients:
+ * per-file/named config first, then the global setting.
+ */
+export function resolveModelName(configName?: string): string | undefined {
+  if (configName) {
+    const fromConfig = getModelNameForConfig(configName);
+    if (fromConfig) {
+      return fromConfig;
+    }
+  }
+  return getModelName();
+}
+
+/**
+ * Gets the configured OpenAI API flavour ("auto" when unset)
+ */
+export function getOpenaiApiSetting(
+  configName?: string,
+  fileConfig?: Record<string, any>,
+): "auto" | "chat" | "responses" {
+  if (fileConfig?.openaiApi) {
+    log(`Using openaiApi from file config: ${fileConfig.openaiApi}`);
+    return fileConfig.openaiApi;
+  }
+
+  if (configName) {
+    const providerConfig = getConfigByName(configName);
+    if (providerConfig?.openaiApi) {
+      log(
+        `Using openaiApi from provider config '${configName}': ${providerConfig.openaiApi}`,
+      );
+      return providerConfig.openaiApi;
+    }
+  }
+
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get<"auto" | "chat" | "responses">("openaiApi") || "auto";
+}
+
+/**
+ * Decides whether an OpenAI request goes to the Responses API or chat completions.
+ * "auto" resolves to the Responses API only for OpenAI hosted gpt and o-series
+ * models, since no other host implements it.
+ */
+export function resolveOpenaiApiStyle(
+  modelName: string | undefined,
+  baseUrl: string | undefined,
+  configName?: string,
+  fileConfig?: Record<string, any>,
+): "chat" | "responses" {
+  const setting = getOpenaiApiSetting(configName, fileConfig);
+  if (setting === "chat" || setting === "responses") {
+    return setting;
+  }
+
+  const {
+    isResponsesApiModel,
+    isOpenAiBaseUrl,
+  } = require("./utils/modelCapabilities");
+
+  if (modelName && isResponsesApiModel(modelName) && isOpenAiBaseUrl(baseUrl)) {
+    return "responses";
+  }
+  return "chat";
 }
 
 /**

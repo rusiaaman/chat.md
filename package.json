@@ -2,7 +2,7 @@
   "name": "filechat",
   "displayName": "chat.md",
   "description": "Interact with LLMs directly in markdown files. Features include tool integration, auto-execution control, and customizable behavior.",
-  "version": "0.4.5",
+  "version": "0.5.0",
   "publisher": "AmanRusia",
   "license": "MIT",
   "icon": "./images/icon.png",
@@ -153,6 +153,15 @@
                 ],
                 "description": "Reasoning effort level for this provider configuration (overrides global setting)"
               },
+              "openaiApi": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "chat",
+                  "responses"
+                ],
+                "description": "Which OpenAI API to use for this configuration. 'auto' uses the Responses API for OpenAI hosted gpt and o-series models (required to keep encrypted reasoning across turns) and chat completions everywhere else."
+              },
               "maxTokens": {
                 "type": "number",
                 "description": "Maximum number of tokens to generate for this provider configuration (overrides global setting)"
@@ -262,6 +271,23 @@
             "high"
           ],
           "description": "Reasoning effort level for LLM responses. For OpenAI: controls reasoning_effort parameter. For Anthropic: used to calculate thinking token budget if maxThinkingTokens is not set.",
+          "scope": "application"
+        },
+        "chatmd.assetsPath": {
+          "type": "string",
+          "description": "Directory for chat.md assets such as tool results and reasoning payloads. Relative paths are resolved from each chat file.",
+          "default": "cmdassets",
+          "scope": "application"
+        },
+        "chatmd.openaiApi": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "chat",
+            "responses"
+          ],
+          "default": "auto",
+          "description": "Which OpenAI API to use. 'auto' uses the Responses API for OpenAI hosted gpt and o-series models (required to keep encrypted reasoning across turns) and chat completions everywhere else.",
           "scope": "application"
         }
       }

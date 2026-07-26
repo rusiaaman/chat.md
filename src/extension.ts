@@ -51,6 +51,61 @@ export function log(message: string): void {
   // Logging happens without showing the output channel automatically
 }
 
+function findGitRoot(startPath: string): string | undefined {
+  let currentPath = path.resolve(startPath);
+
+  while (true) {
+    const gitPath = path.join(currentPath, ".git");
+    if (fs.existsSync(gitPath)) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return undefined;
+    }
+    currentPath = parentPath;
+  }
+}
+
+export function ensureChatMdGitignore(workspaceRoot: string): void {
+  const gitRoot = findGitRoot(workspaceRoot);
+  if (!gitRoot) {
+    return;
+  }
+
+  const gitignorePath = path.join(gitRoot, ".gitignore");
+  const entries = [".cmd_history/", "cmdassets/"];
+
+  try {
+    const existing = fs.existsSync(gitignorePath)
+      ? fs.readFileSync(gitignorePath, "utf8")
+      : "";
+    const lines = existing.split(/\r?\n/);
+    const missingEntries = entries.filter(
+      (entry) => !lines.some((line) => line.trim() === entry),
+    );
+
+    if (missingEntries.length === 0) {
+      return;
+    }
+
+    let updated = existing;
+    if (updated.length > 0 && !updated.endsWith("\n")) {
+      updated += "\n";
+    }
+    if (updated.length > 0 && !updated.endsWith("\n\n")) {
+      updated += "\n";
+    }
+    updated += "# chat.md generated files\n";
+    updated += `${missingEntries.join("\n")}\n`;
+    fs.writeFileSync(gitignorePath, updated, "utf8");
+    log(`Added chat.md generated files to ${gitignorePath}`);
+  } catch (error) {
+    log(`Could not update ${gitignorePath}: ${error}`);
+  }
+}
+
 // --- Helper Function to Select Config by Index ---
 /**
  * Selects and activates the API configuration at the specified index.
@@ -350,20 +405,10 @@ function getDocumentListenerForDocument(document: vscode.TextDocument): Document
  * @returns True if a tool call is found, false otherwise
  */
 function checkForToolCallInText(text: string): boolean {
-  // Check for various tool call formats
-  const properlyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
-  const partiallyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
-  const nonFencedToolCallRegex = /<tool_call>[\s\S]*?<\/tool_call>/s;
-
-  return (
-    properlyFencedToolCallRegex.test(text) ||
-    partiallyFencedToolCallRegex.test(text) ||
-    nonFencedToolCallRegex.test(text)
-  );
+  const open = "<cmd:tool_call>";
+  const end = "</cmd:tool_call>";
+  return text.includes(open) && text.includes(end);
 }
-
 // Declare context at module level to make it available in initializeMcpClients
 let context: vscode.ExtensionContext;
 
@@ -1013,26 +1058,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("filechat.newContextChat", async () => {
-      const activeEditor = vscode.window.activeTextEditor;
-      let streamerCancelled = false;
-
-      // Check if active editor is a chat file and if streaming is active
-      if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
-        const streamer = getActiveStreamerForDocument(activeEditor.document);
-        if (streamer && streamer.isActive && streamer.cancel) {
-          log(
-            "newContextChat shortcut used while streaming: Cancelling stream.",
-          );
-          streamer.cancel();
-          vscode.window.showInformationMessage("chat.md streaming cancelled");
-          onActiveFileChanged(); // Update status bar after cancelling
-          streamerCancelled = true;
-        }
-      }
-
-      // If streaming was not cancelled, proceed with creating a new chat
-      if (!streamerCancelled) {
-        log("newContextChat shortcut used: Creating new context chat.");
+      log("newContextChat: Creating new context chat.");
         try {
           // Get current context (workspace, file, selection)
           const context = getCurrentContext();
@@ -1065,8 +1091,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
             `Failed to create context chat: ${error}`,
           );
         }
-      } // This brace closes the if (!streamerCancelled) block
-    }), // This closes the registerCommand call
+    }),
 
     vscode.commands.registerCommand("filechat.newChat", async () => {
       // Create a new chat file

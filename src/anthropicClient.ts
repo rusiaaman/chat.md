@@ -1,16 +1,29 @@
 import * as https from "https";
 import * as http from "http";
 import * as path from "path";
-import { MessageParam, Content } from "./types";
+import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
 import { generateToolCallingSystemPrompt } from "./config";
+import {
+  encodeThinkingPayloadToken,
+  encodeThinkingToken,
+} from "./utils/thinkingBlocks";
+import { cleanMessagesForApi } from "./utils/messageCleanup";
+import {
+  isAdaptiveThinkingModel,
+  needsInterleavedThinkingBeta,
+  omitsThinkingByDefault,
+  requiresAlwaysOnThinking,
+  toAdaptiveEffort,
+} from "./utils/modelCapabilities";
 
 /**
  * Client for communicating with the Anthropic API
  */
 export class AnthropicClient {
+  public lastUsage: Record<string, unknown> | undefined;
   private readonly apiUrl = "https://api.anthropic.com/v1/messages";
   private readonly apiVersion = "2023-06-01"; // This version should work for streaming
 
@@ -28,10 +41,10 @@ export class AnthropicClient {
     configName?: string,
     fileConfig?: Record<string, any>,
   ): AsyncGenerator<string[], void, unknown> {
+    this.lastUsage = undefined;
     log(`Starting API request with ${messages.length} messages`);
 
     try {
-      const formattedMessages = this.formatMessages(messages, document);
       // Resolve model name (allow per-file override)
       let modelName = modelNameOverride;
       if (!modelName) {
@@ -55,38 +68,82 @@ export class AnthropicClient {
       const maxTokens = getMaxTokens(configName, fileConfig);
       const configuredThinkingTokens = getMaxThinkingTokens(configName, fileConfig);
       const reasoningEffort = getReasoningEffort(configName, fileConfig);
-      
+
+      // Thinking is on unless it was explicitly turned off
+      const thinkingEnabled = reasoningEffort !== "none";
+      const adaptive = isAdaptiveThinkingModel(modelName);
+
       const requestBody: any = {
         model: modelName,
-        messages: formattedMessages,
         system: systemPromptToUse,
         stream: true,
         max_tokens: maxTokens,
       };
 
-      // Determine thinking token budget for Anthropic
-      let thinkingTokens;
-      
-      // If maxThinkingTokens is explicitly configured and not the default, use that
-      if (configuredThinkingTokens && configuredThinkingTokens !== 16000) {
-        thinkingTokens = configuredThinkingTokens;
-        log(`Using configured thinking tokens: ${thinkingTokens}`);
-      } 
-      // If reasoning effort is configured, calculate thinking tokens from it
-      else if (reasoningEffort) {
-        thinkingTokens = calculateThinkingTokensFromEffort(maxTokens, reasoningEffort);
-        log(`Using thinking tokens calculated from reasoning effort "${reasoningEffort}": ${thinkingTokens}`);
+      if (adaptive) {
+        // Claude 4.6+ replaced budget_tokens with adaptive thinking + effort
+        if (thinkingEnabled) {
+          requestBody.thinking = { type: "adaptive" };
+          if (omitsThinkingByDefault(modelName)) {
+            // These models omit thinking from the response unless asked for it
+            requestBody.thinking.display = "summarized";
+          }
+          if (reasoningEffort) {
+            requestBody.output_config = {
+              effort: toAdaptiveEffort(reasoningEffort),
+            };
+          }
+          log(
+            `Using adaptive thinking: ${JSON.stringify(requestBody.thinking)}${requestBody.output_config ? ` with ${JSON.stringify(requestBody.output_config)}` : ""}`,
+          );
+        } else if (!requiresAlwaysOnThinking(modelName)) {
+          requestBody.thinking = { type: "disabled" };
+          log("Thinking disabled for adaptive thinking model");
+        } else {
+          log(
+            "Model requires always-on adaptive thinking, omitting thinking param",
+          );
+        }
+      } else if (thinkingEnabled) {
+        // Older models: extended thinking with an explicit token budget
+        let thinkingTokens: number | undefined;
+        if (configuredThinkingTokens && configuredThinkingTokens !== 16000) {
+          thinkingTokens = configuredThinkingTokens;
+          log(`Using configured thinking tokens: ${thinkingTokens}`);
+        } else if (reasoningEffort) {
+          thinkingTokens = calculateThinkingTokensFromEffort(maxTokens, reasoningEffort);
+          log(
+            `Using thinking tokens calculated from reasoning effort "${reasoningEffort}": ${thinkingTokens}`,
+          );
+        } else {
+          log("No thinking token configuration, letting Anthropic decide");
+        }
+
+        if (thinkingTokens) {
+          const budgetTokens = Math.max(1024, thinkingTokens);
+          requestBody.thinking = {
+            type: "enabled",
+            budget_tokens: budgetTokens,
+          };
+          // Anthropic requires max_tokens to be greater than the thinking budget
+          if (requestBody.max_tokens <= budgetTokens) {
+            requestBody.max_tokens = budgetTokens + maxTokens;
+            log(
+              `Raised max_tokens to ${requestBody.max_tokens} to exceed thinking budget ${budgetTokens}`,
+            );
+          }
+          log(`Setting Anthropic thinking budget_tokens: ${budgetTokens}`);
+        }
       }
-      // Otherwise, don't set thinking tokens (let Anthropic handle it automatically)
-      else {
-        log("No thinking token configuration, letting Anthropic handle automatically");
-      }
-      
-      // Add thinking tokens parameter if we calculated one
-      if (thinkingTokens) {
-        requestBody.thinking = { max_tokens: thinkingTokens };
-        log(`Setting Anthropic thinking.max_tokens: ${thinkingTokens}`);
-      }
+
+      // Thinking blocks may only be replayed when thinking is actually enabled
+      const thinkingActive = Boolean(requestBody.thinking) && thinkingEnabled;
+      const cleanedMessages = cleanMessagesForApi(messages, {
+        modelName,
+        thinkingEnabled: thinkingActive,
+        apiStyle: "anthropic",
+      });
+      requestBody.messages = this.formatMessages(cleanedMessages, document);
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,
@@ -94,13 +151,20 @@ export class AnthropicClient {
 
       log(`Using Anthropic model: ${requestBody.model}`);
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "Anthropic-Version": this.apiVersion,
+        "x-api-key": this.apiKey,
+      };
+
+      if (thinkingActive && needsInterleavedThinkingBeta(modelName)) {
+        headers["anthropic-beta"] = "interleaved-thinking-2025-05-14";
+        log("Requesting interleaved thinking beta");
+      }
+
       const requestOptions = {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Anthropic-Version": this.apiVersion,
-          "x-api-key": this.apiKey,
-        },
+        headers,
       };
 
       log("Creating HTTPS request");
@@ -169,7 +233,7 @@ export class AnthropicClient {
       }
 
       log("Processing streaming response");
-      yield* this.createStreamGenerator(response);
+      yield* this.createStreamGenerator(response, modelName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
@@ -185,9 +249,12 @@ export class AnthropicClient {
    */
   private async *createStreamGenerator(
     response: http.IncomingMessage,
+    modelName: string,
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
+    // Accumulated thinking text of the block currently being streamed
+    let thinkingText = "";
 
     try {
       for await (const chunk of response) {
@@ -242,13 +309,69 @@ export class AnthropicClient {
                 log(`Received token: "${data.delta.text}"`);
                 // Ensure we're sending tokens for text_delta events
                 yield [data.delta.text];
+              } else if (
+                data.type === "content_block_delta" &&
+                data.delta &&
+                data.delta.type === "thinking_delta" &&
+                data.delta.thinking
+              ) {
+                thinkingText += data.delta.thinking;
+                yield [encodeThinkingToken(data.delta.thinking)];
+              } else if (
+                data.type === "content_block_delta" &&
+                data.delta &&
+                data.delta.type === "signature_delta" &&
+                data.delta.signature
+              ) {
+                // The signature closes the thinking block. Keep the exact thinking
+                // text with it so it can be replayed byte for byte later on.
+                log("Received thinking signature");
+                const payload: ThinkingPayload & { model: string } = {
+                  model: modelName,
+                  kind: "anthropic_signature",
+                  signature: data.delta.signature,
+                };
+                thinkingText = "";
+                yield [encodeThinkingPayloadToken(payload)];
               } else if (data.type === "content_block_start") {
                 log(
                   `Content block start: ${JSON.stringify(data.content_block)}`,
                 );
+                const block = data.content_block;
+                if (block && block.type === "redacted_thinking" && block.data) {
+                  log("Received redacted thinking block");
+                  const payload: ThinkingPayload & { model: string } = {
+                    model: modelName,
+                    kind: "anthropic_redacted",
+                    data: block.data,
+                  };
+                  yield [
+                    encodeThinkingToken("[redacted thinking]"),
+                    encodeThinkingPayloadToken(payload),
+                  ];
+                } else if (block && block.type === "thinking" && block.thinking) {
+                  thinkingText += block.thinking;
+                  yield [encodeThinkingToken(block.thinking)];
+                }
               } else if (data.type === "message_delta") {
+                if (data.usage) {
+                  this.lastUsage = {
+                    ...(this.lastUsage || {}),
+                    outputTokens: data.usage.output_tokens,
+                    cacheReadTokens: data.usage.cache_read_input_tokens,
+                    cacheWriteTokens: data.usage.cache_creation_input_tokens,
+                  };
+                }
                 log(`Message delta received: ${JSON.stringify(data.delta)}`);
               } else if (data.type === "message_start") {
+                if (data.message?.usage) {
+                  this.lastUsage = {
+                    inputTokens: data.message.usage.input_tokens,
+                    outputTokens: data.message.usage.output_tokens,
+                    cacheReadTokens: data.message.usage.cache_read_input_tokens,
+                    cacheWriteTokens: data.message.usage.cache_creation_input_tokens,
+                  };
+                }
                 log(`Message start received: ${JSON.stringify(data.message)}`);
               } else if (data.type === "message_stop") {
                 log("Received message_stop event");
@@ -308,9 +431,26 @@ export class AnthropicClient {
     contentItems: readonly Content[],
     document?: vscode.TextDocument,
   ): any[] {
-    return contentItems.map((content) => {
+    const blocks: any[] = [];
+
+    for (const content of contentItems) {
       if (content.type === "text") {
-        return { type: "text", text: content.value };
+        blocks.push({ type: "text", text: content.value });
+      } else if (content.type === "thinking") {
+        const payload = content.payload;
+        if (payload?.kind === "anthropic_redacted" && payload.data) {
+          blocks.push({ type: "redacted_thinking", data: payload.data });
+        } else if (payload?.kind === "anthropic_signature" && payload.signature) {
+          // When opaque content exists, text is irrelevant to the API
+          blocks.push({
+            type: "thinking",
+            thinking: "",
+            signature: payload.signature,
+          });
+        } else {
+          // Raw thinking without a signature cannot be replayed to Anthropic
+          log("Skipping thinking block without an Anthropic signature");
+        }
       } else if (content.type === "image") {
         try {
           // Resolve image path relative to document if needed
@@ -321,34 +461,40 @@ export class AnthropicClient {
           // Read image file and convert to base64
           const imageData = readFileAsBuffer(imagePath);
           if (!imageData) {
-            return {
+            blocks.push({
               type: "text",
               text: `[Failed to load image: ${content.path}]`,
-            };
+            });
+            continue;
           }
 
           const base64Data = imageData.toString("base64");
           const mimeType = this.getMimeType(imagePath);
 
-          return {
+          blocks.push({
             type: "image",
             source: {
               type: "base64",
               media_type: mimeType,
               data: base64Data,
             },
-          };
+          });
         } catch (error) {
           console.error(`Error processing image ${content.path}:`, error);
-          // Return empty text if image can't be processed
-          return {
+          // Push text if image can't be processed
+          blocks.push({
             type: "text",
             text: `[Failed to load image: ${content.path}]`,
-          };
+          });
         }
       }
-      return { type: "text", text: "" };
-    });
+    }
+
+    if (blocks.length === 0) {
+      blocks.push({ type: "text", text: "[continuing]" });
+    }
+
+    return blocks;
   }
 
   /**

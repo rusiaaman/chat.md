@@ -8,18 +8,18 @@ import {
 // Test function to verify CDATA parsing
 export function testCdataFunctionality() {
   // Test case 1: Basic CDATA extraction
-  const simpleParam = `<param name="content"><![CDATA[This is content]]></param>`;
+  const simpleParam = `<cmd:param name="content"><![CDATA[This is content]]></cmd:param>`;
   console.log(
     "Test 1 - Simple CDATA content:",
     extractCdataContent(simpleParam),
   );
 
   // Test case 2: CDATA with XML-like content
-  const xmlInCdata = `<param name="content"><![CDATA[This contains <tool_call> and </tool_call> tags]]></param>`;
+  const xmlInCdata = `<cmd:param name="content"><![CDATA[This contains <cmd:tool_call> and </cmd:tool_call> tags]]></cmd:param>`;
   console.log("Test 2 - CDATA with XML tags:", extractCdataContent(xmlInCdata));
 
   // Test case 3: Multiple CDATA sections
-  const multipleCdata = `<param name="content"><![CDATA[Section 1]]></param><![CDATA[Section 2]]></param>`;
+  const multipleCdata = `<cmd:param name="content"><![CDATA[Section 1]]></cmd:param><![CDATA[Section 2]]></cmd:param>`;
   console.log(
     "Test 3 - Multiple CDATA sections:",
     extractCdataContent(multipleCdata),
@@ -37,12 +37,12 @@ export function testCdataFunctionality() {
 
   // Test case 5: Complete tool call with CDATA
   const completeToolCall = `
-<tool_call>
-<tool_name>FileWriteOrEdit</tool_name>
-<param name="file_path">/test/path.txt</param>
-<param name="percentage_to_change">5</param>
-<param name="file_content_or_search_replace_blocks"><![CDATA[This content has XML-like tags such as </tool_call> that should be treated as text]]></param>
-</tool_call>
+<cmd:tool_call>
+<cmd:tool_name>FileWriteOrEdit</cmd:tool_name>
+<cmd:param name="file_path">/test/path.txt</cmd:param>
+<cmd:param name="percentage_to_change">5</cmd:param>
+<cmd:param name="file_content_or_search_replace_blocks"><![CDATA[This content has XML-like tags such as </cmd:tool_call> that should be treated as text]]></cmd:param>
+</cmd:tool_call>
   `;
 
   const parsedCall = parseToolCall(completeToolCall);
@@ -50,11 +50,11 @@ export function testCdataFunctionality() {
 
   // Test case 6: Check for completed tool call with CDATA
   const incompleteToolCall = `
-<tool_call>
-<tool_name>FileWriteOrEdit</tool_name>
-<param name="file_path">/test/path.txt</param>
-<param name="percentage_to_change">5</param>
-<param name="file_content_or_search_replace_blocks"><![CDATA[This content has XML-like tags
+<cmd:tool_call>
+<cmd:tool_name>FileWriteOrEdit</cmd:tool_name>
+<cmd:param name="file_path">/test/path.txt</cmd:param>
+<cmd:param name="percentage_to_change">5</cmd:param>
+<cmd:param name="file_content_or_search_replace_blocks"><![CDATA[This content has XML-like tags
   `;
 
   console.log(
@@ -68,16 +68,16 @@ export function testCdataFunctionality() {
 
   // Test case 7: Tool call with CDATA containing search/replace markers
   const searchReplaceToolCall = `
-<tool_call>
-<tool_name>FileWriteOrEdit</tool_name>
-<param name="file_path">/test/path.txt</param>
-<param name="percentage_to_change">5</param>
-<param name="file_content_or_search_replace_blocks"><![CDATA[<<<<<<< SEARCH
+<cmd:tool_call>
+<cmd:tool_name>FileWriteOrEdit</cmd:tool_name>
+<cmd:param name="file_path">/test/path.txt</cmd:param>
+<cmd:param name="percentage_to_change">5</cmd:param>
+<cmd:param name="file_content_or_search_replace_blocks"><![CDATA[<<<<<<< SEARCH
 <div>Original content</div>
 =======
 <div>New content with XML tags</div>
->>>>>>> REPLACE]]></param>
-</tool_call>
+>>>>>>> REPLACE]]></cmd:param>
+</cmd:tool_call>
   `;
 
   const parsedSearchReplace = parseToolCall(searchReplaceToolCall);

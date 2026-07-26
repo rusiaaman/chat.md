@@ -2,7 +2,12 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { log } from "../extension";
 import { mcpClientManager } from "../extension";
-import { ensureDirectoryExists, writeFile } from "../utils/fileUtils";
+import {
+  ensureDirectoryExists,
+  getAssetsDirectory,
+  getAssetsRelativePath,
+  writeFile,
+} from "../utils/fileUtils";
 import { formatPromptResult } from "../utils/mcpResultFormatter";
 
 /**
@@ -54,7 +59,7 @@ export async function insertPrompt(
       try {
         // Create cmdassets directory relative to the current document
         const docDir = path.dirname(editor.document.uri.fsPath);
-        const assetsDir = path.join(docDir, "cmdassets");
+        const assetsDir = getAssetsDirectory(docDir);
         ensureDirectoryExists(assetsDir);
 
         // Generate a unique filename with timestamp and random string
@@ -68,7 +73,7 @@ export async function insertPrompt(
         const promptName = promptId.split('.')[1];
         const sanitizedPromptName = promptName.replace(/[^a-zA-Z0-9-_]/g, "_");
         const filename = `mcp-prompt-${sanitizedPromptName}-${timestamp}-${randomString}.md`;
-        const relativeFilePath = path.join("cmdassets", filename);
+        const relativeFilePath = getAssetsRelativePath(docDir, filename);
         const fullFilePath = path.join(assetsDir, filename);
 
         // Add prompt metadata as a header comment in the file
