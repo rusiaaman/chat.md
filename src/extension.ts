@@ -1003,26 +1003,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
       }
     }),
     vscode.commands.registerCommand("filechat.newContextChat", async () => {
-      const activeEditor = vscode.window.activeTextEditor;
-      let streamerCancelled = false;
-
-      // Check if active editor is a chat file and if streaming is active
-      if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
-        const streamer = getActiveStreamerForDocument(activeEditor.document);
-        if (streamer && streamer.isActive && streamer.cancel) {
-          log(
-            "newContextChat shortcut used while streaming: Cancelling stream.",
-          );
-          streamer.cancel();
-          vscode.window.showInformationMessage("chat.md streaming cancelled");
-          onActiveFileChanged(); // Update status bar after cancelling
-          streamerCancelled = true;
-        }
-      }
-
-      // If streaming was not cancelled, proceed with creating a new chat
-      if (!streamerCancelled) {
-        log("newContextChat shortcut used: Creating new context chat.");
+      log("newContextChat: Creating new context chat.");
         try {
           // Get current context (workspace, file, selection)
           const context = getCurrentContext();
@@ -1055,8 +1036,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
             `Failed to create context chat: ${error}`,
           );
         }
-      } // This brace closes the if (!streamerCancelled) block
-    }), // This closes the registerCommand call
+    }),
 
     vscode.commands.registerCommand("filechat.newChat", async () => {
       // Create a new chat file
