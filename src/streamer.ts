@@ -6,6 +6,7 @@ import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { OpenAIResponsesClient } from "./openaiResponsesClient";
 import {
+  stripThinkingSections,
   decodeThinkingPayloadToken,
   formatSignatureLine,
   isThinkingPayloadToken,
@@ -26,7 +27,7 @@ import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser
 
 // Written with unicode escapes on purpose so that this literal is never mistaken
 // for an actual tool call by chat.md's own parser.
-const TOOL_CALL_OPEN_TAG = "\u003ctool_call\u003e";
+const TOOL_CALL_OPEN_TAG = "\u003ccmd:tool_call\u003e";
 
 /**
  * Service for streaming LLM responses
@@ -351,57 +352,11 @@ export class StreamingService {
    */
   private classifyBuffer(
     buffer: string,
-  ): "tool_call" | "closing_fence" | "incomplete" | "invalid" {
-    const trimmed = buffer.replace(/^\s+/, "");
-
-    // Only whitespace so far - wait for more tokens
-    if (trimmed.length === 0) {
-      return "incomplete";
-    }
-
-    // Non fenced tool call, or a partial prefix of its opening tag
-    if (trimmed.startsWith(TOOL_CALL_OPEN_TAG)) {
-      return "tool_call";
-    }
-    if (TOOL_CALL_OPEN_TAG.startsWith(trimmed)) {
-      return "incomplete";
-    }
-
-    if (trimmed.startsWith("```")) {
-      const afterFence = trimmed.substring(3);
-      const fenceLineMatch =
-        /^([a-zA-Z0-9_\-]*)(?:[ \t]*\r?\n|[ \t]+)([\s\S]*)$/.exec(afterFence);
-
-      // Still receiving the fence line itself (e.g. "```too")
-      if (!fenceLineMatch) {
-        return "incomplete";
-      }
-
-      const annotation = fenceLineMatch[1];
-      const afterFenceLine = fenceLineMatch[2].replace(/^\s+/, "");
-
-      if (afterFenceLine.startsWith(TOOL_CALL_OPEN_TAG)) {
-        return "tool_call";
-      }
-      if (
-        afterFenceLine.length === 0 ||
-        TOOL_CALL_OPEN_TAG.startsWith(afterFenceLine)
-      ) {
-        return "incomplete";
-      }
-      // A bare "```" line that isn't opening a tool call is the closing fence of
-      // the tool call that was just emitted (detected while partially fenced).
-      if (annotation.length === 0) {
-        return "closing_fence";
-      }
-      return "invalid";
-    }
-
-    // Partial fence, e.g. "`" or "``"
-    if ("```".startsWith(trimmed)) {
-      return "incomplete";
-    }
-
+  ): "tool_call" | "incomplete" | "invalid" {
+    const value = buffer.replace(/^\s+/, "");
+    if (!value) return "incomplete";
+    if (value.startsWith(TOOL_CALL_OPEN_TAG)) return "tool_call";
+    if (TOOL_CALL_OPEN_TAG.startsWith(value)) return "incomplete";
     return "invalid";
   }
 
@@ -840,7 +795,7 @@ export class StreamingService {
                   const existingLength = streamer.tokens.join("").length;
                   const keepLength = Math.max(0, endIndex - existingLength);
 
-                  // Create a new array of tokens that only includes content up to the </tool_call> tag
+                  // Create a new array of tokens that only includes content up to the </cmd:tool_call> tag
                   const truncatedNewTokens: string[] = [];
                   let currentLength = 0;
 
@@ -867,7 +822,7 @@ export class StreamingService {
                   }
 
                   log(
-                    `Truncated tokens from ${renderedTokens.length} to ${truncatedNewTokens.length} to exclude content after </tool_call>`,
+                    `Truncated tokens from ${renderedTokens.length} to ${truncatedNewTokens.length} to exclude content after </cmd:tool_call>`,
                   );
 
                   // Update the document with truncated tokens
@@ -1201,7 +1156,12 @@ export class StreamingService {
           // 1. The streaming finished naturally (not due to a tool call)
           // 2. Tokens were actually written successfully to the document (non-zero tokens)
           // 3. The streamer wasn't cancelled or failed due to other errors
-          if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
+          const malformedCommand = !streamer.isHandlingToolCall &&
+            stripThinkingSections(streamer.tokens.join("")).includes("<cmd:");
+          if (malformedCommand) {
+            await this.appendMalformedToolCorrection(streamer);
+            userBlockAdded = true;
+          } else if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
             log('Adding new user block after completed assistant response');
             await this.appendNewUserBlock(streamer);
             userBlockAdded = true;
@@ -1327,6 +1287,29 @@ export class StreamingService {
   /**
    * Appends a new user block after the assistant response has completed
    */
+  private async appendMalformedToolCorrection(
+    streamer: StreamerState,
+  ): Promise<void> {
+    await this.lock.acquire();
+    try {
+      const text = this.document.getText();
+      const blocks = findAllAssistantBlocks(text);
+      if (blocks.length === 0) return;
+      const block = blocks[blocks.length - 1];
+      const offset = block.contentStart + streamer.tokens.join("").length;
+      const correction = "\n\n# %% user\n" +
+        "The previous assistant response contained an invalid tool call. " +
+        "Use " + String.fromCharCode(60) + "cmd:tool_call" + String.fromCharCode(62) + ", " + String.fromCharCode(60) + "cmd:tool_name" + String.fromCharCode(62) + ", and " +
+        String.fromCharCode(60) + "cmd:param name=\"name\"" + String.fromCharCode(62) + "value" + String.fromCharCode(60) + "/cmd:param" + String.fromCharCode(62) +
+        " without triple-backtick fences.\n\n# %% assistant\n";
+      const edit = new vscode.WorkspaceEdit();
+      edit.insert(this.document.uri, this.document.positionAt(offset), correction);
+      await vscode.workspace.applyEdit(edit);
+    } finally {
+      this.lock.release();
+    }
+  }
+
   private async appendNewUserBlock(streamer: StreamerState): Promise<void> {
     await this.lock.acquire();
     

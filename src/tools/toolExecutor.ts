@@ -5,6 +5,7 @@ import * as fs from "fs";
 import { mcpClientManager } from "../mcpClientManager";
 import { statusManager } from "../extension";
 import { McpToolExecutionResult } from "../types";
+import { parseToolCall as parseCanonicalToolCall } from "./toolCallParser";
 
 // Track active tool executions for cancellation
 const activeToolExecutions = new Map<string, AbortController>();
@@ -199,98 +200,6 @@ export function formatToolResult(result: string): string {
 export function parseToolCall(
   toolCallXml: string,
 ): { name: string; params: Record<string, string>; rawXml: string } | null {
-  try {
-    // First, check if the tool call has a proper opening and closing fence
-    const properFenceMatch =
-      /```(?:xml|tool_call)?\s*\n([\s\S]*?)\n\s*```/s.exec(toolCallXml);
-
-    // If not, check if it has just an opening fence (partially fenced)
-    const partialFenceMatch = !properFenceMatch
-      ? /```(?:xml|tool_call)?\s*\n([\s\S]*?)$/s.exec(toolCallXml)
-      : null;
-
-    // Extract the actual XML content based on the fence status
-    const xmlContent = properFenceMatch
-      ? properFenceMatch[1]
-      : partialFenceMatch
-        ? partialFenceMatch[1]
-        : toolCallXml;
-
-    log(
-      `Tool call format: ${properFenceMatch ? "properly fenced" : partialFenceMatch ? "partially fenced" : "not fenced"}`,
-    );
-
-    // Focus on the part between <tool_call> and </tool_call> tags
-    // Require the closing tag to be on its own line
-    const toolCallContentMatch =
-      /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(xmlContent);
-
-    // If we can't find the tool_call tags, try on the original string as a fallback
-    // Still require the closing tag to be on its own line
-    const toolCallContent = toolCallContentMatch
-      ? toolCallContentMatch[1]
-      : /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(toolCallXml)?.[1] ||
-        "";
-
-    if (!toolCallContent) {
-      log("Could not extract tool call content");
-      return null;
-    }
-
-    // Simple XML parser for tool calls - allow indentation with more flexible whitespace
-    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(
-      toolCallContent,
-    );
-    if (!nameMatch) {
-      log("Could not find tool_name tag");
-      return null;
-    }
-
-    const toolName = nameMatch[1].trim();
-    const params: Record<string, string> = {};
-
-    // Extract parameters with more precise formatting
-    // Updated regex to require quotes around parameter names and be flexible with whitespace
-    const paramRegex =
-      /<param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/param>/gs;
-    let paramMatch;
-
-    while ((paramMatch = paramRegex.exec(toolCallContent)) !== null) {
-      const paramName = paramMatch[1].trim(); // No need to replace quotes, they're already handled in the regex
-      const paramValue = paramMatch[2].trim();
-
-      // Store all parameter values as strings, even JSON objects or arrays
-      params[paramName] = paramValue;
-
-      // Log the parameter type for debugging
-      if (
-        paramValue.trim().startsWith("{") ||
-        paramValue.trim().startsWith("[")
-      ) {
-        log(
-          `Parameter "${paramName}" appears to be JSON, storing as string: ${paramValue.substring(0, 50)}${paramValue.length > 50 ? "..." : ""}`,
-        );
-      }
-    }
-
-    // Log the full details including parameter values for debugging
-    log(
-      `Parsed tool call ${toolName} with ${Object.keys(params).length} parameters`,
-    );
-    Object.entries(params).forEach(([key, value]) => {
-      log(
-        `  Parameter "${key}" = "${value.substring(0, 50)}${value.length > 50 ? "..." : ""}"`,
-      );
-    });
-
-    // Return the parsed tool call with the raw XML included
-    return {
-      name: toolName,
-      params,
-      rawXml: xmlContent,
-    };
-  } catch (error) {
-    log(`Error parsing tool call: ${error}`);
-    return null;
-  }
+  const parsed = parseCanonicalToolCall(toolCallXml);
+  return parsed ? { ...parsed, rawXml: toolCallXml } : null;
 }

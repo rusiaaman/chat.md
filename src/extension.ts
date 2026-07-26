@@ -350,20 +350,10 @@ function getDocumentListenerForDocument(document: vscode.TextDocument): Document
  * @returns True if a tool call is found, false otherwise
  */
 function checkForToolCallInText(text: string): boolean {
-  // Check for various tool call formats
-  const properlyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?:\s*)\n\s*```/s;
-  const partiallyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?<\/tool_call>(?!\s*\n\s*```)/s;
-  const nonFencedToolCallRegex = /<tool_call>[\s\S]*?<\/tool_call>/s;
-
-  return (
-    properlyFencedToolCallRegex.test(text) ||
-    partiallyFencedToolCallRegex.test(text) ||
-    nonFencedToolCallRegex.test(text)
-  );
+  const open = "<cmd:tool_call>";
+  const end = "</cmd:tool_call>";
+  return text.includes(open) && text.includes(end);
 }
-
 // Declare context at module level to make it available in initializeMcpClients
 let context: vscode.ExtensionContext;
 

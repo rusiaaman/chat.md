@@ -45,45 +45,9 @@ function countToolExecuteBlocks(text: string): number {
  * same tool call (e.g. the non-fenced match inside a fenced one) are discarded.
  */
 function findAllToolCalls(text: string): string[] {
-  const regexes = [
-    // Properly fenced (opening and closing fence), any language annotation
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/gs,
-    // Partially fenced (opening fence only)
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/gs,
-    // Non-fenced, preceded by a newline
-    /\n\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>/gs,
-    // Non-fenced at the very beginning of the block
-    /^\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>/gs,
-  ];
-
-  const candidates: Array<{ index: number; xml: string; priority: number }> = [];
-  for (let priority = 0; priority < regexes.length; priority++) {
-    const regex = regexes[priority];
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      candidates.push({ index: match.index, xml: match[0], priority });
-      if (match[0].length === 0) {
-        break; // Safety guard against zero-length matches
-      }
-    }
-  }
-
-  // Earliest first; for matches starting at the same offset the format listed first
-  // wins, so a properly fenced call is preferred over a partially fenced match that
-  // would otherwise run past its own closing fence and swallow the calls after it.
-  candidates.sort((a, b) => a.index - b.index || a.priority - b.priority);
-
-  const toolCalls: string[] = [];
-  let consumedUpto = -1;
-  for (const candidate of candidates) {
-    if (candidate.index < consumedUpto) {
-      continue; // Overlaps a tool call that was already collected
-    }
-    toolCalls.push(candidate.xml);
-    consumedUpto = candidate.index + candidate.xml.length;
-  }
-
-  return toolCalls;
+  const open = "<cmd:tool_call>";
+  const end = "</cmd:tool_call>";
+  return Array.from(text.matchAll(new RegExp(open + "[\\s\\S]*?" + end, "gs")), (m) => m[0]);
 }
 
 /**

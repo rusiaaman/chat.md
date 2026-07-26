@@ -31,40 +31,13 @@ export enum ToolCallFormatType {
  * @returns The extracted XML content with fencing removed
  */
 export function extractXmlContent(toolCallXml: string): string {
-  // First check if the input directly starts with <tool_call>
-  const directToolCallMatch = /^\s*<tool_call>/.test(toolCallXml);
-  if (directToolCallMatch) {
-    log(`Tool call format: ${ToolCallFormatType.NON_FENCED} (direct)`);
-    return toolCallXml;
+  const content = toolCallXml.trim();
+  if (content.startsWith("<cmd:tool_call>")) {
+    log(`Tool call format: ${ToolCallFormatType.NON_FENCED}`);
+    return content;
   }
-
-  // Check if the tool call has a proper opening and closing fence
-  // Support any language annotation such as xml, tool_call, tool_code, etc.
-  const properFenceMatch =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)([\s\S]*?)\n\s*```/s.exec(toolCallXml);
-
-  // If not, check if it has just an opening fence (partially fenced)
-  const partialFenceMatch = !properFenceMatch
-    ? /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)([\s\S]*?)$/s.exec(toolCallXml)
-    : null;
-
-  // Extract the actual XML content based on the fence status
-  const xmlContent = properFenceMatch
-    ? properFenceMatch[1]
-    : partialFenceMatch
-      ? partialFenceMatch[1]
-      : toolCallXml;
-
-  // Log the detected format for debugging
-  const formatType = properFenceMatch
-    ? ToolCallFormatType.PROPERLY_FENCED
-    : partialFenceMatch
-      ? ToolCallFormatType.PARTIALLY_FENCED
-      : ToolCallFormatType.NON_FENCED;
-
-  log(`Tool call format: ${formatType}`);
-
-  return xmlContent;
+  log("Tool call must use the un-fenced cmd format");
+  return "";
 }
 
 /**
@@ -142,7 +115,7 @@ export function areCdataTagsBalanced(text: string): boolean {
 export function areParamsComplete(text: string): boolean {
   // Extract each param block and verify it's properly formed
   const paramBlocks: string[] = [];
-  const paramRegex = /<param\s+name=["'](.*?)["']>([\s\S]*?)<\/param>/gs;
+  const paramRegex = /<cmd:param\s+name=["'](.*?)["']>([\s\S]*?)<\/cmd:param>/gs;
   let paramMatch;
 
   while ((paramMatch = paramRegex.exec(text)) !== null) {
@@ -262,22 +235,22 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
     // This helps with finding tag boundaries but preserves the original content for parameter extraction
     const preprocessedXml = preprocessXmlWithCdata(xmlContent);
 
-    // Focus on the part between <tool_call> and \n</tool_call> tags using the preprocessed XML
+    // Focus on the part between <cmd:tool_call> and \n</cmd:tool_call> tags using the preprocessed XML
     // Require the closing tag to be on its own line
     const toolCallContentMatch =
-      /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(preprocessedXml);
+      /<cmd:tool_call>\s*([\s\S]*?)\n\s*<\/cmd:tool_call>/s.exec(preprocessedXml);
 
     // Get the corresponding part from the original XML for parameter extraction
     // This ensures we have the original CDATA tags intact when parsing parameters
     let originalToolCallContent = "";
     if (toolCallContentMatch) {
       // Use the same pattern with newline requirement for the original content
-      const fullMatch = /<tool_call>[\s\S]*?\n\s*<\/tool_call>/s.exec(
+      const fullMatch = /<cmd:tool_call>[\s\S]*?\n\s*<\/cmd:tool_call>/s.exec(
         xmlContent,
       );
       if (fullMatch) {
         originalToolCallContent = fullMatch[0].replace(
-          /<tool_call>\s*|\n\s*<\/tool_call>/g,
+          /<cmd:tool_call>\s*|\n\s*<\/cmd:tool_call>/g,
           "",
         );
       }
@@ -285,7 +258,7 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
       // Fallback to the original string if preprocessed matching fails
       // Still require newline before closing tag
       originalToolCallContent =
-        /<tool_call>\s*([\s\S]*?)\n\s*<\/tool_call>/s.exec(xmlContent)?.[1] ||
+        /<cmd:tool_call>\s*([\s\S]*?)\n\s*<\/cmd:tool_call>/s.exec(xmlContent)?.[1] ||
         "";
     }
 
@@ -296,7 +269,7 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
 
     // Simple XML parser for tool calls - allow indentation with more flexible whitespace
     // Use the original content for name extraction
-    const nameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(
+    const nameMatch = /<cmd:tool_name>\s*(.*?)\s*<\/cmd:tool_name>/s.exec(
       originalToolCallContent,
     );
     if (!nameMatch) {
@@ -311,7 +284,7 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
     // Updated regex to require quotes around parameter names and be flexible with whitespace
     // Use the original content with intact CDATA sections
     const paramRegex =
-      /<param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/param>/gs;
+      /<cmd:param\s+name=["'](.*?)["']>\s*([\s\S]*?)\s*<\/cmd:param>/gs;
     let paramMatch;
 
     while ((paramMatch = paramRegex.exec(originalToolCallContent)) !== null) {
@@ -354,59 +327,10 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
 export function findToolCallPatterns(
   text: string,
 ): Array<{ type: ToolCallFormatType; match: RegExpExecArray }> {
-  const patterns = [];
-
-  // First try to match the simplest and most direct case - tool_call tags with newline before closing tag
-  // This is the most permissive pattern and will work in direct messages
-  const directToolCallRegex = /<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
-  const directMatch = directToolCallRegex.exec(text);
-
-  // First try to match properly fenced tool calls (with opening and closing fences)
-  // Allow for any annotation after the triple backticks (xml, tool_call, tool_code, etc.)
-  // Require the closing tool_call tag to be on its own line
-  const properlyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?\n\s*<\/tool_call>(?:\s*)\n\s*```/s;
-  const properlyFencedMatch = properlyFencedToolCallRegex.exec(text);
-
-  // Then try to match partially fenced tool calls (with opening fence but missing closing fence)
-  // Allow for any annotation after the triple backticks
-  // Require the closing tool_call tag to be on its own line
-  const partiallyFencedToolCallRegex =
-    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)(?:\s*)<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s;
-  const partiallyFencedMatch = partiallyFencedToolCallRegex.exec(text);
-
-  // Then try to match non-fenced tool calls with newlines around them
-  // Specifically requires newlines around the closing tag
-  const nonFencedToolCallRegex = /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/s;
-  const nonFencedMatch = nonFencedToolCallRegex.exec(text);
-
-  // Collect all matches with their types
-  if (directMatch) {
-    patterns.push({ type: ToolCallFormatType.NON_FENCED, match: directMatch });
-  }
-
-  if (properlyFencedMatch) {
-    patterns.push({
-      type: ToolCallFormatType.PROPERLY_FENCED,
-      match: properlyFencedMatch,
-    });
-  }
-
-  if (partiallyFencedMatch) {
-    patterns.push({
-      type: ToolCallFormatType.PARTIALLY_FENCED,
-      match: partiallyFencedMatch,
-    });
-  }
-
-  if (nonFencedMatch) {
-    patterns.push({
-      type: ToolCallFormatType.NON_FENCED,
-      match: nonFencedMatch,
-    });
-  }
-
-  return patterns;
+  const open = "<cmd:tool_call>";
+  const end = "</cmd:tool_call>";
+  const match = new RegExp(open + "[\\s\\S]*?\\n\\s*" + end, "s").exec(text);
+  return match ? [{ type: ToolCallFormatType.NON_FENCED, match }] : [];
 }
 
 /**
@@ -461,7 +385,7 @@ export function checkForCompletedToolCall(text: string): ToolCallCheckResult | {
   }
 
   // Extract the tool name from the completed tool call
-  const toolNameMatch = /<tool_name>\s*(.*?)\s*<\/tool_name>/s.exec(originalTextPortion);
+  const toolNameMatch = /<cmd:tool_name>\s*(.*?)\s*<\/cmd:tool_name>/s.exec(originalTextPortion);
   const toolName = toolNameMatch ? toolNameMatch[1].trim() : '';
 
   // Log the finding
