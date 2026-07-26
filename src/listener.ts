@@ -29,6 +29,62 @@ import {
 } from "./utils/fileUtils";
 
 /**
+ * Counts the `# %% tool_execute` block markers in a chunk of text.
+ * Used to figure out how many tool calls of an assistant block already ran.
+ */
+function countToolExecuteBlocks(text: string): number {
+  return (text.match(/^# %% tool_execute[ \t]*$/gm) || []).length;
+}
+
+/**
+ * Finds every tool call inside an assistant block, in order of appearance.
+ * Supports the same formats as the streamer: properly fenced, partially fenced
+ * (missing closing fence) and non-fenced tool calls. Overlapping matches of the
+ * same tool call (e.g. the non-fenced match inside a fenced one) are discarded.
+ */
+function findAllToolCalls(text: string): string[] {
+  const regexes = [
+    // Properly fenced (opening and closing fence), any language annotation
+    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/gs,
+    // Partially fenced (opening fence only)
+    /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/gs,
+    // Non-fenced, preceded by a newline
+    /\n\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>/gs,
+    // Non-fenced at the very beginning of the block
+    /^\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>/gs,
+  ];
+
+  const candidates: Array<{ index: number; xml: string; priority: number }> = [];
+  for (let priority = 0; priority < regexes.length; priority++) {
+    const regex = regexes[priority];
+    let match;
+    while ((match = regex.exec(text)) !== null) {
+      candidates.push({ index: match.index, xml: match[0], priority });
+      if (match[0].length === 0) {
+        break; // Safety guard against zero-length matches
+      }
+    }
+  }
+
+  // Earliest first; for matches starting at the same offset the format listed first
+  // wins, so a properly fenced call is preferred over a partially fenced match that
+  // would otherwise run past its own closing fence and swallow the calls after it.
+  candidates.sort((a, b) => a.index - b.index || a.priority - b.priority);
+
+  const toolCalls: string[] = [];
+  let consumedUpto = -1;
+  for (const candidate of candidates) {
+    if (candidate.index < consumedUpto) {
+      continue; // Overlaps a tool call that was already collected
+    }
+    toolCalls.push(candidate.xml);
+    consumedUpto = candidate.index + candidate.xml.length;
+  }
+
+  return toolCalls;
+}
+
+/**
  * Listens for document changes and manages streaming LLM responses.
  * Handles system prompt aggregation, image errors, and triggering actions.
  */
@@ -340,90 +396,11 @@ export class DocumentListener {
         `Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? "..." : ""}"`,
       );
 
-      // Look for tool call XML - find the LAST match instead of first
-      // Support both fenced and non-fenced tool calls
+      // Look for tool call XML - the assistant block may contain several tool calls
+      // (parallel tool calls), so collect all of them in order of appearance.
+      const toolCalls = findAllToolCalls(assistantResponse);
 
-      // Match for properly fenced tool calls (with opening and closing fences)
-      // Allow for any annotation after the triple backticks
-      const properlyFencedToolCallRegex =
-        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>\s*\n\s*```/gs;
-
-      // Match for partially fenced tool calls (with opening fence but missing closing fence)
-      // Allow for any annotation after the triple backticks
-      const partiallyFencedToolCallRegex =
-        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/gs;
-
-      // Match for non-fenced tool calls
-      const nonFencedToolCallRegex =
-        /\n\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>/gs;
-
-      // Find all matches for all patterns
-      let properlyFencedMatch;
-      let lastProperlyFencedMatch = null;
-      let partiallyFencedMatch;
-      let lastPartiallyFencedMatch = null;
-      let nonFencedMatch;
-      let lastNonFencedMatch = null;
-
-      // Find all properly fenced matches
-      while (
-        (properlyFencedMatch =
-          properlyFencedToolCallRegex.exec(assistantResponse)) !== null
-      ) {
-        lastProperlyFencedMatch = properlyFencedMatch;
-      }
-
-      // Find all partially fenced matches
-      while (
-        (partiallyFencedMatch =
-          partiallyFencedToolCallRegex.exec(assistantResponse)) !== null
-      ) {
-        lastPartiallyFencedMatch = partiallyFencedMatch;
-      }
-
-      // Find all non-fenced matches
-      while (
-        (nonFencedMatch = nonFencedToolCallRegex.exec(assistantResponse)) !==
-        null
-      ) {
-        lastNonFencedMatch = nonFencedMatch;
-      }
-
-      // Determine which match to use (last one found, prioritizing in order: properly fenced, partially fenced, non-fenced)
-      let toolCallMatch = null;
-
-      // Find the last position of any match
-      const positions = [];
-      if (lastProperlyFencedMatch)
-        positions.push({
-          type: "properly-fenced",
-          match: lastProperlyFencedMatch,
-          index: lastProperlyFencedMatch.index,
-        });
-      if (lastPartiallyFencedMatch)
-        positions.push({
-          type: "partially-fenced",
-          match: lastPartiallyFencedMatch,
-          index: lastPartiallyFencedMatch.index,
-        });
-      if (lastNonFencedMatch)
-        positions.push({
-          type: "non-fenced",
-          match: lastNonFencedMatch,
-          index: lastNonFencedMatch.index,
-        });
-
-      // Sort by position in descending order (last in the text first)
-      positions.sort((a, b) => b.index - a.index);
-
-      if (positions.length > 0) {
-        toolCallMatch = positions[0].match;
-        log(
-          `Using last ${positions[0].type} tool call at position ${positions[0].index}`,
-        );
-      }
-
-      if (!toolCallMatch) {
+      if (toolCalls.length === 0) {
         log("No tool call found in assistant response");
         const errorResult = formatToolResult(
           "Error: No tool call found in assistant response",
@@ -432,7 +409,19 @@ export class DocumentListener {
         return;
       }
 
-      const toolCallXml = toolCallMatch[0];
+      // Each tool call gets its own tool_execute block, matched up positionally:
+      // the number of tool_execute blocks already present between the assistant
+      // block and this empty one tells us which tool call to run now.
+      const assistantBlockEnd = lastMatch.index + lastMatch[0].length;
+      const alreadyExecuted = countToolExecuteBlocks(
+        text.substring(assistantBlockEnd, toolExecutePosition),
+      );
+      const toolCallIndex = Math.min(alreadyExecuted, toolCalls.length - 1);
+      log(
+        `Assistant block contains ${toolCalls.length} tool call(s), ${alreadyExecuted} already executed, executing #${toolCallIndex + 1}`,
+      );
+
+      const toolCallXml = toolCalls[toolCallIndex];
       log(
         `Found tool call: "${toolCallXml.substring(0, 100)}${toolCallXml.length > 100 ? "..." : ""}"`,
       );
@@ -554,6 +543,44 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         requestStatusBarUpdate(this.document.uri.fsPath, "tool execution finished");
       } catch {}
     }
+  }
+
+  /**
+   * Counts how many tool calls of the assistant block governing the given
+   * tool_execute block still need to be executed, treating the block at
+   * `toolExecutePosition` as the one being executed right now.
+   */
+  private countPendingToolCalls(
+    text: string,
+    toolExecutePosition: number,
+  ): number {
+    const textBefore = text.substring(0, toolExecutePosition);
+    const assistantBlockRegex = /# %% assistant\s+([\s\S]*?)(?=\n# %%|$)/g;
+
+    let match;
+    let lastAssistantMatch: RegExpExecArray | null = null;
+    while ((match = assistantBlockRegex.exec(textBefore)) !== null) {
+      lastAssistantMatch = match;
+    }
+
+    if (!lastAssistantMatch) {
+      return 0;
+    }
+
+    const toolCalls = findAllToolCalls(lastAssistantMatch[1].trim());
+    if (toolCalls.length <= 1) {
+      return 0;
+    }
+
+    const assistantBlockEnd =
+      lastAssistantMatch.index + lastAssistantMatch[0].length;
+    // Tool_execute blocks before this one, plus the one being filled right now
+    const executed =
+      countToolExecuteBlocks(
+        text.substring(assistantBlockEnd, toolExecutePosition),
+      ) + 1;
+
+    return Math.max(0, toolCalls.length - executed);
   }
 
   /**
@@ -712,7 +739,23 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       `Calculated insertion range: Start(${startPos.line},${startPos.character}), End(${endPos.line},${endPos.character})`,
     );
 
-    // Create an edit that replaces the empty content with the result and adds a new assistant block after
+    // Create an edit that replaces the empty content with the result, followed by the
+    // next block. With parallel tool calls the same assistant block can hold several
+    // tool calls, so if any of them are still pending we add another tool_execute
+    // block instead of an assistant block, and only start the next API call once all
+    // of them have been executed.
+    const pendingToolCalls = this.countPendingToolCalls(
+      text,
+      lastEmptyBlock.position,
+    );
+    const nextBlockMarker =
+      pendingToolCalls > 0 ? "# %% tool_execute" : "# %% assistant";
+    if (pendingToolCalls > 0) {
+      log(
+        `${pendingToolCalls} tool call(s) still pending in the assistant block, adding another tool_execute block`,
+      );
+    }
+
     const resultText = typeof rawResult === "string" ? rawResult : "";
     const isMarkdownLink =
       shouldInsertAsMarkdown ||
@@ -720,10 +763,10 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
     let textToInsert;
     if (isMarkdownLink) {
-      textToInsert = `\n${contentToInsert.trim()}\n\n# %% assistant\n`;
+      textToInsert = `\n${contentToInsert.trim()}\n\n${nextBlockMarker}\n`;
       log("Inserting markdown result without code fences");
     } else {
-      textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n# %% assistant\n`;
+      textToInsert = `\n\`\`\`\n${contentToInsert.trim()}\n\`\`\`\n\n${nextBlockMarker}\n`;
       log("Inserting plain text content with code fences");
     }
     // If the block wasn't just the marker but had whitespace, adjust insertion

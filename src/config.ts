@@ -95,6 +95,8 @@ ${resourcesDescription}
 
 After calling a tool, wait for the result.
 
+When several independent tools are needed, emit them as multiple tool calls back to back in the same response, one code fence block per tool call and nothing else between them. They are all executed and their results are returned before your next turn, so prefer this over one tool call per turn whenever the calls don't depend on each other's results.
+
 Tool usage guidelines:
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.
 - You don't need to quote characters like "<", ">", "&", etc. in parameter values.

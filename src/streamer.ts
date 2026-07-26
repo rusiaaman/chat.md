@@ -10,6 +10,10 @@ import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
 import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser";
 
+// Written with unicode escapes on purpose so that this literal is never mistaken
+// for an actual tool call by chat.md's own parser.
+const TOOL_CALL_OPEN_TAG = "\u003ctool_call\u003e";
+
 /**
  * Service for streaming LLM responses
  */
@@ -260,6 +264,244 @@ export class StreamingService {
   }
 
   /**
+   * Classify buffered text that follows an already emitted tool call.
+   *
+   * - "tool_call": the buffer starts with a valid tool call prefix (fenced or not)
+   * - "closing_fence": the buffer starts with the dangling closing fence of the
+   *   previously emitted (partially fenced) tool call
+   * - "incomplete": the buffer could still become one of the above, wait for tokens
+   * - "invalid": the buffer is normal assistant text, so the stream must stop
+   */
+  private classifyBuffer(
+    buffer: string,
+  ): "tool_call" | "closing_fence" | "incomplete" | "invalid" {
+    const trimmed = buffer.replace(/^\s+/, "");
+
+    // Only whitespace so far - wait for more tokens
+    if (trimmed.length === 0) {
+      return "incomplete";
+    }
+
+    // Non fenced tool call, or a partial prefix of its opening tag
+    if (trimmed.startsWith(TOOL_CALL_OPEN_TAG)) {
+      return "tool_call";
+    }
+    if (TOOL_CALL_OPEN_TAG.startsWith(trimmed)) {
+      return "incomplete";
+    }
+
+    if (trimmed.startsWith("```")) {
+      const afterFence = trimmed.substring(3);
+      const fenceLineMatch =
+        /^([a-zA-Z0-9_\-]*)(?:[ \t]*\r?\n|[ \t]+)([\s\S]*)$/.exec(afterFence);
+
+      // Still receiving the fence line itself (e.g. "```too")
+      if (!fenceLineMatch) {
+        return "incomplete";
+      }
+
+      const annotation = fenceLineMatch[1];
+      const afterFenceLine = fenceLineMatch[2].replace(/^\s+/, "");
+
+      if (afterFenceLine.startsWith(TOOL_CALL_OPEN_TAG)) {
+        return "tool_call";
+      }
+      if (
+        afterFenceLine.length === 0 ||
+        TOOL_CALL_OPEN_TAG.startsWith(afterFenceLine)
+      ) {
+        return "incomplete";
+      }
+      // A bare "```" line that isn't opening a tool call is the closing fence of
+      // the tool call that was just emitted (detected while partially fenced).
+      if (annotation.length === 0) {
+        return "closing_fence";
+      }
+      return "invalid";
+    }
+
+    // Partial fence, e.g. "`" or "``"
+    if ("```".startsWith(trimmed)) {
+      return "incomplete";
+    }
+
+    return "invalid";
+  }
+
+  /**
+   * Process buffered text that follows an already emitted tool call.
+   * Pops complete tool calls off the left of the buffer, emitting each one into the
+   * assistant block without executing anything. Stops streaming as soon as the
+   * buffer no longer looks like another tool call.
+   *
+   * @returns the unconsumed buffer, whether streaming should stop, and whether it
+   *          stopped because a document update failed
+   */
+  private async processBufferedToolCalls(
+    streamer: StreamerState,
+    bufferText: string,
+  ): Promise<{ remainingBuffer: string; stop: boolean; failed: boolean }> {
+    let buffer = bufferText;
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const classification = this.classifyBuffer(buffer);
+
+      if (classification === "incomplete") {
+        // Could still become another tool call - wait for more tokens
+        return { remainingBuffer: buffer, stop: false, failed: false };
+      }
+
+      if (classification === "invalid") {
+        log(
+          `Buffered content is not another tool call, interrupting stream and discarding buffer: "${buffer.substring(0, 80)}${buffer.length > 80 ? "..." : ""}"`,
+        );
+        return { remainingBuffer: "", stop: true, failed: false };
+      }
+
+      if (classification === "closing_fence") {
+        const fenceMatch = /^\s*```[ \t]*\r?\n/.exec(buffer);
+        if (!fenceMatch) {
+          return { remainingBuffer: buffer, stop: false, failed: false };
+        }
+        log("Emitting dangling closing fence of the previous tool call");
+        const fenceUpdated = await this.updateDocumentWithTokens(streamer, [
+          fenceMatch[0],
+        ]);
+        if (!fenceUpdated) {
+          log("Token update failed when emitting closing fence, canceling");
+          streamer.isActive = false;
+          return { remainingBuffer: "", stop: true, failed: true };
+        }
+        buffer = buffer.substring(fenceMatch[0].length);
+        continue;
+      }
+
+      // classification === "tool_call"
+      const toolCallResult = this.checkForCompletedToolCall(buffer);
+      if (!toolCallResult || !toolCallResult.isComplete) {
+        // Tool call is still streaming in - wait for more tokens
+        return { remainingBuffer: buffer, stop: false, failed: false };
+      }
+
+      const toolCallText = buffer.substring(0, toolCallResult.endIndex);
+      log(
+        `Emitting additional parallel tool call (${toolCallText.length} chars) without executing it`,
+      );
+      const updateSuccess = await this.updateDocumentWithTokens(streamer, [
+        toolCallText,
+      ]);
+      if (!updateSuccess) {
+        log("Token update failed when emitting buffered tool call, canceling");
+        streamer.isActive = false;
+        return { remainingBuffer: "", stop: true, failed: true };
+      }
+
+      buffer = buffer.substring(toolCallResult.endIndex);
+    }
+  }
+
+  /**
+   * Insert a single tool_execute block after the tool calls written into the
+   * assistant block. The document listener executes the tool calls one at a time,
+   * adding a further tool_execute block after each result until all of them ran.
+   */
+  private async insertToolExecuteBlockAfterToolCalls(
+    streamer: StreamerState,
+  ): Promise<void> {
+    const text = this.document.getText();
+    const blockStart = this.findBlockStartPosition(text, streamer);
+
+    if (blockStart === -1) {
+      log("Could not find position to insert tool_execute block");
+      return;
+    }
+
+    const currentText = streamer.tokens.join("");
+    const insertPosition = this.document.positionAt(
+      blockStart + currentText.length,
+    );
+
+    // Check for unbalanced fence blocks: an opening ``` with no matching closing ```
+    const openingFenceMatch =
+      /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*[<]tool_call[>][\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s.exec(
+        currentText,
+      );
+
+    let textToInsert = "";
+
+    if (openingFenceMatch) {
+      log(
+        "Detected unbalanced fence block - adding closing fence before tool_execute block",
+      );
+      textToInsert = "\n```\n\n# %% tool_execute\n";
+    } else {
+      textToInsert = "\n\n# %% tool_execute\n";
+    }
+
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(this.document.uri, insertPosition, textToInsert);
+    const applied = await vscode.workspace.applyEdit(edit);
+
+    if (applied) {
+      log(
+        `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+      );
+
+      // The tool_execute block has been added, but the status must stay visible
+      // until the DocumentListener picks up the change and executes the tool
+      requestStatusBarUpdate(
+        this.document.uri.fsPath,
+        "tool auto-execution started",
+      );
+
+      // Mark streamer as inactive BEFORE auto-save to prevent conflicts
+      streamer.isActive = false;
+      log("Marked streamer as inactive after tool_execute block insertion");
+
+      // Small delay to ensure state propagation before auto-save document changes
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      // Auto-save after tool_execute block generation if enabled
+      try {
+        if (getAutoSaveAfterStreaming()) {
+          log("Auto-saving document after tool_execute block generation");
+
+          // Brief delay to ensure the insertion is processed by VS Code
+          await new Promise((resolve) => setTimeout(resolve, 100));
+
+          const saved = await this.document.save();
+
+          if (saved && !this.document.isDirty) {
+            log(
+              "Document auto-saved successfully after tool_execute block generation",
+            );
+          } else {
+            log(
+              "Document auto-save did not complete after tool_execute block generation",
+            );
+          }
+        } else {
+          log(
+            "Auto-save is disabled, skipping save after tool_execute block generation",
+          );
+        }
+      } catch (error) {
+        log(
+          `Error during auto-save after tool_execute block generation: ${error}`,
+        );
+        // Don't show error to user as auto-save is a convenience feature
+      }
+    } else {
+      log(
+        `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+      );
+      // Since adding the tool_execute block failed, hide the status
+      requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
+    }
+  }
+
+  /**
    * Check if an error is a server error (5xx) or a rate limit error (429)
    * or any other error that would benefit from retrying
    */
@@ -377,6 +619,16 @@ export class StreamingService {
 
           let tokenCount = 0;
 
+          // Parallel tool call support: once a tool call completes, everything that
+          // follows is buffered and further complete tool calls are popped off the
+          // left of the buffer and emitted (but not executed) until the buffer stops
+          // looking like a tool call or the stream ends.
+          let bufferingMode = false;
+          let bufferText = "";
+          let toolExecuteInserted = false;
+          let updateFailed = false;
+          let cancelledExternally = false;
+
           // Create a batching wrapper for the stream
           const batchingStream = this.createBatchingWrapper(stream, 100); // 100ms batching interval
 
@@ -384,6 +636,7 @@ export class StreamingService {
             // Check streamer status at the beginning of each token processing
             if (!streamer.isActive) {
               log("Streamer no longer active, stopping stream immediately");
+              cancelledExternally = true;
               break;
             }
 
@@ -396,6 +649,22 @@ export class StreamingService {
                 appendToChatHistory(streamer.historyFilePath, tokens.join(""));
               }
 
+              if (bufferingMode) {
+                // A tool call has already completed in this turn: buffer what follows
+                // and keep popping further tool calls off the left of the buffer.
+                bufferText += tokens.join("");
+                const bufferResult = await this.processBufferedToolCalls(
+                  streamer,
+                  bufferText,
+                );
+                bufferText = bufferResult.remainingBuffer;
+                if (bufferResult.stop) {
+                  updateFailed = bufferResult.failed;
+                  break;
+                }
+                continue;
+              }
+
               // Check if adding these tokens would complete a tool call
               const currentTokens = [...streamer.tokens, ...tokens].join("");
               const toolCallResult =
@@ -404,7 +673,7 @@ export class StreamingService {
               // Check if we have a completed tool call
               if (toolCallResult && toolCallResult.isComplete) {
                 log(
-                  "Detected completed tool call, will truncate at position " +
+                  "Detected completed tool call, entering buffering mode at position " +
                     toolCallResult.endIndex,
                 );
                 
@@ -484,104 +753,25 @@ export class StreamingService {
                     }
                   }
 
-                  // Always add tool_execute block (auto-execution is always enabled)
-                  // Add tool_execute block after the last token
-                  const text = this.document.getText();
-                  const blockStart = this.findBlockStartPosition(
-                    text,
-                    streamer,
+                  // Parallel tool calls: don't stop here. Buffer everything that
+                  // follows this tool call and keep emitting further tool calls.
+                  // The tool_execute block is added once the sequence ends.
+                  bufferingMode = true;
+                  bufferText = currentTokens.substring(endIndex);
+                  log(
+                    `Entering buffering mode with ${bufferText.length} buffered chars`,
                   );
 
-                  if (blockStart !== -1) {
-
-                    if (blockStart !== -1) {
-                      const currentText = streamer.tokens.join("");
-                      const insertPosition = this.document.positionAt(
-                        blockStart + currentText.length,
-                      );
-
-                      // Check for unbalanced fence blocks
-                      // Look for opening ``` before <tool_call> but no matching closing ```
-                      // Allow for any annotation after the triple backticks
-                      const openingFenceMatch =
-                        /```(?:[a-zA-Z0-9_\-]*)?(?:\s*\n|\s+)\s*<tool_call>[\s\S]*?\n\s*<\/tool_call>(?!\s*\n\s*```)/s.exec(
-                          currentText,
-                        );
-
-                      let textToInsert = "";
-
-                      if (openingFenceMatch) {
-                        log(
-                          "Detected unbalanced fence block - adding closing fence before tool_execute block",
-                        );
-                        textToInsert = "\n```\n\n# %% tool_execute\n";
-                      } else {
-                        textToInsert = "\n\n# %% tool_execute\n";
-                      }
-
-                      const edit = new vscode.WorkspaceEdit();
-                      edit.insert(
-                        this.document.uri,
-                        insertPosition,
-                        textToInsert,
-                      );
-                      const applied = await vscode.workspace.applyEdit(edit);
-
-                      if (applied) {
-                        log(
-                          `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
-                        );
-                        
-                        // The tool_execute block has been added, but we need to make sure the status
-                        // stays visible until the DocumentListener picks up the change and executes the tool
-                        log(`Ensuring tool execution status remains visible for manual execution`);
-                        requestStatusBarUpdate(this.document.uri.fsPath, "tool auto-execution started");
-
-                        // Mark streamer as inactive BEFORE auto-save to prevent conflicts
-                        streamer.isActive = false;
-                        log("Marked streamer as inactive after tool_execute block insertion");
-
-                        // Small delay to ensure state propagation before triggering auto-save document changes
-                        await new Promise(resolve => setTimeout(resolve, 50));
-
-                        // Auto-save after tool_execute block generation if enabled
-                        try {
-                          if (getAutoSaveAfterStreaming()) {
-                            log("Auto-saving document after tool_execute block generation");
-                            
-                            // Brief delay to ensure tool_execute block addition is processed by VS Code
-                            await new Promise(resolve => setTimeout(resolve, 100));
-                            
-                            const saved = await this.document.save();
-                            
-                            if (saved && !this.document.isDirty) {
-                              log("Document auto-saved successfully after tool_execute block generation");
-                            } else if (saved && this.document.isDirty) {
-                              log("Document save returned true but document is still dirty after tool_execute block generation");
-                            } else {
-                              log("Document auto-save failed after tool_execute block generation - save() returned false");
-                            }
-                          } else {
-                            log("Auto-save is disabled, skipping save after tool_execute block generation");
-                          }
-                        } catch (error) {
-                          log(`Error during auto-save after tool_execute block generation: ${error}`);
-                          // Don't show error to user as auto-save is a convenience feature
-                        }
-                      } else {
-                        log(
-                          `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
-                        );
-                        // Since adding the tool_execute block failed, hide the status
-                        requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
-                      }
-                    } else {
-                      log("Could not find position to insert tool_execute block");
-                    }
+                  const bufferResult = await this.processBufferedToolCalls(
+                    streamer,
+                    bufferText,
+                  );
+                  bufferText = bufferResult.remainingBuffer;
+                  if (bufferResult.stop) {
+                    updateFailed = bufferResult.failed;
+                    break;
                   }
-
-                  // Streamer already marked as inactive above before auto-save
-                  break;
+                  continue;
                 } catch (error) {
                   log(`Error handling tool call: ${error}`);
                   // Continue as normal if handling tool call fails
@@ -617,8 +807,27 @@ export class StreamingService {
           }
 
           log(
-            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}`,
+            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}${bufferingMode ? " (buffered tool calls)" : ""}`,
           );
+
+          // Parallel tool calls: a single tool_execute block is added after the whole
+          // sequence of tool calls has been written to the assistant block. The
+          // document listener then executes them one at a time, adding another
+          // tool_execute block after each result until all of them are done.
+          if (
+            bufferingMode &&
+            !toolExecuteInserted &&
+            !updateFailed &&
+            !cancelledExternally
+          ) {
+            if (bufferText.trim().length > 0) {
+              log(
+                `Discarding ${bufferText.length} buffered chars that were not part of a tool call`,
+              );
+            }
+            await this.insertToolExecuteBlockAfterToolCalls(streamer);
+            toolExecuteInserted = true;
+          }
           
           // Capture success state immediately to avoid race conditions
           streamCompletedSuccessfully = true;
