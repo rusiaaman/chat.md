@@ -23,11 +23,21 @@ import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import { appendToChatHistory } from "./utils/fileUtils";
-import { parseToolCall, checkForCompletedToolCall } from "./tools/toolCallParser";
+import {
+  parseToolCall,
+  checkForCompletedToolCall,
+  CMD_TOOL_CALL_OPEN_TAG,
+  CMD_TOOL_CALL_CLOSE_TAG,
+} from "./tools/toolCallParser";
 
-// Written with unicode escapes on purpose so that this literal is never mistaken
+// Written with unicode escapes on purpose so that these literals are never mistaken
 // for an actual tool call by chat.md's own parser.
-const TOOL_CALL_OPEN_TAG = "\u003ccmd:tool_call\u003e";
+const TOOL_CALL_OPEN_TAG = CMD_TOOL_CALL_OPEN_TAG;
+/** Any use of the qualified namespace, including a malformed one */
+const CMD_NAMESPACE_PREFIX = "\u003ccmd:";
+const CMD_TOOL_NAME_TAGS = "\u003ccmd:tool_name\u003e...\u003c/cmd:tool_name\u003e";
+const CMD_PARAM_TAGS =
+  "\u003ccmd:param name=\"...\"\u003e...\u003c/cmd:param\u003e";
 
 /**
  * Service for streaming LLM responses
@@ -576,6 +586,9 @@ export class StreamingService {
     // Capture the success state early to avoid race conditions with isActive flag
     let streamCompletedSuccessfully = false;
     let shouldAutoSaveOnCompletion = false;
+    // Set when a malformed tool call correction turn was appended, which already
+    // includes its own user and assistant blocks
+    let correctionInserted = false;
 
     try {
       log(
@@ -915,6 +928,24 @@ export class StreamingService {
             }
             await this.insertToolExecuteBlockAfterToolCalls(streamer);
             toolExecuteInserted = true;
+          } else if (
+            !bufferingMode &&
+            !updateFailed &&
+            !cancelledExternally &&
+            streamer.isActive &&
+            streamer.tokens.length > 0 &&
+            stripThinkingSections(streamer.tokens.join("")).includes(
+              CMD_NAMESPACE_PREFIX,
+            )
+          ) {
+            // The turn ended naturally without a single complete tool call, yet the
+            // assistant text mentions the cmd namespace: it tried to call a tool and
+            // got the format wrong. Append a correction user turn together with an
+            // empty assistant block, so the document change resumes streaming and the
+            // model can retry. Only reached on natural exit, never on cancellation or
+            // failure.
+            await this.appendMalformedToolCorrection(streamer);
+            correctionInserted = true;
           }
           
           // Capture success state immediately to avoid race conditions
@@ -1156,10 +1187,8 @@ export class StreamingService {
           // 1. The streaming finished naturally (not due to a tool call)
           // 2. Tokens were actually written successfully to the document (non-zero tokens)
           // 3. The streamer wasn't cancelled or failed due to other errors
-          const malformedCommand = !streamer.isHandlingToolCall &&
-            stripThinkingSections(streamer.tokens.join("")).includes("<cmd:");
-          if (malformedCommand) {
-            await this.appendMalformedToolCorrection(streamer);
+          if (correctionInserted) {
+            log('Not adding user block since a tool call correction turn was appended');
             userBlockAdded = true;
           } else if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
             log('Adding new user block after completed assistant response');
@@ -1294,17 +1323,56 @@ export class StreamingService {
     try {
       const text = this.document.getText();
       const blocks = findAllAssistantBlocks(text);
-      if (blocks.length === 0) return;
+      if (blocks.length === 0) {
+        log("No assistant blocks found, cannot add tool call correction");
+        return;
+      }
+
       const block = blocks[blocks.length - 1];
       const offset = block.contentStart + streamer.tokens.join("").length;
-      const correction = "\n\n# %% user\n" +
-        "The previous assistant response contained an invalid tool call. " +
-        "Use " + String.fromCharCode(60) + "cmd:tool_call" + String.fromCharCode(62) + ", " + String.fromCharCode(60) + "cmd:tool_name" + String.fromCharCode(62) + ", and " +
-        String.fromCharCode(60) + "cmd:param name=\"name\"" + String.fromCharCode(62) + "value" + String.fromCharCode(60) + "/cmd:param" + String.fromCharCode(62) +
-        " without triple-backtick fences.\n\n# %% assistant\n";
+
+      // Describe the format exactly as the parser accepts it: qualified tags, no
+      // fences, closing tag on its own line. Guidance a model could follow into
+      // another rejected call would just repeat this correction. Kept on a single
+      // line so the description itself can never match a real tool call.
+      const correction =
+        "\n\n# %% user\n" +
+        "That response used the " +
+        CMD_NAMESPACE_PREFIX +
+        " namespace but contained no valid tool call. Retry with the exact format: " +
+        CMD_TOOL_CALL_OPEN_TAG +
+        " on its own line, then " +
+        CMD_TOOL_NAME_TAGS +
+        ", then one " +
+        CMD_PARAM_TAGS +
+        " per parameter, then " +
+        CMD_TOOL_CALL_CLOSE_TAG +
+        " on its own line. No triple-backtick fences.\n\n# %% assistant\n";
+
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, this.document.positionAt(offset), correction);
-      await vscode.workspace.applyEdit(edit);
+      const applied = await vscode.workspace.applyEdit(edit);
+
+      if (!applied) {
+        log("Failed to append tool call correction turn");
+        return;
+      }
+
+      log("Appended tool call correction turn, streaming will resume");
+      requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
+
+      // The new empty assistant block restarts streaming from the document change,
+      // so this streamer is done
+      streamer.isActive = false;
+
+      try {
+        if (getAutoSaveAfterStreaming()) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          await this.document.save();
+        }
+      } catch (error) {
+        log(`Error during auto-save after tool call correction: ${error}`);
+      }
     } finally {
       this.lock.release();
     }

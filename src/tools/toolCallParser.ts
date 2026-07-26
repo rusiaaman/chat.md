@@ -16,14 +16,27 @@ export type ToolCallCheckResult =
   | { isComplete: true; endIndex: number };
 
 /**
- * Types of code fencing in tool calls
+ * Types of tool call formatting. Only the un-fenced cmd format is supported.
  */
 export enum ToolCallFormatType {
-  PROPERLY_FENCED = "properly-fenced",
-  PARTIALLY_FENCED = "partially-fenced",
   NON_FENCED = "non-fenced",
   UNKNOWN = "unknown",
 }
+
+/** Qualified tags of the only supported tool call format */
+export const CMD_TOOL_CALL_OPEN_TAG = "\u003ccmd:tool_call\u003e";
+export const CMD_TOOL_CALL_CLOSE_TAG = "\u003c/cmd:tool_call\u003e";
+
+/**
+ * The single source of truth for what a complete tool call looks like: the opening
+ * tag, any body, and a closing tag that starts its own line. The newline keeps a
+ * closing tag mentioned inline inside a parameter value from ending the call early.
+ *
+ * Used by findToolCallPatterns (streaming detection), findAllToolCalls (listener)
+ * and parseToolCall, which must all agree.
+ */
+export const TOOL_CALL_PATTERN =
+  CMD_TOOL_CALL_OPEN_TAG + "[\\s\\S]*?\\n\\s*" + CMD_TOOL_CALL_CLOSE_TAG;
 
 /**
  * Extracts XML content from a fenced or non-fenced tool call
@@ -327,10 +340,22 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
 export function findToolCallPatterns(
   text: string,
 ): Array<{ type: ToolCallFormatType; match: RegExpExecArray }> {
-  const open = "<cmd:tool_call>";
-  const end = "</cmd:tool_call>";
-  const match = new RegExp(open + "[\\s\\S]*?\\n\\s*" + end, "s").exec(text);
+  const match = new RegExp(TOOL_CALL_PATTERN, "s").exec(text);
   return match ? [{ type: ToolCallFormatType.NON_FENCED, match }] : [];
+}
+
+/**
+ * Finds every complete tool call in a finished assistant block, in order.
+ *
+ * This shares TOOL_CALL_PATTERN with the streaming detector and parseToolCall, so
+ * a call that is collected here is always a call the parser accepts. Divergence
+ * here would break the positional matching of tool calls to tool_execute blocks.
+ */
+export function findAllToolCalls(text: string): string[] {
+  return Array.from(
+    text.matchAll(new RegExp(TOOL_CALL_PATTERN, "gs")),
+    (match) => match[0],
+  );
 }
 
 /**

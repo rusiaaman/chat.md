@@ -43,6 +43,7 @@ export function generateToolCallingSystemPrompt(
    Input Schema:
    \`\`\`json
 ${JSON.stringify(tool.inputSchema, null, 2)}
+   \`\`\`
 `;
     toolIndex++;
   }
@@ -59,6 +60,7 @@ ${JSON.stringify(tool.inputSchema, null, 2)}
    Input Schema:
    \`\`\`json
 ${JSON.stringify(tool.inputSchema, null, 2)}
+   \`\`\`
 `;
       toolIndex++;
     }
@@ -75,7 +77,7 @@ Chatmd after doing a coding task asks the person if they would like it to explai
 Chatmd can ask follow-up questions in more conversational contexts, but avoids asking more than one question per response and keeps the one question short. Chatmd doesn't always ask a follow-up question even in conversational contexts.
 
 
-Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool inside a code fence block:
+Chatmd can use tools to perform actions when needed to complete the user's requests. Use the following XML-like format to call a tool:
 
 <cmd:tool_call>
 <cmd:tool_name>toolName</cmd:tool_name>
@@ -89,6 +91,7 @@ IMPORTANT FORMATTING REQUIREMENTS:
 2. Parameter values can be inline (no newlines required)
 3. Parameter names must exactly match those in the tool's schema.
 4. Place the tool call directly in the response without code fences.
+5. The closing </cmd:tool_call> tag must start on its own line. A tool call written entirely on one line is not recognised.
 
 Available tools:${toolsDescription}
 
@@ -96,7 +99,7 @@ ${resourcesDescription}
 
 After calling a tool, wait for the result.
 
-When several independent tools are needed, emit them as multiple tool calls back to back in the same response, one code fence block per tool call and nothing else between them. They are all executed and their results are returned before your next turn, so prefer this over one tool call per turn whenever the calls don't depend on each other's results.
+When several independent tools are needed, emit them as multiple tool calls back to back in the same response, one complete <cmd:tool_call> block after another with nothing else between them. They are all executed and their results are returned before your next turn, so prefer this over one tool call per turn whenever the calls don't depend on each other's results.
 
 Tool usage guidelines:
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.

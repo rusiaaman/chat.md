@@ -22,7 +22,7 @@ import * as path from "path";
 import * as fs from "fs"; // Keep fs for file operations
 import { log, mcpClientManager, statusManager, requestStatusBarUpdate } from "./extension"; // Import statusManager and updater
 import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
-import { parseToolCall } from "./tools/toolCallParser"; // Keep existing imports
+import { parseToolCall, findAllToolCalls } from "./tools/toolCallParser"; // Keep existing imports
 import {
   ensureDirectoryExists, // Keep existing imports
   writeFile, // Keep existing imports
@@ -38,17 +38,11 @@ function countToolExecuteBlocks(text: string): number {
   return (text.match(/^# %% tool_execute[ \t]*$/gm) || []).length;
 }
 
-/**
- * Finds every tool call inside an assistant block, in order of appearance.
- * Supports the same formats as the streamer: properly fenced, partially fenced
- * (missing closing fence) and non-fenced tool calls. Overlapping matches of the
- * same tool call (e.g. the non-fenced match inside a fenced one) are discarded.
+/*
+ * Tool calls are collected with findAllToolCalls from tools/toolCallParser, which
+ * shares its pattern with the streaming detector and the parser. Keeping a separate
+ * regex here previously let the listener collect calls that parseToolCall rejected.
  */
-function findAllToolCalls(text: string): string[] {
-  const open = "<cmd:tool_call>";
-  const end = "</cmd:tool_call>";
-  return Array.from(text.matchAll(new RegExp(open + "[\\s\\S]*?" + end, "gs")), (m) => m[0]);
-}
 
 /**
  * Listens for document changes and manages streaming LLM responses.
