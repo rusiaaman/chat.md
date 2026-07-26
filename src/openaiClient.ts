@@ -355,15 +355,17 @@ export class OpenAIClient {
         }
       }
 
-      // Only process reasoning_details when no text field carried the same
-      // text in this delta. Some providers (e.g. OpenRouter) send both
-      // "reasoning_content" and "reasoning_details" with identical content,
-      // which would duplicate every reasoning chunk.
-      if (!foundTextField && Array.isArray(delta.reasoning_details)) {
+      // reasoning_details is always accumulated, because it is the only form that
+      // can be replayed verbatim on the next turn (it carries provider signatures
+      // that flat reasoning text does not). Its text is only *displayed* when no
+      // text field already carried it: some providers (e.g. OpenRouter) send both
+      // "reasoning_content" and "reasoning_details" with identical content, which
+      // would otherwise duplicate every reasoning chunk in the document.
+      if (Array.isArray(delta.reasoning_details)) {
         for (const detail of delta.reasoning_details) {
           const text = reasoningAccumulator.processDelta(detail);
           reasoningOpen = true;
-          if (text) {
+          if (text && !foundTextField) {
             reasoningText += text;
             tokens.push(encodeThinkingToken(text));
           }
