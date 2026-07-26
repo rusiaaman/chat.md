@@ -1,6 +1,6 @@
 /**
  * Message cleanup performed immediately before an API call, modelled on
- * llm-codegen's anthropic_utils.clean_messages.
+ * provider-specific message cleanup before requests are sent.
  *
  * Invariants:
  *  - the number of messages never changes (a message emptied by cleanup gets a

@@ -19,7 +19,7 @@ import { cleanMessagesForApi } from "./utils/messageCleanup";
 
 /**
  * Accumulates OpenRouter style reasoning_details deltas so the full array can be
- * replayed on the next turn. Modelled on llm-codegen's ReasoningDetailsAccumulator.
+ * replayed on the next turn using an accumulator for provider reasoning details.
  */
 class ReasoningDetailsAccumulator {
   private readonly details: any[] = [];
@@ -620,7 +620,7 @@ export class OpenAIClient {
       };
 
       // Reasoning travels in top level fields on the assistant message, never in
-      // the content array (see llm-codegen openai_wrapper).
+      // the content array, using the provider's top-level reasoning fields.
       if (thinking && thinking.type === "thinking" && msg.role === "assistant") {
         const payload = thinking.payload;
         if (payload?.kind === "reasoning_details" && payload.reasoningDetails) {
