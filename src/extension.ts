@@ -51,6 +51,61 @@ export function log(message: string): void {
   // Logging happens without showing the output channel automatically
 }
 
+function findGitRoot(startPath: string): string | undefined {
+  let currentPath = path.resolve(startPath);
+
+  while (true) {
+    const gitPath = path.join(currentPath, ".git");
+    if (fs.existsSync(gitPath)) {
+      return currentPath;
+    }
+
+    const parentPath = path.dirname(currentPath);
+    if (parentPath === currentPath) {
+      return undefined;
+    }
+    currentPath = parentPath;
+  }
+}
+
+function ensureChatMdGitignore(workspaceRoot: string): void {
+  const gitRoot = findGitRoot(workspaceRoot);
+  if (!gitRoot) {
+    return;
+  }
+
+  const gitignorePath = path.join(gitRoot, ".gitignore");
+  const entries = [".cmd_history/", "cmdassets/"];
+
+  try {
+    const existing = fs.existsSync(gitignorePath)
+      ? fs.readFileSync(gitignorePath, "utf8")
+      : "";
+    const lines = existing.split(/\r?\n/);
+    const missingEntries = entries.filter(
+      (entry) => !lines.some((line) => line.trim() === entry),
+    );
+
+    if (missingEntries.length === 0) {
+      return;
+    }
+
+    let updated = existing;
+    if (updated.length > 0 && !updated.endsWith("\n")) {
+      updated += "\n";
+    }
+    if (updated.length > 0 && !updated.endsWith("\n\n")) {
+      updated += "\n";
+    }
+    updated += "# chat.md generated files\n";
+    updated += `${missingEntries.join("\n")}\n`;
+    fs.writeFileSync(gitignorePath, updated, "utf8");
+    log(`Added chat.md generated files to ${gitignorePath}`);
+  } catch (error) {
+    log(`Could not update ${gitignorePath}: ${error}`);
+  }
+}
+
 // --- Helper Function to Select Config by Index ---
 /**
  * Selects and activates the API configuration at the specified index.
@@ -389,6 +444,11 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
   // Call the function that updates the status bar display
   updateStreamingStatusBar(); // Ensure this runs after setting the name
+
+  // Keep generated chat.md files out of repositories by default.
+  for (const workspaceFolder of vscode.workspace.workspaceFolders || []) {
+    ensureChatMdGitignore(workspaceFolder.uri.fsPath);
+  }
 
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: "**/*.chat.md" };
