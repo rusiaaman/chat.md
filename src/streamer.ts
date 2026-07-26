@@ -1363,6 +1363,13 @@ export class StreamingService {
         CMD_TOOL_CALL_CLOSE_TAG +
         " on its own line. No triple-backtick fences.\n\n# %% assistant\n";
 
+      // This streamer has to be marked done BEFORE the edit is applied. The edit
+      // fires a document change whose handler calls startStreaming, and that has a
+      // pre-lock guard which returns immediately if any streamer is still active
+      // instead of queueing on the lock. Marking it afterwards means the retry turn
+      // is silently never started.
+      streamer.isActive = false;
+
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, this.document.positionAt(offset), correction);
       const applied = await vscode.workspace.applyEdit(edit);
@@ -1374,10 +1381,6 @@ export class StreamingService {
 
       log("Appended tool call correction turn, streaming will resume");
       requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
-
-      // The new empty assistant block restarts streaming from the document change,
-      // so this streamer is done
-      streamer.isActive = false;
 
       try {
         if (getAutoSaveAfterStreaming()) {
