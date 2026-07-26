@@ -335,6 +335,10 @@ export class OpenAIClient {
 
       const tokens: string[] = [];
 
+      // Providers sometimes send the same reasoning in multiple fields at
+      // once (e.g. both "reasoning" and "reasoning_content"). Pick the first
+      // field that has content and ignore the rest to avoid duplicates.
+      let foundTextField = false;
       for (const field of [
         "reasoning_content",
         "reasoning",
@@ -346,10 +350,16 @@ export class OpenAIClient {
           reasoningOpen = true;
           reasoningText += value;
           tokens.push(encodeThinkingToken(value));
+          foundTextField = true;
+          break;
         }
       }
 
-      if (Array.isArray(delta.reasoning_details)) {
+      // Only process reasoning_details when no text field carried the same
+      // text in this delta. Some providers (e.g. OpenRouter) send both
+      // "reasoning_content" and "reasoning_details" with identical content,
+      // which would duplicate every reasoning chunk.
+      if (!foundTextField && Array.isArray(delta.reasoning_details)) {
         for (const detail of delta.reasoning_details) {
           const text = reasoningAccumulator.processDelta(detail);
           reasoningOpen = true;
