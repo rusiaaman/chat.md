@@ -15,6 +15,11 @@ export interface ApiConfig {
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
   maxTokens?: number;
   maxThinkingTokens?: number;
+  /**
+   * Which OpenAI API flavour to use. "auto" picks the Responses API for OpenAI
+   * hosted gpt and o-series models, and chat completions everywhere else.
+   */
+  openaiApi?: "auto" | "chat" | "responses";
 }
 
 /**
@@ -527,6 +532,73 @@ export function getMaxTokens(configName?: string, fileConfig?: Record<string, an
   const globalValue = config.get<number>("maxTokens") || 8000;
   log(`Using maxTokens from global config: ${globalValue}`);
   return globalValue;
+}
+
+/**
+ * Resolves the model name using the same precedence as the API clients:
+ * per-file/named config first, then the global setting.
+ */
+export function resolveModelName(configName?: string): string | undefined {
+  if (configName) {
+    const fromConfig = getModelNameForConfig(configName);
+    if (fromConfig) {
+      return fromConfig;
+    }
+  }
+  return getModelName();
+}
+
+/**
+ * Gets the configured OpenAI API flavour ("auto" when unset)
+ */
+export function getOpenaiApiSetting(
+  configName?: string,
+  fileConfig?: Record<string, any>,
+): "auto" | "chat" | "responses" {
+  if (fileConfig?.openaiApi) {
+    log(`Using openaiApi from file config: ${fileConfig.openaiApi}`);
+    return fileConfig.openaiApi;
+  }
+
+  if (configName) {
+    const providerConfig = getConfigByName(configName);
+    if (providerConfig?.openaiApi) {
+      log(
+        `Using openaiApi from provider config '${configName}': ${providerConfig.openaiApi}`,
+      );
+      return providerConfig.openaiApi;
+    }
+  }
+
+  const config = vscode.workspace.getConfiguration("chatmd");
+  return config.get<"auto" | "chat" | "responses">("openaiApi") || "auto";
+}
+
+/**
+ * Decides whether an OpenAI request goes to the Responses API or chat completions.
+ * "auto" resolves to the Responses API only for OpenAI hosted gpt and o-series
+ * models, since no other host implements it.
+ */
+export function resolveOpenaiApiStyle(
+  modelName: string | undefined,
+  baseUrl: string | undefined,
+  configName?: string,
+  fileConfig?: Record<string, any>,
+): "chat" | "responses" {
+  const setting = getOpenaiApiSetting(configName, fileConfig);
+  if (setting === "chat" || setting === "responses") {
+    return setting;
+  }
+
+  const {
+    isResponsesApiModel,
+    isOpenAiBaseUrl,
+  } = require("./utils/modelCapabilities");
+
+  if (modelName && isResponsesApiModel(modelName) && isOpenAiBaseUrl(baseUrl)) {
+    return "responses";
+  }
+  return "chat";
 }
 
 /**

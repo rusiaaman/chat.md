@@ -5,6 +5,7 @@ import {
   hasEmptyToolExecuteBlock,
   ParsedDocumentResult, // Import the return type interface
   findAllAssistantBlocks, // Add this import for resumeStreaming
+  parseAssistantContent,
 } from "./parser";
 import { Lock } from "./utils/lock";
 import { StreamingService } from "./streamer";
@@ -27,6 +28,7 @@ import {
   writeFile, // Keep existing imports
   saveChatHistory, // Keep existing imports
 } from "./utils/fileUtils";
+import { stripThinkingSections } from "./utils/thinkingBlocks";
 
 /**
  * Counts the `# %% tool_execute` block markers in a chunk of text.
@@ -398,7 +400,8 @@ export class DocumentListener {
 
       // Look for tool call XML - the assistant block may contain several tool calls
       // (parallel tool calls), so collect all of them in order of appearance.
-      const toolCalls = findAllToolCalls(assistantResponse);
+      // Thinking sections are excluded: reasoning about a tool call is not a call.
+      const toolCalls = findAllToolCalls(stripThinkingSections(assistantResponse));
 
       if (toolCalls.length === 0) {
         log("No tool call found in assistant response");
@@ -567,7 +570,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       return 0;
     }
 
-    const toolCalls = findAllToolCalls(lastAssistantMatch[1].trim());
+    const toolCalls = findAllToolCalls(
+      stripThinkingSections(lastAssistantMatch[1].trim()),
+    );
     if (toolCalls.length <= 1) {
       return 0;
     }
@@ -849,27 +854,15 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       
       // Check if the last message is from the assistant
       if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
-        // Append to existing assistant message
-        const existingAssistantContent = updatedMessages[updatedMessages.length - 1].content
-          .filter((c) => c.type === "text")
-          .map((c) => (c as any).value)
-          .join("\n\n");
-        
-        // Replace the content with combined text
-        const newContent: MessageParam["content"] = updatedMessages[updatedMessages.length - 1].content.filter(
-          (c) => c.type !== "text",
-        );
-        newContent.push({
-          type: "text",
-          value: existingAssistantContent + existingContent.trim(),
-        });
-
-        updatedMessages[updatedMessages.length - 1].content = newContent;
+        // parseDocument already parsed this very block (thinking sections included),
+        // so appending the raw block text would duplicate it and leak the "## %%"
+        // markers into the API payload.
+        log("Last parsed message already carries the partial assistant content");
       } else {
         // Add new assistant message with the partial response
         updatedMessages.push({
           role: "assistant",
-          content: [{ type: "text", value: existingContent.trim() }]
+          content: parseAssistantContent(existingContent.trim(), this.document),
         });
       }
     }

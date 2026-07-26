@@ -1,9 +1,23 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import { MessageParam, StreamerState } from "./types";
 import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
-import { findAssistantBlocks, findAllAssistantBlocks } from "./parser";
+import { OpenAIResponsesClient } from "./openaiResponsesClient";
+import {
+  decodeThinkingPayloadToken,
+  formatSignatureLine,
+  isThinkingPayloadToken,
+  isThinkingToken,
+  renderStreamTokens,
+} from "./utils/thinkingBlocks";
+import { putThinkingEntry } from "./utils/thinkingMap";
+import {
+  findAssistantBlocks,
+  findAllAssistantBlocks,
+  parseAssistantContent,
+} from "./parser";
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
@@ -20,6 +34,9 @@ const TOOL_CALL_OPEN_TAG = "\u003ctool_call\u003e";
 export class StreamingService {
   private readonly anthropicClient?: AnthropicClient;
   private readonly openaiClient?: OpenAIClient;
+  private openaiResponsesClient?: OpenAIResponsesClient;
+  private readonly openaiApiKey?: string;
+  private readonly openaiBaseUrl?: string;
   private readonly provider: string;
 
   constructor(
@@ -71,7 +88,11 @@ export class StreamingService {
       if (this.provider === "anthropic") {
         this.anthropicClient = new AnthropicClient(apiKey);
       } else if (this.provider === "openai") {
+        this.openaiBaseUrl = baseUrl;
         this.openaiClient = new OpenAIClient(apiKey, baseUrl);
+        // The Responses API client is created lazily, since the choice depends on
+        // per-file configuration that is only known per request.
+        this.openaiApiKey = apiKey;
       } else {
         log(`Unknown provider: ${this.provider}, falling back to Anthropic`);
         this.provider = "anthropic";
@@ -247,6 +268,7 @@ export class StreamingService {
     return (
       message.includes("max_tokens") ||
       message.includes("max_completion_tokens") ||
+      message.includes("max_output_tokens") ||
       message.includes("token limit") ||
       message.includes("context length") ||
       message.includes("finish_reason=length")
@@ -261,6 +283,61 @@ export class StreamingService {
   private checkForCompletedToolCall(text: string) {
     // Use the imported checkForCompletedToolCall function directly
     return checkForCompletedToolCall(text);
+  }
+
+  /**
+   * Stores a reasoning payload in cmdassets/thinking_map.json and returns the
+   * "qualified_model_name::hash8" line that references it.
+   */
+  private recordThinkingPayload(token: string): string | undefined {
+    const decoded = decodeThinkingPayloadToken(token);
+    if (!decoded || typeof decoded !== "object") {
+      log("Ignoring malformed thinking payload token");
+      return undefined;
+    }
+
+    const { model, ...payload } = decoded as any;
+    if (!model || !payload.kind) {
+      log("Ignoring thinking payload without model or kind");
+      return undefined;
+    }
+
+    try {
+      const docDir = path.dirname(this.document.uri.fsPath);
+      const hash = putThinkingEntry(docDir, model, payload);
+      log(`Stored ${payload.kind} thinking payload as ${model}::${hash}`);
+      return formatSignatureLine(model, hash);
+    } catch (error) {
+      log(`Failed to store thinking payload: ${error}`);
+      return undefined;
+    }
+  }
+
+  /**
+   * Turns a batch of stream tokens into the text to append to the assistant block,
+   * inserting "## %% thinking" / "## %% text" markers as the token kind changes.
+   */
+  private renderTokens(streamer: StreamerState, tokens: string[]): string[] {
+    const state = {
+      thinkingOpen: streamer.thinkingOpen ?? false,
+      textOpen: streamer.textOpen ?? false,
+      sawThinking: streamer.sawThinking ?? false,
+      scanOffset: streamer.scanOffset ?? 0,
+    };
+
+    const rendered = renderStreamTokens(
+      tokens,
+      streamer.tokens.join(""),
+      state,
+      (token) => this.recordThinkingPayload(token),
+    );
+
+    streamer.thinkingOpen = state.thinkingOpen;
+    streamer.textOpen = state.textOpen;
+    streamer.sawThinking = state.sawThinking;
+    streamer.scanOffset = state.scanOffset;
+
+    return rendered.length > 0 ? [rendered] : [];
   }
 
   /**
@@ -578,14 +655,50 @@ export class StreamingService {
               fileConfig,
             );
           } else if (this.provider === "openai" && this.openaiClient) {
-            stream = await this.openaiClient.streamCompletion(
-              messages,
-              this.document,
-              systemPrompt,
-              modelNameOverride,
+            // gpt-* and o-series models on OpenAI itself go through the Responses
+            // API, which is the only way to keep encrypted reasoning across turns
+            const { resolveOpenaiApiStyle } = require("./config");
+            let modelForRouting = modelNameOverride;
+            if (!modelForRouting) {
+              try {
+                modelForRouting = getModelName();
+              } catch {
+                modelForRouting = undefined;
+              }
+            }
+            const apiStyle = resolveOpenaiApiStyle(
+              modelForRouting,
+              this.openaiBaseUrl,
               this.configNameOverride,
               fileConfig,
             );
+            log(`Using OpenAI API style: ${apiStyle}`);
+
+            if (apiStyle === "responses") {
+              if (!this.openaiResponsesClient) {
+                this.openaiResponsesClient = new OpenAIResponsesClient(
+                  this.openaiApiKey ?? "",
+                  this.openaiBaseUrl,
+                );
+              }
+              stream = await this.openaiResponsesClient.streamCompletion(
+                messages,
+                this.document,
+                systemPrompt,
+                modelNameOverride,
+                this.configNameOverride,
+                fileConfig,
+              );
+            } else {
+              stream = await this.openaiClient.streamCompletion(
+                messages,
+                this.document,
+                systemPrompt,
+                modelNameOverride,
+                this.configNameOverride,
+                fileConfig,
+              );
+            }
           } else {
             throw new Error(
               `Provider ${this.provider} not properly configured`,
@@ -652,7 +765,17 @@ export class StreamingService {
               if (bufferingMode) {
                 // A tool call has already completed in this turn: buffer what follows
                 // and keep popping further tool calls off the left of the buffer.
-                bufferText += tokens.join("");
+                const textTokens = tokens.filter(
+                  (token) =>
+                    !isThinkingToken(token) && !isThinkingPayloadToken(token),
+                );
+                if (textTokens.length !== tokens.length) {
+                  log("Ignoring thinking tokens received while buffering tool calls");
+                }
+                if (textTokens.length === 0) {
+                  continue;
+                }
+                bufferText += textTokens.join("");
                 const bufferResult = await this.processBufferedToolCalls(
                   streamer,
                   bufferText,
@@ -665,10 +788,19 @@ export class StreamingService {
                 continue;
               }
 
-              // Check if adding these tokens would complete a tool call
-              const currentTokens = [...streamer.tokens, ...tokens].join("");
-              const toolCallResult =
-                this.checkForCompletedToolCall(currentTokens);
+              // Turn thinking/text tokens into document text with section markers
+              const renderedTokens = this.renderTokens(streamer, tokens);
+              if (renderedTokens.length === 0) {
+                continue;
+              }
+
+              // Check if adding these tokens would complete a tool call. Only the
+              // current text section is scanned, never thinking content.
+              const currentTokens = [...streamer.tokens, ...renderedTokens].join("");
+              const scanStart = streamer.scanOffset ?? 0;
+              const toolCallResult = this.checkForCompletedToolCall(
+                currentTokens.substring(scanStart),
+              );
 
               // Check if we have a completed tool call
               if (toolCallResult && toolCallResult.isComplete) {
@@ -682,8 +814,9 @@ export class StreamingService {
                 streamer.isHandlingToolCall = true;
 
                 try {
-                  // Get the end index of the completed tool call
-                  const { endIndex } = toolCallResult;
+                  // Get the end index of the completed tool call (absolute, since
+                  // detection ran on the current text section only)
+                  const endIndex = scanStart + toolCallResult.endIndex;
                   const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
                   
                   // Always show the status bar when a tool call is detected
@@ -711,7 +844,7 @@ export class StreamingService {
                   const truncatedNewTokens: string[] = [];
                   let currentLength = 0;
 
-                  for (const token of tokens) {
+                  for (const token of renderedTokens) {
                     if (currentLength >= keepLength) {
                       break; // Stop adding tokens if we've reached the end of the tool call
                     }
@@ -734,7 +867,7 @@ export class StreamingService {
                   }
 
                   log(
-                    `Truncated tokens from ${tokens.length} to ${truncatedNewTokens.length} to exclude content after </tool_call>`,
+                    `Truncated tokens from ${renderedTokens.length} to ${truncatedNewTokens.length} to exclude content after </tool_call>`,
                   );
 
                   // Update the document with truncated tokens
@@ -781,7 +914,7 @@ export class StreamingService {
                 try {
                   const updateSuccess = await this.updateDocumentWithTokens(
                     streamer,
-                    tokens,
+                    renderedTokens,
                   );
                   if (!updateSuccess) {
                     log("Token update failed, canceling streaming entirely");
@@ -966,39 +1099,32 @@ export class StreamingService {
                 `Adding partial assistant response to context: ${partialResponse.substring(0, 100)}${partialResponse.length > 100 ? "..." : ""}`,
               );
 
+              // Parse the partial response so thinking sections become thinking
+              // blocks instead of leaking their "## %%" markers into the API
+              const partialContent = parseAssistantContent(
+                partialResponse,
+                this.document,
+              );
+
               // Check if the last message is from the assistant (it should be a continuation)
               if (
                 updatedMessages.length > 0 &&
                 updatedMessages[updatedMessages.length - 1].role === "assistant"
               ) {
                 log("Last message is from assistant, appending to it");
-
-                // Create a new text content item for the existing partial response
-                const existingContent =
-                  updatedMessages[updatedMessages.length - 1].content;
-                const existingText = existingContent
-                  .filter((c) => c.type === "text")
-                  .map((c) => (c as any).value)
-                  .join("\n\n");
-
-                // Create a new content array with the combined text
-                const newContent: import("./types").MessageParam["content"] = existingContent.filter(
-                  (c) => c.type !== "text",
-                );
-                newContent.push({
-                  type: "text",
-                  value: existingText + partialResponse,
-                });
-
-                // Replace the content in the last message
-                updatedMessages[updatedMessages.length - 1].content =
-                  newContent;
+                updatedMessages[updatedMessages.length - 1] = {
+                  role: "assistant",
+                  content: [
+                    ...updatedMessages[updatedMessages.length - 1].content,
+                    ...partialContent,
+                  ],
+                };
               } else {
                 // Add a new assistant message with the partial response
                 log("Adding new assistant message with partial response");
                 updatedMessages.push({
                   role: "assistant",
-                  content: [{ type: "text", value: partialResponse }],
+                  content: partialContent,
                 });
               }
 

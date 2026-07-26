@@ -2,7 +2,7 @@ import * as https from "https";
 import * as http from "http";
 import * as path from "path";
 import * as url from "url";
-import { MessageParam, Content } from "./types";
+import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
@@ -11,6 +11,76 @@ import {
   getBaseUrl,
   generateToolCallingSystemPrompt,
 } from "./config";
+import {
+  encodeThinkingPayloadToken,
+  encodeThinkingToken,
+} from "./utils/thinkingBlocks";
+import { cleanMessagesForApi } from "./utils/messageCleanup";
+
+/**
+ * Accumulates OpenRouter style reasoning_details deltas so the full array can be
+ * replayed on the next turn. Modelled on llm-codegen's ReasoningDetailsAccumulator.
+ */
+class ReasoningDetailsAccumulator {
+  private readonly details: any[] = [];
+  private readonly indexes = new Map<string, number>();
+
+  public processDelta(detail: any): string {
+    if (!detail || typeof detail !== "object") {
+      return "";
+    }
+
+    const displayText = this.displayText(detail);
+    const key = this.keyFor(detail, this.details.length);
+    const existingIndex = this.indexes.get(key);
+
+    if (existingIndex === undefined) {
+      this.indexes.set(key, this.details.length);
+      this.details.push({ ...detail });
+      return displayText;
+    }
+
+    const existing = this.details[existingIndex];
+    for (const [field, value] of Object.entries(detail)) {
+      if ((field === "text" || field === "summary") && typeof value === "string") {
+        existing[field] =
+          typeof existing[field] === "string" ? existing[field] + value : value;
+      } else if (value !== null && value !== undefined) {
+        existing[field] = value;
+      }
+    }
+    return displayText;
+  }
+
+  public hasDetails(): boolean {
+    return this.details.length > 0;
+  }
+
+  public getDetails(): any[] {
+    return JSON.parse(JSON.stringify(this.details));
+  }
+
+  private keyFor(detail: any, fallbackIndex: number): string {
+    const type = typeof detail.type === "string" ? detail.type : "reasoning.unknown";
+    if (typeof detail.id === "string" && detail.id) {
+      return `${type}::id::${detail.id}`;
+    }
+    if (typeof detail.index === "number") {
+      return `${type}::index::${detail.index}`;
+    }
+    return `${type}::pos::${fallbackIndex}`;
+  }
+
+  private displayText(detail: any): string {
+    if (typeof detail.text === "string") {
+      return detail.text;
+    }
+    if (typeof detail.summary === "string") {
+      return detail.summary;
+    }
+    return "";
+  }
+}
 
 /**
  * Client for communicating with the OpenAI API
@@ -67,12 +137,6 @@ export class OpenAIClient {
         systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
       const systemMessage = { role: "system", content: systemPromptToUse };
 
-      // Format regular messages
-      const formattedMessages = this.formatMessages(messages, document);
-
-      // Add system message as the first message
-      const allMessages = [systemMessage, ...formattedMessages];
-
       // Resolve model name (allow per-file override)
       let modelName = modelNameOverride;
       if (!modelName) {
@@ -92,7 +156,20 @@ export class OpenAIClient {
       const { getMaxTokens, getReasoningEffort } = require("./config");
       const maxTokens = getMaxTokens(configName, fileConfig);
       const reasoningEffort = getReasoningEffort(configName, fileConfig);
-      
+
+      // Reasoning is replayed unless it was explicitly turned off
+      const cleanedMessages = cleanMessagesForApi(messages, {
+        modelName,
+        thinkingEnabled: reasoningEffort !== "none",
+        apiStyle: "openai_chat",
+      });
+
+      // Add system message as the first message
+      const allMessages = [
+        systemMessage,
+        ...this.formatMessages(cleanedMessages, document),
+      ];
+
       // Initial request body
       const requestBody: any = {
         model: modelName,
@@ -190,7 +267,7 @@ export class OpenAIClient {
       }
 
       log("Processing streaming response from OpenAI");
-      yield* this.createStreamGenerator(response);
+      yield* this.createStreamGenerator(response, modelName);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
@@ -207,9 +284,84 @@ export class OpenAIClient {
    */
   private async *createStreamGenerator(
     response: http.IncomingMessage,
+    modelName: string,
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
+
+    // Reasoning state for the current assistant turn
+    let reasoningAccumulator = new ReasoningDetailsAccumulator();
+    let reasoningText = "";
+    let reasoningField: "reasoning" | "reasoning_content" | "reasoning_summary" =
+      "reasoning_content";
+    let reasoningOpen = false;
+
+    /**
+     * Builds the payload token that closes the current reasoning run. Returns an
+     * empty array when there is no open reasoning.
+     */
+    const closeReasoning = (): string[] => {
+      if (!reasoningOpen) {
+        return [];
+      }
+      reasoningOpen = false;
+
+      const payload: ThinkingPayload & { model: string } =
+        reasoningAccumulator.hasDetails()
+          ? {
+              model: modelName,
+              kind: "reasoning_details",
+              reasoningDetails: reasoningAccumulator.getDetails(),
+            }
+          : {
+              model: modelName,
+              kind: "raw",
+              field: reasoningField,
+            };
+
+      reasoningAccumulator = new ReasoningDetailsAccumulator();
+      reasoningText = "";
+      return [encodeThinkingPayloadToken(payload)];
+    };
+
+    /**
+     * Extracts reasoning from a streaming delta. Providers disagree on the field
+     * name, and OpenRouter sends structured reasoning_details.
+     */
+    const readReasoning = (delta: any): string[] => {
+      if (!delta) {
+        return [];
+      }
+
+      const tokens: string[] = [];
+
+      for (const field of [
+        "reasoning_content",
+        "reasoning",
+        "reasoning_summary",
+      ] as const) {
+        const value = delta[field];
+        if (typeof value === "string" && value) {
+          reasoningField = field;
+          reasoningOpen = true;
+          reasoningText += value;
+          tokens.push(encodeThinkingToken(value));
+        }
+      }
+
+      if (Array.isArray(delta.reasoning_details)) {
+        for (const detail of delta.reasoning_details) {
+          const text = reasoningAccumulator.processDelta(detail);
+          reasoningOpen = true;
+          if (text) {
+            reasoningText += text;
+            tokens.push(encodeThinkingToken(text));
+          }
+        }
+      }
+
+      return tokens;
+    };
 
     // Keep track of the last chunks for debugging
     const lastChunks = [];
@@ -283,6 +435,18 @@ export class OpenAIClient {
                   // OpenAI's format has choices with delta that contains content
                   if (data.choices && data.choices.length > 0) {
                     const choice = data.choices[0];
+
+                    // Reasoning deltas arrive before content on reasoning models
+                    const reasoningTokens = readReasoning(choice.delta);
+                    if (reasoningTokens.length > 0) {
+                      eventCount++;
+                      yield reasoningTokens;
+                    }
+
+                    // The first content delta closes the reasoning run
+                    if (choice.delta && choice.delta.content && reasoningOpen) {
+                      yield closeReasoning();
+                    }
 
                     // Check for finish_reason="length" which indicates max tokens reached
                     if (choice.finish_reason === "length") {
@@ -386,6 +550,11 @@ export class OpenAIClient {
         }
       }
 
+      // Reasoning that was never followed by content still needs its payload
+      if (reasoningOpen) {
+        yield closeReasoning();
+      }
+
       log(`Stream completed, processed ${eventCount} events`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -417,10 +586,31 @@ export class OpenAIClient {
     messages: readonly MessageParam[],
     document?: vscode.TextDocument,
   ): any[] {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: this.formatContent(msg.content, document),
-    }));
+    return messages.map((msg) => {
+      const thinking = msg.content.find((block) => block.type === "thinking");
+      const rest = msg.content.filter((block) => block.type !== "thinking");
+      const formatted: any = {
+        role: msg.role,
+        content: this.formatContent(
+          rest.length > 0 ? rest : [{ type: "text", value: "" }],
+          document,
+        ),
+      };
+
+      // Reasoning travels in top level fields on the assistant message, never in
+      // the content array (see llm-codegen openai_wrapper).
+      if (thinking && thinking.type === "thinking" && msg.role === "assistant") {
+        const payload = thinking.payload;
+        if (payload?.kind === "reasoning_details" && payload.reasoningDetails) {
+          formatted.reasoning_details = payload.reasoningDetails;
+        } else if (thinking.value.trim() !== "") {
+          const field = payload?.field ?? "reasoning_content";
+          formatted[field] = thinking.value;
+        }
+      }
+
+      return formatted;
+    });
   }
 
   /**

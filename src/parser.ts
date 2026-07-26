@@ -1,6 +1,7 @@
-import { MessageParam, Content, Role } from "./types";
+import { MessageParam, Content, Role, ThinkingContent } from "./types";
 import { log } from "./extension";
 import * as vscode from "vscode"; // Ensure vscode is imported
+import * as path from "path";
 import {
   isImageFile,
   resolveFilePath,
@@ -8,6 +9,11 @@ import {
   fileExists,
   readFileAsText, // Keep readFileAsText as it's used in parseUserContent
 } from "./utils/fileUtils";
+import {
+  splitAssistantSections,
+  parseThinkingSection,
+} from "./utils/thinkingBlocks";
+import { getThinkingEntry } from "./utils/thinkingMap";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -162,7 +168,7 @@ export function parseDocument(
     // selectedConfig and the three token/reasoning parameters are allowed in per-file configuration
     // The four keys (type, apiKey, base_url, model_name) should come from the named config in global settings
     // apiConfigs should also NOT be inline - it belongs in global settings only
-    const allowedKeys = new Set(["selectedConfig", "reasoningEffort", "maxTokens", "maxThinkingTokens"]);
+    const allowedKeys = new Set(["selectedConfig", "reasoningEffort", "maxTokens", "maxThinkingTokens", "openaiApi"]);
     const explicitlyForbiddenKeys = new Set(["type", "apiKey", "base_url", "model_name", "apiConfigs"]);
     
     const lines = preamble.split(/\r?\n/);
@@ -304,10 +310,15 @@ export function parseDocument(
     else if (role === "assistant") {
        // Only add assistant message if it has actual content
        if (content) {
-         messages.push({
-           role: "assistant",
-           content: [{ type: "text", value: content }], // Assistant content is treated as plain text for now
-         });
+         const assistantContent = parseAssistantContent(content, document);
+         if (assistantContent.length > 0) {
+           messages.push({
+             role: "assistant",
+             content: assistantContent,
+           });
+         } else {
+           log("Skipping assistant block that parsed to empty content.");
+         }
        } else {
          log("Skipping empty assistant block (non-triggering).");
        }
@@ -332,6 +343,62 @@ export function parseDocument(
   });
 }
 
+
+/**
+ * Parses the content of an assistant block into content blocks.
+ *
+ * A block without any "## %%" marker is plain text, which keeps the original format
+ * working. When markers are present, thinking sections become thinking content and
+ * their trailing "qualified_model_name::hash8" line is resolved against
+ * cmdassets/thinking_map.json.
+ */
+export function parseAssistantContent(
+  content: string,
+  document?: vscode.TextDocument,
+): Content[] {
+  const sections = splitAssistantSections(content);
+  const docDir = document ? path.dirname(document.uri.fsPath) : undefined;
+  const result: Content[] = [];
+
+  for (const section of sections) {
+    if (section.type === "text") {
+      const text = section.content.trim();
+      if (text) {
+        result.push({ type: "text", value: text });
+      }
+      continue;
+    }
+
+    const parsed = parseThinkingSection(section.content);
+    if (!parsed.text && !parsed.hash) {
+      // Empty thinking section, nothing to carry over
+      continue;
+    }
+
+    const thinking: ThinkingContent = {
+      type: "thinking",
+      value: parsed.text,
+      model: parsed.model,
+      hash: parsed.hash,
+    };
+
+    if (parsed.hash && docDir) {
+      const entry = getThinkingEntry(docDir, parsed.hash);
+      if (entry) {
+        const { model: _entryModel, createdAt: _createdAt, ...payload } = entry;
+        thinking.payload = payload;
+      } else {
+        log(
+          `No thinking_map entry for hash ${parsed.hash}, treating thinking as display only`,
+        );
+      }
+    }
+
+    result.push(thinking);
+  }
+
+  return result;
+}
 
 /**
  * Checks if the given text content contains any image references (markdown or attached file syntax).

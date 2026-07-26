@@ -5,7 +5,7 @@
 /**
  * Represents the type of content in a message
  */
-export type ContentType = "text" | "image";
+export type ContentType = "text" | "image" | "thinking";
 
 /**
  * Text content in a message
@@ -24,9 +24,73 @@ export interface ImageContent {
 }
 
 /**
+ * Kinds of provider reasoning payload that can be replayed to an API.
+ * "raw" means there is no opaque payload, only human readable thinking text.
+ */
+export type ThinkingPayloadKind =
+  | "anthropic_signature"
+  | "anthropic_redacted"
+  | "openai_encrypted"
+  | "reasoning_details"
+  | "raw";
+
+/**
+ * Provider specific reasoning payload, stored in cmdassets/thinking_map.json and
+ * referenced from the document by an 8 character hash.
+ */
+export interface ThinkingPayload {
+  kind: ThinkingPayloadKind;
+  /** Anthropic: opaque signature for a thinking block */
+  signature?: string;
+  /** Anthropic: exact thinking text the signature was produced for */
+  text?: string;
+  /** Anthropic: opaque data of a redacted_thinking block */
+  data?: string;
+  /** OpenAI Responses: reasoning item id (rs_...) */
+  itemId?: string;
+  /** OpenAI Responses: encrypted reasoning content */
+  encryptedContent?: string;
+  /** OpenAI chat completions (OpenRouter et al): reasoning_details array */
+  reasoningDetails?: any[];
+  /** OpenAI chat completions: which field the reasoning text came in */
+  field?: "reasoning" | "reasoning_content" | "reasoning_summary";
+}
+
+/**
+ * A thinking payload as stored in the map, qualified by the model that produced it
+ */
+export interface ThinkingMapEntry extends ThinkingPayload {
+  model: string;
+  createdAt: string;
+}
+
+/**
+ * On disk shape of cmdassets/thinking_map.json
+ */
+export interface ThinkingMapFile {
+  version: 1;
+  entries: Record<string, ThinkingMapEntry>;
+}
+
+/**
+ * Thinking (reasoning) content of an assistant message
+ */
+export interface ThinkingContent {
+  type: "thinking";
+  /** Human readable thinking text (summary or raw), without the signature line */
+  value: string;
+  /** Qualified model name from the signature line, if present */
+  model?: string;
+  /** 8 character hash referencing an entry in thinking_map.json */
+  hash?: string;
+  /** Payload resolved from thinking_map.json, if the entry could be read */
+  payload?: ThinkingPayload;
+}
+
+/**
  * Union type for different types of content
  */
-export type Content = TextContent | ImageContent;
+export type Content = TextContent | ImageContent | ThinkingContent;
 
 /**
  * Discriminated union for raw/rich MCP content types returned by tools or prompts
@@ -168,6 +232,29 @@ export interface StreamerState {
    * Used to determine whether to automatically add a user block after completion
    */
   isHandlingToolCall?: boolean;
+
+  /**
+   * Whether a "## %% thinking" section is currently open in the document
+   */
+  thinkingOpen?: boolean;
+
+  /**
+   * Whether a "## %% text" section is currently open in the document
+   */
+  textOpen?: boolean;
+
+  /**
+   * Whether any thinking section was written during this turn. Once true, all
+   * normal assistant content has to live under a "## %% text" marker.
+   */
+  sawThinking?: boolean;
+
+  /**
+   * Offset within the joined tokens where the current text section starts.
+   * Tool call detection only scans from here, so thinking text and signature
+   * lines can never be mistaken for a tool call.
+   */
+  scanOffset?: number;
 
   /**
    * Function to cancel the stream. This can be called externally
