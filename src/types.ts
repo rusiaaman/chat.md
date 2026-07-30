@@ -271,6 +271,14 @@ export interface StreamerState {
   scanOffset?: number;
 
   /**
+   * Offset within the joined tokens where the current text section ends, or null
+   * while that section is still open. Set when a thinking section opens after
+   * assistant text, so tool call detection stops at the thinking marker instead
+   * of running on into the reasoning that follows it.
+   */
+  textSectionEnd?: number | null;
+
+  /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.
    */

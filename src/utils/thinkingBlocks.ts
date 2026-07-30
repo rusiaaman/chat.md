@@ -166,6 +166,16 @@ export interface SectionState {
   sawThinking: boolean;
   /** Offset in the assistant block where the current text section content starts */
   scanOffset: number;
+  /**
+   * Offset in the assistant block where the current text section content ends,
+   * or null while the text section is still open (it extends to the end).
+   *
+   * Set when a thinking section opens, which closes the text section before it.
+   * Together with scanOffset this bounds the region that may be scanned for tool
+   * calls to assistant text only, so `<cmd:...>` written inside thinking is
+   * never parsed or executed as a tool call.
+   */
+  textSectionEnd: number | null;
 }
 
 /**
@@ -192,6 +202,21 @@ export function renderStreamTokens(
   };
 
   const openThinkingSection = (): void => {
+    // Thinking closes whatever text section preceded it. Freeze the scannable
+    // region here so the thinking text that follows is never scanned for tool
+    // calls, while a tool call completed in the text before it still is.
+    //
+    // A text section is only actually open when one was started after the last
+    // thinking section (textOpen), or when no thinking has appeared yet and the
+    // whole block so far is text. Otherwise this call is opening a second
+    // thinking section straight after a previous one (a signature ends a
+    // section without ending the reasoning), and there is no text to scan:
+    // collapse the region to empty rather than letting it cover the earlier
+    // thinking content.
+    state.textSectionEnd =
+      state.textOpen || !state.sawThinking
+        ? alreadyWritten.length + out.length
+        : state.scanOffset;
     if (needsNewline()) {
       out += "\n";
     }
@@ -242,6 +267,8 @@ export function renderStreamTokens(
       // Tool call scanning starts after the marker, so thinking text and signature
       // lines can never be mistaken for a tool call
       state.scanOffset = alreadyWritten.length + out.length;
+      // The new text section is open, so it extends to the end of the block
+      state.textSectionEnd = null;
     }
     out += token;
   }

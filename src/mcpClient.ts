@@ -65,6 +65,15 @@ export class McpClientManager {
   private sseRetryCount: Map<string, number> = new Map();
   private refreshInterval: NodeJS.Timeout | null = null;
   private refreshIntervalMs: number = 5000; // 5 seconds
+  // Guards against overlapping refresh cycles: a refresh that retries a hanging
+  // server can take far longer than refreshIntervalMs, and setInterval does not
+  // wait for the previous callback. Without this, every tick stacks another
+  // connection attempt (and another spawned stdio child) on top of the last.
+  private isRefreshing: boolean = false;
+  // Background connect retries are capped so a permanently broken server stops
+  // spawning processes instead of retrying forever.
+  private maxConnectRetries: number = 5;
+  private connectRetryCount: Map<string, number> = new Map();
   private lastKnownConfigs: Record<string, McpServerConfig> = {};
   
   // Lazy loading state management
@@ -98,6 +107,7 @@ export class McpClientManager {
     this.resourceSubscriptions.clear();
     this.lazyServerStates.clear();
     this.pendingConnections.clear();
+    this.connectRetryCount.clear();
 
     // Initialize lazy loading state for each server
     for (const serverId of Object.keys(mcpServers)) {
@@ -588,6 +598,28 @@ export class McpClientManager {
     } catch (error) {
       log(`Error connecting to MCP server ${serverId}: ${error}`);
 
+      // Tear down the half-open connection. A stdio transport has already
+      // spawned its child process by this point, so skipping this leaks the
+      // process for as long as it chooses to run.
+      try {
+        await client.close();
+      } catch (closeError) {
+        log(`Error closing client after failed connect for ${serverId}: ${closeError}`);
+      }
+      try {
+        await transport.close();
+      } catch (closeError) {
+        log(`Error closing transport after failed connect for ${serverId}: ${closeError}`);
+      }
+      // Only drop the map entry if it is still the transport we created: a newer
+      // attempt may have replaced it while this one was failing.
+      if (this.transports.get(serverId) === transport) {
+        this.transports.delete(serverId);
+      }
+      if (this.clients.get(serverId) === client) {
+        this.clients.delete(serverId);
+      }
+
       // Enhanced error logging
       if (error instanceof Error) {
         log(`Error type: ${error.name}`);
@@ -685,6 +717,9 @@ export class McpClientManager {
       // Start the connection (or retry after error)
       if (state === 'errored') {
         log(`Retrying errored server ${serverId} on demand`);
+        // An explicit tool call is a deliberate request to try again, so the
+        // background retry budget is restored even if it was exhausted.
+        this.connectRetryCount.delete(serverId);
       }
       this.lazyServerStates.set(serverId, 'connecting');
       
@@ -1037,6 +1072,25 @@ export class McpClientManager {
    * Refreshes tool lists and prompt lists for all connected servers
    */
   public async refreshAllToolLists(): Promise<void> {
+    // A previous cycle is still running (typically blocked on a connect attempt
+    // that has not hit its timeout yet). Skip this tick rather than starting a
+    // second cycle in parallel.
+    if (this.isRefreshing) {
+      log("Skipping tool refresh: previous refresh cycle is still running");
+      return;
+    }
+    this.isRefreshing = true;
+    try {
+      await this.refreshAllToolListsInner();
+    } finally {
+      this.isRefreshing = false;
+    }
+  }
+
+  /**
+   * Body of a single refresh cycle. Only ever called with the isRefreshing guard held.
+   */
+  private async refreshAllToolListsInner(): Promise<void> {
     // Track successes and failures
     let successCount = 0;
     let failCount = 0;
@@ -1061,7 +1115,16 @@ export class McpClientManager {
     // Retry errored servers in the background
     for (const [serverId, state] of this.lazyServerStates.entries()) {
       if (state === 'errored') {
-        log(`Background retry for errored server ${serverId}`);
+        const attempts = this.connectRetryCount.get(serverId) || 0;
+        if (attempts >= this.maxConnectRetries) {
+          // Give up until something changes (config edit, or an on-demand tool
+          // call). Retrying a broken server forever spawns a process per tick.
+          continue;
+        }
+        this.connectRetryCount.set(serverId, attempts + 1);
+        log(
+          `Background retry for errored server ${serverId} (attempt ${attempts + 1}/${this.maxConnectRetries})`,
+        );
         try {
           const config = this.serverConfigs[serverId];
           if (!config) {
@@ -1072,6 +1135,7 @@ export class McpClientManager {
           log(`Errored server ${serverId} recovered: fetched ${this.serverTools.get(serverId)?.size || 0} tools`);
           await this.disconnectServerKeepingToolInfo(serverId);
           this.serverErrors.delete(serverId);
+          this.connectRetryCount.delete(serverId);
           vscode.window.showInformationMessage(
             `MCP server "${serverId}" recovered successfully.`,
           );
@@ -1079,7 +1143,16 @@ export class McpClientManager {
           const errorMsg = error instanceof Error ? error.message : String(error);
           log(`Background retry failed for errored server ${serverId}: ${errorMsg}`);
           this.serverErrors.set(serverId, errorMsg);
-          // Stay in errored state, will retry on next refresh cycle
+          // Stay in errored state. Once maxConnectRetries is reached the server
+          // is left alone until its config changes or a tool call needs it.
+          if (attempts + 1 >= this.maxConnectRetries) {
+            log(
+              `Giving up background retries for server ${serverId} after ${this.maxConnectRetries} attempts`,
+            );
+            vscode.window.showWarningMessage(
+              `MCP server "${serverId}" failed to start after ${this.maxConnectRetries} attempts and will not be retried automatically: ${errorMsg}`,
+            );
+          }
         }
       }
     }
@@ -1494,10 +1567,19 @@ export class McpClientManager {
       this.clients.delete(serverId);
     }
 
-    // Clean up transport
+    // Clean up transport. client.close() already closes its transport, but a
+    // transport with no registered client (failed connect) still has to be
+    // closed here or its child process is left running.
     const transport = this.transports.get(serverId);
     if (transport) {
       this.transports.delete(serverId);
+      if (!client) {
+        try {
+          await transport.close();
+        } catch (error) {
+          log(`Error closing orphaned transport for server ${serverId}: ${error}`);
+        }
+      }
     }
 
     // Clear any reconnection timers
@@ -1533,11 +1615,22 @@ export class McpClientManager {
       this.clients.delete(serverId);
     }
 
-    // Clean up transport
+    // Clean up transport. A transport with no registered client (failed connect)
+    // still owns a child process that has to be closed explicitly.
     const transport = this.transports.get(serverId);
     if (transport) {
       this.transports.delete(serverId);
+      if (!client) {
+        try {
+          await transport.close();
+        } catch (error) {
+          log(`Error closing orphaned transport for server ${serverId}: ${error}`);
+        }
+      }
     }
+
+    // A fresh connect for this server gets a fresh retry budget
+    this.connectRetryCount.delete(serverId);
 
     // Clear any reconnection timers
     if (this.sseRetryIntervals.has(serverId)) {
@@ -1707,6 +1800,17 @@ export class McpClientManager {
       await this.disconnectServer(serverId);
     }
 
+    // Close any transport left without a client (a connect that failed): the
+    // loop above only covers registered clients, and dropping the map entry on
+    // its own would leave the child process running.
+    for (const [serverId, transport] of this.transports.entries()) {
+      try {
+        await transport.close();
+      } catch (error) {
+        log(`Error closing orphaned transport for server ${serverId}: ${error}`);
+      }
+    }
+
     this.clients.clear();
     this.tools.clear();
     this.prompts.clear();
@@ -1719,6 +1823,7 @@ export class McpClientManager {
     this.resourceSubscriptions.clear();
     this.transports.clear();
     this.sseRetryCount.clear();
+    this.connectRetryCount.clear();
     this.lazyServerStates.clear();
     this.pendingConnections.clear();
     this.serverErrors.clear();

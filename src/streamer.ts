@@ -337,6 +337,7 @@ export class StreamingService {
       textOpen: streamer.textOpen ?? false,
       sawThinking: streamer.sawThinking ?? false,
       scanOffset: streamer.scanOffset ?? 0,
+      textSectionEnd: streamer.textSectionEnd ?? null,
     };
 
     const rendered = renderStreamTokens(
@@ -350,6 +351,7 @@ export class StreamingService {
     streamer.textOpen = state.textOpen;
     streamer.sawThinking = state.sawThinking;
     streamer.scanOffset = state.scanOffset;
+    streamer.textSectionEnd = state.textSectionEnd;
 
     return rendered.length > 0 ? [rendered] : [];
   }
@@ -776,12 +778,19 @@ export class StreamingService {
               }
 
               // Check if adding these tokens would complete a tool call. Only the
-              // current text section is scanned, never thinking content.
+              // current text section is scanned, never thinking content: the region
+              // is bounded below by scanOffset (start of the text section) and above
+              // by textSectionEnd (set when a thinking section opened after it, and
+              // null while the text section is still open).
               const currentTokens = [...streamer.tokens, ...renderedTokens].join("");
               const scanStart = streamer.scanOffset ?? 0;
-              const toolCallResult = this.checkForCompletedToolCall(
-                currentTokens.substring(scanStart),
-              );
+              const scanEnd = streamer.textSectionEnd ?? currentTokens.length;
+              const toolCallResult =
+                scanEnd > scanStart
+                  ? this.checkForCompletedToolCall(
+                      currentTokens.substring(scanStart, scanEnd),
+                    )
+                  : null;
 
               // Check if we have a completed tool call
               if (toolCallResult && toolCallResult.isComplete) {

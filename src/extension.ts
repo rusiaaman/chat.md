@@ -28,6 +28,7 @@ import {
   generateChatTemplate,
   getCurrentContext,
 } from "./utils/contextTemplateUtils";
+import { stripThinkingSections } from "./utils/thinkingBlocks";
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -407,7 +408,11 @@ function getDocumentListenerForDocument(document: vscode.TextDocument): Document
 function checkForToolCallInText(text: string): boolean {
   const open = "<cmd:tool_call>";
   const end = "</cmd:tool_call>";
-  return text.includes(open) && text.includes(end);
+  // Thinking sections are excluded: a tool call the assistant only reasoned
+  // about inside "## %% thinking" is not a call and must not trigger a
+  // tool_execute block.
+  const assistantText = stripThinkingSections(text);
+  return assistantText.includes(open) && assistantText.includes(end);
 }
 // Declare context at module level to make it available in initializeMcpClients
 let context: vscode.ExtensionContext;
