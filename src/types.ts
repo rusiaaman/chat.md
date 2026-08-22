@@ -279,6 +279,14 @@ export interface StreamerState {
   textSectionEnd?: number | null;
 
   /**
+   * Trailing assistant text withheld from the document because it is still a
+   * prefix of the end-of-batch marker, and could turn into one when the next
+   * batch of tokens arrives. Prepended to the next batch instead of being
+   * written, so a marker split across two batches never reaches the document.
+   */
+  pendingText?: string;
+
+  /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.
    */

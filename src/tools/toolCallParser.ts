@@ -39,6 +39,67 @@ export const TOOL_CALL_PATTERN =
   CMD_TOOL_CALL_OPEN_TAG + "[\\s\\S]*?\\n\\s*" + CMD_TOOL_CALL_CLOSE_TAG;
 
 /**
+ * Marker the model emits once, after the last tool call of a batch, to say "that is
+ * the whole batch, run it and give me the results".
+ *
+ * It is a stream-control signal, not part of the .chat.md format: it is never
+ * written into the document and never parsed back out of one. The streamer strips
+ * it while streaming, and parseDocument re-synthesises it into the API payload
+ * after each historical tool batch so the model always sees its own past turns in
+ * the shape it is asked to produce.
+ */
+export const CMD_WAIT_TOOL_RESULT_TAG =
+  "\u003ccmd:wait-tool-result/\u003e";
+
+/**
+ * Index of the first complete wait marker in `text`, or -1 when there is none.
+ */
+export function findWaitMarker(text: string): number {
+  return text.indexOf(CMD_WAIT_TOOL_RESULT_TAG);
+}
+
+/**
+ * Length of the longest suffix of `text` that is a proper prefix of the wait
+ * marker, or 0 when the text does not end mid-marker.
+ *
+ * Used to hold back the tail of a batch that may still turn into a marker, so a
+ * marker split across two token batches is never written to the document.
+ */
+export function waitMarkerPrefixLength(text: string): number {
+  const max = Math.min(text.length, CMD_WAIT_TOOL_RESULT_TAG.length - 1);
+  for (let len = max; len > 0; len--) {
+    if (CMD_WAIT_TOOL_RESULT_TAG.startsWith(text.substring(text.length - len))) {
+      return len;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Appends the wait marker after the last complete tool call in `text`.
+ *
+ * Used when replaying a finished assistant turn to the API: the document holds the
+ * tool calls without the marker, and the model is asked to always end a batch with
+ * one, so history has to carry it too.
+ *
+ * Returns `text` unchanged when it holds no complete tool call.
+ */
+export function appendWaitMarkerAfterLastToolCall(text: string): string {
+  const matches = Array.from(text.matchAll(new RegExp(TOOL_CALL_PATTERN, "gs")));
+  if (matches.length === 0) {
+    return text;
+  }
+  const last = matches[matches.length - 1];
+  const insertAt = (last.index ?? 0) + last[0].length;
+  return (
+    text.substring(0, insertAt) +
+    "\n" +
+    CMD_WAIT_TOOL_RESULT_TAG +
+    text.substring(insertAt)
+  );
+}
+
+/**
  * Extracts XML content from a fenced or non-fenced tool call
  * @param toolCallXml The raw tool call XML string
  * @returns The extracted XML content with fencing removed

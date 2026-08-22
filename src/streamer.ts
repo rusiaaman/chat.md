@@ -18,6 +18,7 @@ import {
   findAssistantBlocks,
   findAllAssistantBlocks,
   parseAssistantContent,
+  blockMarkerPrefix,
 } from "./parser";
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
@@ -29,13 +30,18 @@ import {
 import {
   parseToolCall,
   checkForCompletedToolCall,
+  findWaitMarker,
+  waitMarkerPrefixLength,
   CMD_TOOL_CALL_OPEN_TAG,
   CMD_TOOL_CALL_CLOSE_TAG,
+  CMD_WAIT_TOOL_RESULT_TAG,
 } from "./tools/toolCallParser";
 
 // Written with unicode escapes on purpose so that these literals are never mistaken
 // for an actual tool call by chat.md's own parser.
 const TOOL_CALL_OPEN_TAG = CMD_TOOL_CALL_OPEN_TAG;
+/** End-of-batch marker the model emits after its last tool call */
+const WAIT_TOOL_RESULT_TAG = CMD_WAIT_TOOL_RESULT_TAG;
 /** Any use of the qualified namespace, including a malformed one */
 const CMD_NAMESPACE_PREFIX = "\u003ccmd:";
 const CMD_TOOL_NAME_TAGS = "\u003ccmd:tool_name\u003e...\u003c/cmd:tool_name\u003e";
@@ -163,10 +169,22 @@ export class StreamingService {
       batchTimer = setTimeout(timerTick, batchIntervalMs);
     };
 
+    // The source is driven through its iterator rather than a for-await loop, so
+    // that the consumer can close it early. Reading tokens nobody will use costs
+    // real time: the turn ends the moment a tool call batch is complete, and
+    // without this the wrapper would sit here until the model stopped talking.
+    const iterator = stream[Symbol.asyncIterator]();
+    let consumerDone = false;
+
     // Start processing the stream asynchronously
     const processStream = async () => {
       try {
-        for await (const tokens of stream) {
+        while (!consumerDone) {
+          const next = await iterator.next();
+          if (next.done || consumerDone) {
+            break;
+          }
+          const tokens = next.value;
           if (tokens && tokens.length > 0) {
             log(`Batching: received ${tokens.length} tokens`);
             tokenBatch.push(...tokens);
@@ -236,12 +254,23 @@ export class StreamingService {
 
     } finally {
       // Cleanup
+      consumerDone = true;
       if (batchTimer) {
         clearTimeout(batchTimer);
         batchTimer = null;
       }
       isTimerActive = false;
-      
+
+      // Closing the source iterator unwinds the provider generator, which breaks
+      // its own loop over the SDK stream and aborts the underlying request. Without
+      // it, awaiting streamPromise below would block until the model had finished
+      // generating a response that has already been thrown away.
+      try {
+        await iterator.return?.();
+      } catch (error) {
+        log(`Batching: error closing source stream early: ${error}`);
+      }
+
       // Wait for stream processing to complete
       await streamPromise;
       
@@ -357,37 +386,145 @@ export class StreamingService {
   }
 
   /**
+   * Keeps only the first `keepLength` characters worth of rendered tokens,
+   * splitting the token that straddles the boundary.
+   *
+   * Used to end a write exactly at a chosen offset: the close of a completed tool
+   * call, or the start of an end-of-batch marker that must not be written.
+   */
+  private truncateTokens(tokens: string[], keepLength: number): string[] {
+    const kept: string[] = [];
+    let currentLength = 0;
+
+    for (const token of tokens) {
+      if (currentLength >= keepLength) {
+        break;
+      }
+
+      if (currentLength + token.length <= keepLength) {
+        kept.push(token);
+        currentLength += token.length;
+      } else {
+        const partialToken = token.substring(0, keepLength - currentLength);
+        if (partialToken) {
+          kept.push(partialToken);
+        }
+        break;
+      }
+    }
+
+    return kept;
+  }
+
+  /**
+   * Prepares rendered tokens for writing when no tool call completed in this batch.
+   *
+   * The end-of-batch marker is a control signal, so it must never land in the
+   * document. Reaching here means nothing was detected to execute, so a complete
+   * marker is the model asking for results it never requested: the write is cut at
+   * the marker and the caller ends the turn. A trailing fragment that could still
+   * become the marker is held back on the streamer and prepended to the next batch
+   * instead, so a marker split across two batches is never written either.
+   *
+   * When a tool call *does* complete the marker needs no handling here: it sits
+   * past the tool call's end index, so the truncation that ends the assistant
+   * block at the closing tag already keeps it out and hands it to the buffer.
+   */
+  private trimWaitMarkerFromWrite(
+    streamer: StreamerState,
+    renderedTokens: string[],
+    currentTokens: string,
+    scanStart: number,
+    scanEnd: number,
+  ): { tokens: string[]; strayMarker: boolean } {
+    if (scanEnd <= scanStart) {
+      return { tokens: renderedTokens, strayMarker: false };
+    }
+
+    const alreadyWritten = streamer.tokens.join("").length;
+    const section = currentTokens.substring(scanStart, scanEnd);
+
+    const markerIndex = findWaitMarker(section);
+    if (markerIndex !== -1) {
+      log(
+        "End-of-batch marker generated without a completed tool call, cutting it out of the write",
+      );
+      const keepLength = Math.max(0, scanStart + markerIndex - alreadyWritten);
+      return {
+        tokens: this.truncateTokens(renderedTokens, keepLength),
+        strayMarker: true,
+      };
+    }
+
+    // Only a fragment at the very end of what has been generated can still grow
+    // into the marker. A text section closed by a later thinking section cannot.
+    if (scanEnd < currentTokens.length) {
+      return { tokens: renderedTokens, strayMarker: false };
+    }
+
+    const holdBack = waitMarkerPrefixLength(section);
+    if (holdBack === 0) {
+      return { tokens: renderedTokens, strayMarker: false };
+    }
+
+    const keepLength = Math.max(
+      0,
+      currentTokens.length - holdBack - alreadyWritten,
+    );
+    streamer.pendingText = currentTokens.substring(
+      currentTokens.length - holdBack,
+    );
+    log(
+      `Holding back ${holdBack} chars that may still become the end-of-batch marker`,
+    );
+    return {
+      tokens: this.truncateTokens(renderedTokens, keepLength),
+      strayMarker: false,
+    };
+  }
+
+  /**
    * Classify buffered text that follows an already emitted tool call.
    *
-   * - "tool_call": the buffer starts with a valid tool call prefix (fenced or not)
-   * - "closing_fence": the buffer starts with the dangling closing fence of the
-   *   previously emitted (partially fenced) tool call
+   * - "tool_call": the buffer starts with another tool call
+   * - "wait_marker": the buffer starts with the end-of-batch marker, so the batch
+   *   is complete and the turn ends here
    * - "incomplete": the buffer could still become one of the above, wait for tokens
    * - "invalid": the buffer is normal assistant text, so the stream must stop
    */
   private classifyBuffer(
     buffer: string,
-  ): "tool_call" | "incomplete" | "invalid" {
+  ): "tool_call" | "wait_marker" | "incomplete" | "invalid" {
     const value = buffer.replace(/^\s+/, "");
     if (!value) return "incomplete";
     if (value.startsWith(TOOL_CALL_OPEN_TAG)) return "tool_call";
+    if (value.startsWith(WAIT_TOOL_RESULT_TAG)) return "wait_marker";
+    // Both tags share the "<cmd:" prefix, so a buffer that is still a prefix of
+    // either one has to wait rather than being judged now.
     if (TOOL_CALL_OPEN_TAG.startsWith(value)) return "incomplete";
+    if (WAIT_TOOL_RESULT_TAG.startsWith(value)) return "incomplete";
     return "invalid";
   }
 
   /**
    * Process buffered text that follows an already emitted tool call.
    * Pops complete tool calls off the left of the buffer, emitting each one into the
-   * assistant block without executing anything. Stops streaming as soon as the
-   * buffer no longer looks like another tool call.
+   * assistant block without executing anything. Stops streaming once the buffer
+   * holds the end-of-batch marker, or no longer looks like another tool call.
    *
-   * @returns the unconsumed buffer, whether streaming should stop, and whether it
-   *          stopped because a document update failed
+   * @returns the unconsumed buffer, whether streaming should stop, whether it
+   *          stopped because a document update failed, and whether it stopped on
+   *          the end-of-batch marker
    */
   private async processBufferedToolCalls(
     streamer: StreamerState,
     bufferText: string,
-  ): Promise<{ remainingBuffer: string; stop: boolean; failed: boolean }> {
+  ): Promise<{
+    remainingBuffer: string;
+    stop: boolean;
+    failed: boolean;
+    waitMarker: boolean;
+  }> {
     let buffer = bufferText;
 
     // eslint-disable-next-line no-constant-condition
@@ -395,40 +532,52 @@ export class StreamingService {
       const classification = this.classifyBuffer(buffer);
 
       if (classification === "incomplete") {
-        // Could still become another tool call - wait for more tokens
-        return { remainingBuffer: buffer, stop: false, failed: false };
+        // Could still become another tool call or the marker - wait for more tokens
+        return {
+          remainingBuffer: buffer,
+          stop: false,
+          failed: false,
+          waitMarker: false,
+        };
+      }
+
+      if (classification === "wait_marker") {
+        // The model declared the batch complete. The marker is a control signal, so
+        // it is consumed here and never written into the document, and anything the
+        // model streamed after it is dropped.
+        log("End-of-batch marker found in buffer, ending the turn");
+        return {
+          remainingBuffer: "",
+          stop: true,
+          failed: false,
+          waitMarker: true,
+        };
       }
 
       if (classification === "invalid") {
+        // A model that forgot the marker still gets its batch executed: prose after
+        // the last tool call ends the turn just as the marker would.
         log(
-          `Buffered content is not another tool call, interrupting stream and discarding buffer: "${buffer.substring(0, 80)}${buffer.length > 80 ? "..." : ""}"`,
+          `Buffered content is neither another tool call nor the end-of-batch marker, interrupting stream and discarding buffer: "${buffer.substring(0, 80)}${buffer.length > 80 ? "..." : ""}"`,
         );
-        return { remainingBuffer: "", stop: true, failed: false };
-      }
-
-      if (classification === "closing_fence") {
-        const fenceMatch = /^\s*```[ \t]*\r?\n/.exec(buffer);
-        if (!fenceMatch) {
-          return { remainingBuffer: buffer, stop: false, failed: false };
-        }
-        log("Emitting dangling closing fence of the previous tool call");
-        const fenceUpdated = await this.updateDocumentWithTokens(streamer, [
-          fenceMatch[0],
-        ]);
-        if (!fenceUpdated) {
-          log("Token update failed when emitting closing fence, canceling");
-          streamer.isActive = false;
-          return { remainingBuffer: "", stop: true, failed: true };
-        }
-        buffer = buffer.substring(fenceMatch[0].length);
-        continue;
+        return {
+          remainingBuffer: "",
+          stop: true,
+          failed: false,
+          waitMarker: false,
+        };
       }
 
       // classification === "tool_call"
       const toolCallResult = this.checkForCompletedToolCall(buffer);
       if (!toolCallResult || !toolCallResult.isComplete) {
         // Tool call is still streaming in - wait for more tokens
-        return { remainingBuffer: buffer, stop: false, failed: false };
+        return {
+          remainingBuffer: buffer,
+          stop: false,
+          failed: false,
+          waitMarker: false,
+        };
       }
 
       const toolCallText = buffer.substring(0, toolCallResult.endIndex);
@@ -441,7 +590,12 @@ export class StreamingService {
       if (!updateSuccess) {
         log("Token update failed when emitting buffered tool call, canceling");
         streamer.isActive = false;
-        return { remainingBuffer: "", stop: true, failed: true };
+        return {
+          remainingBuffer: "",
+          stop: true,
+          failed: true,
+          waitMarker: false,
+        };
       }
 
       buffer = buffer.substring(toolCallResult.endIndex);
@@ -483,7 +637,9 @@ export class StreamingService {
       );
       textToInsert = "\n```\n\n# %% tool_execute\n";
     } else {
-      textToInsert = "\n\n# %% tool_execute\n";
+      textToInsert = `${blockMarkerPrefix(
+        text.substring(0, blockStart + currentText.length),
+      )}# %% tool_execute\n`;
     }
 
     const edit = new vscode.WorkspaceEdit();
@@ -724,6 +880,12 @@ export class StreamingService {
           let toolExecuteInserted = false;
           let updateFailed = false;
           let cancelledExternally = false;
+          // Set when the model emitted the end-of-batch marker without a valid tool
+          // call, so there is nothing to execute and the turn has to be corrected.
+          let strayWaitMarker = false;
+          // Whether the turn ended because the model marked the batch complete,
+          // rather than by running out of things to say
+          let endedOnWaitMarker = false;
 
           // Create a batching wrapper for the stream
           const batchingStream = this.createBatchingWrapper(stream, 100); // 100ms batching interval
@@ -766,13 +928,26 @@ export class StreamingService {
                 bufferText = bufferResult.remainingBuffer;
                 if (bufferResult.stop) {
                   updateFailed = bufferResult.failed;
+                  endedOnWaitMarker = bufferResult.waitMarker;
                   break;
                 }
                 continue;
               }
 
+              // Deliver text held back from the previous batch because it could
+              // still have grown into the end-of-batch marker. It is prepended to
+              // the raw tokens rather than the rendered output, so renderTokens
+              // accounts for it when it computes the scan offsets.
+              const pendingText = streamer.pendingText ?? "";
+              if (pendingText) {
+                streamer.pendingText = "";
+              }
+              const batchTokens = pendingText
+                ? [pendingText, ...tokens]
+                : tokens;
+
               // Turn thinking/text tokens into document text with section markers
-              const renderedTokens = this.renderTokens(streamer, tokens);
+              const renderedTokens = this.renderTokens(streamer, batchTokens);
               if (renderedTokens.length === 0) {
                 continue;
               }
@@ -830,31 +1005,13 @@ export class StreamingService {
                   const existingLength = streamer.tokens.join("").length;
                   const keepLength = Math.max(0, endIndex - existingLength);
 
-                  // Create a new array of tokens that only includes content up to the </cmd:tool_call> tag
-                  const truncatedNewTokens: string[] = [];
-                  let currentLength = 0;
-
-                  for (const token of renderedTokens) {
-                    if (currentLength >= keepLength) {
-                      break; // Stop adding tokens if we've reached the end of the tool call
-                    }
-
-                    if (currentLength + token.length <= keepLength) {
-                      // Can include the full token
-                      truncatedNewTokens.push(token);
-                      currentLength += token.length;
-                    } else {
-                      // Need to truncate this token
-                      const partialToken = token.substring(
-                        0,
-                        keepLength - currentLength,
-                      );
-                      if (partialToken) {
-                        truncatedNewTokens.push(partialToken);
-                      }
-                      break;
-                    }
-                  }
+                  // Create a new array of tokens that only includes content up to
+                  // the </cmd:tool_call> tag. Anything past it, the end-of-batch
+                  // marker included, is left for the buffer to classify.
+                  const truncatedNewTokens = this.truncateTokens(
+                    renderedTokens,
+                    keepLength,
+                  );
 
                   log(
                     `Truncated tokens from ${renderedTokens.length} to ${truncatedNewTokens.length} to exclude content after </cmd:tool_call>`,
@@ -892,6 +1049,7 @@ export class StreamingService {
                   bufferText = bufferResult.remainingBuffer;
                   if (bufferResult.stop) {
                     updateFailed = bufferResult.failed;
+                    endedOnWaitMarker = bufferResult.waitMarker;
                     break;
                   }
                   continue;
@@ -902,13 +1060,35 @@ export class StreamingService {
               } else {
                 // Normal token processing
                 try {
-                  const updateSuccess = await this.updateDocumentWithTokens(
-                    streamer,
-                    renderedTokens,
-                  );
-                  if (!updateSuccess) {
-                    log("Token update failed, canceling streaming entirely");
-                    streamer.isActive = false;
+                  // Nothing completed in this batch, so the end-of-batch marker has
+                  // to be kept out of the document here rather than by the tool call
+                  // truncation above.
+                  const { tokens: tokensToWrite, strayMarker } =
+                    this.trimWaitMarkerFromWrite(
+                      streamer,
+                      renderedTokens,
+                      currentTokens,
+                      scanStart,
+                      scanEnd,
+                    );
+
+                  if (tokensToWrite.length > 0) {
+                    const updateSuccess = await this.updateDocumentWithTokens(
+                      streamer,
+                      tokensToWrite,
+                    );
+                    if (!updateSuccess) {
+                      log("Token update failed, canceling streaming entirely");
+                      streamer.isActive = false;
+                      break;
+                    }
+                  }
+
+                  if (strayMarker) {
+                    // The model asked to wait for results it never requested. There
+                    // is nothing to execute, so end the turn and let the correction
+                    // below tell it what went wrong.
+                    strayWaitMarker = true;
                     break;
                   }
                 } catch (error) {
@@ -929,9 +1109,32 @@ export class StreamingService {
             }
           }
 
+          // Text held back as a possible end-of-batch marker that the stream never
+          // completed into one is ordinary assistant text, so write it out rather
+          // than dropping the last few characters of the turn.
+          if (
+            streamer.pendingText &&
+            streamer.isActive &&
+            !updateFailed &&
+            !cancelledExternally
+          ) {
+            const flushed = streamer.pendingText;
+            streamer.pendingText = "";
+            log(
+              `Flushing ${flushed.length} held-back chars that never became the end-of-batch marker`,
+            );
+            const flushTokens = this.renderTokens(streamer, [flushed]);
+            if (flushTokens.length > 0) {
+              updateFailed = !(await this.updateDocumentWithTokens(
+                streamer,
+                flushTokens,
+              ));
+            }
+          }
+
           updateChatHistoryUsage(streamer.historyFilePath || "", this.getLastUsage());
           log(
-            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}${bufferingMode ? " (buffered tool calls)" : ""}`,
+            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}${bufferingMode ? " (buffered tool calls)" : ""}${endedOnWaitMarker ? ", ended on end-of-batch marker" : ""}`,
           );
 
           // Parallel tool calls: a single tool_execute block is added after the whole
@@ -951,6 +1154,17 @@ export class StreamingService {
             }
             await this.insertToolExecuteBlockAfterToolCalls(streamer);
             toolExecuteInserted = true;
+          } else if (
+            strayWaitMarker &&
+            !updateFailed &&
+            !cancelledExternally &&
+            streamer.isActive
+          ) {
+            // The model ended a batch that never existed. Nothing was executed, so
+            // ask it to retry rather than leaving the turn hanging on results that
+            // are never coming.
+            await this.appendStrayWaitMarkerCorrection(streamer);
+            correctionInserted = true;
           } else if (
             !bufferingMode &&
             !updateFailed &&
@@ -1337,10 +1551,36 @@ export class StreamingService {
   // This function has been replaced with the one at the beginning of the class
 
   /**
-   * Appends a new user block after the assistant response has completed
+   * Tells the model how to write a tool call, in the exact shape the parser
+   * accepts: qualified tags, no fences, closing tag on its own line, and the
+   * end-of-batch marker after the last call.
+   *
+   * Kept on a single line so the description itself can never match a real tool
+   * call, and assembled from the tag constants for the same reason.
    */
-  private async appendMalformedToolCorrection(
+  private describeToolCallFormat(): string {
+    return (
+      "Use the exact format: " +
+      CMD_TOOL_CALL_OPEN_TAG +
+      " on its own line, then " +
+      CMD_TOOL_NAME_TAGS +
+      ", then one " +
+      CMD_PARAM_TAGS +
+      " per parameter, then " +
+      CMD_TOOL_CALL_CLOSE_TAG +
+      " on its own line, then " +
+      WAIT_TOOL_RESULT_TAG +
+      " once after the last call of the batch. No triple-backtick fences."
+    );
+  }
+
+  /**
+   * Appends a user turn carrying `message` plus an empty assistant block, so the
+   * resulting document change resumes streaming and the model can retry.
+   */
+  private async appendCorrectionTurn(
     streamer: StreamerState,
+    message: string,
   ): Promise<void> {
     await this.lock.acquire();
     try {
@@ -1354,23 +1594,11 @@ export class StreamingService {
       const block = blocks[blocks.length - 1];
       const offset = block.contentStart + streamer.tokens.join("").length;
 
-      // Describe the format exactly as the parser accepts it: qualified tags, no
-      // fences, closing tag on its own line. Guidance a model could follow into
-      // another rejected call would just repeat this correction. Kept on a single
-      // line so the description itself can never match a real tool call.
       const correction =
-        "\n\n# %% user\n" +
-        "That response used the " +
-        CMD_NAMESPACE_PREFIX +
-        " namespace but contained no valid tool call. Retry with the exact format: " +
-        CMD_TOOL_CALL_OPEN_TAG +
-        " on its own line, then " +
-        CMD_TOOL_NAME_TAGS +
-        ", then one " +
-        CMD_PARAM_TAGS +
-        " per parameter, then " +
-        CMD_TOOL_CALL_CLOSE_TAG +
-        " on its own line. No triple-backtick fences.\n\n# %% assistant\n";
+        blockMarkerPrefix(text.substring(0, offset)) +
+        "# %% user\n" +
+        message +
+        "\n\n# %% assistant\n";
 
       // This streamer has to be marked done BEFORE the edit is applied. The edit
       // fires a document change whose handler calls startStreaming, and that has a
@@ -1404,6 +1632,42 @@ export class StreamingService {
     }
   }
 
+  /**
+   * The turn mentioned the cmd namespace but produced no valid tool call, so it
+   * tried to call a tool and got the format wrong. Guidance a model could follow
+   * into another rejected call would just repeat this correction, so the message
+   * spells the format out instead.
+   */
+  private async appendMalformedToolCorrection(
+    streamer: StreamerState,
+  ): Promise<void> {
+    await this.appendCorrectionTurn(
+      streamer,
+      "That response used the " +
+        CMD_NAMESPACE_PREFIX +
+        " namespace but contained no valid tool call. " +
+        this.describeToolCallFormat(),
+    );
+  }
+
+  /**
+   * The turn ended with the end-of-batch marker but no valid tool call, so there
+   * are no results coming. Say so plainly, since a model that waits for results
+   * it never requested would otherwise just wait again.
+   */
+  private async appendStrayWaitMarkerCorrection(
+    streamer: StreamerState,
+  ): Promise<void> {
+    await this.appendCorrectionTurn(
+      streamer,
+      "That response ended with " +
+        WAIT_TOOL_RESULT_TAG +
+        " but contained no valid tool call, so nothing ran and there are no results. " +
+        this.describeToolCallFormat() +
+        " If no tool is needed, answer directly and leave the marker out.",
+    );
+  }
+
   private async appendNewUserBlock(streamer: StreamerState): Promise<void> {
     await this.lock.acquire();
     
@@ -1427,7 +1691,9 @@ export class StreamingService {
       const insertPosition = this.document.positionAt(insertOffset);
       
       // Create the edit to insert the new user block
-      const textToInsert = "\n\n# %% user\n";
+      const textToInsert = `${blockMarkerPrefix(
+        text.substring(0, insertOffset),
+      )}# %% user\n`;
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, insertPosition, textToInsert);
       

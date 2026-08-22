@@ -92,6 +92,7 @@ IMPORTANT FORMATTING REQUIREMENTS:
 3. Parameter names must exactly match those in the tool's schema.
 4. Place the tool call directly in the response without code fences.
 5. The closing </cmd:tool_call> tag must start on its own line. A tool call written entirely on one line is not recognised.
+6. After the last tool call of the batch, emit <cmd:wait-tool-result/> on its own line. That marker ends your turn: the tools run and their results come back before you write anything else.
 
 Available tools:${toolsDescription}
 
@@ -100,6 +101,22 @@ ${resourcesDescription}
 After calling a tool, wait for the result.
 
 When several independent tools are needed, emit them as multiple tool calls back to back in the same response, one complete <cmd:tool_call> block after another with nothing else between them. They are all executed and their results are returned before your next turn, so prefer this over one tool call per turn whenever the calls don't depend on each other's results.
+
+Ending a batch with <cmd:wait-tool-result/>:
+- Put one <cmd:wait-tool-result/> on the line after the last </cmd:tool_call>. Just one, however many tools you called.
+- Stop writing there. Your turn is over, and anything after the marker is thrown away.
+- Don't use the marker if you didn't call a tool. Don't put it inside a parameter value, and don't put it in a thinking block.
+
+Correct - two calls, one marker:
+<cmd:tool_call>
+<cmd:tool_name>read_file</cmd:tool_name>
+<cmd:param name="path">a.py</cmd:param>
+</cmd:tool_call>
+<cmd:tool_call>
+<cmd:tool_name>read_file</cmd:tool_name>
+<cmd:param name="path">b.py</cmd:param>
+</cmd:tool_call>
+<cmd:wait-tool-result/>
 
 Tool usage guidelines:
 - Use the exact format shown above - it's a simplified XML-like format, not strict XML, you don't need to quote strings.

@@ -18,7 +18,7 @@ import {
   ApiConfig,
   getDefaultSystemPrompt,
 } from "./config";
-import { getBlockInfoAtPosition, parseDocument } from "./parser";
+import { getBlockInfoAtPosition, parseDocument, blockMarkerPrefix } from "./parser";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
 import { cancelCurrentToolExecution } from "./tools/toolExecutor";
@@ -1558,6 +1558,14 @@ export function activate(contextParam: vscode.ExtensionContext) {
             const blockInfo = getBlockInfoAtPosition(document, position);
             log(`Current block type: ${blockInfo.type || "none"}`);
 
+            // Every block marker goes in with a blank line above it, the same way
+            // the streamer and the tool result writer place theirs
+            const markerPrefix = blockMarkerPrefix(
+              document.getText(
+                new vscode.Range(new vscode.Position(0, 0), position),
+              ),
+            );
+
             // Special case: If we're in an assistant block and it contains a tool call, add tool_execute
             if (blockInfo.type === "assistant") {
               // Check if the current assistant block contains a tool call
@@ -1593,7 +1601,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
                 log(
                   `Detected tool call in current assistant block, inserting tool_execute block`,
                 );
-                edit.insert(position, "\n# %% tool_execute\n");
+                edit.insert(position, `${markerPrefix}# %% tool_execute\n`);
                 continue; // Skip to next selection
               }
             }
@@ -1603,16 +1611,16 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
             switch (blockInfo.type) {
               case "user":
-                textToInsert = "\n# %% assistant\n";
+                textToInsert = `${markerPrefix}# %% assistant\n`;
                 break;
               case "assistant":
-                textToInsert = "\n# %% user\n";
+                textToInsert = `${markerPrefix}# %% user\n`;
                 break;
               case "tool_execute":
-                textToInsert = "\n# %% assistant\n"; // As per requirement
+                textToInsert = `${markerPrefix}# %% assistant\n`; // As per requirement
                 break;
               default: // No block found before cursor, or error
-                textToInsert = "\n# %% user\n"; // As per requirement
+                textToInsert = `${markerPrefix}# %% user\n`; // As per requirement
                 break;
             }
 

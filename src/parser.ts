@@ -14,6 +14,7 @@ import {
   parseThinkingSection,
 } from "./utils/thinkingBlocks";
 import { getThinkingEntry } from "./utils/thinkingMap";
+import { appendWaitMarkerAfterLastToolCall } from "./tools/toolCallParser";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -310,7 +311,18 @@ export function parseDocument(
     else if (role === "assistant") {
        // Only add assistant message if it has actual content
        if (content) {
-         const assistantContent = parseAssistantContent(content, document);
+         // A tool_execute block after this one means the batch finished and ran, so
+         // the end-of-batch marker belongs back in the replayed turn. Without one
+         // the batch is still in flight (a resumed or partial assistant block) and
+         // claiming it ended would be a lie.
+         const nextRole =
+           i + 2 < endIdx ? blocks[i + 2].toLowerCase().trim() : null;
+         const batchExecuted = nextRole === "tool_execute";
+         const assistantContent = parseAssistantContent(
+           content,
+           document,
+           batchExecuted,
+         );
          if (assistantContent.length > 0) {
            messages.push({
              role: "assistant",
@@ -355,6 +367,7 @@ export function parseDocument(
 export function parseAssistantContent(
   content: string,
   document?: vscode.TextDocument,
+  appendWaitMarker: boolean = false,
 ): Content[] {
   const sections = splitAssistantSections(content);
   const docDir = document ? path.dirname(document.uri.fsPath) : undefined;
@@ -397,7 +410,60 @@ export function parseAssistantContent(
     result.push(thinking);
   }
 
+  if (appendWaitMarker) {
+    appendWaitMarkerToLastToolCall(result);
+  }
+
   return result;
+}
+
+/**
+ * Puts the end-of-batch marker back after the last tool call of a finished
+ * assistant turn, in place.
+ *
+ * The marker is a stream-control signal, so it is stripped while streaming and
+ * never stored in the document. The model is asked to always end a batch with
+ * one, so replaying history without it would show the model its own turns in a
+ * shape it was told not to produce. Only text sections are considered: a tool
+ * call written inside thinking was never a call.
+ */
+function appendWaitMarkerToLastToolCall(content: Content[]): void {
+  for (let i = content.length - 1; i >= 0; i--) {
+    const item = content[i];
+    if (item.type !== "text") {
+      continue;
+    }
+
+    const withMarker = appendWaitMarkerAfterLastToolCall(item.value);
+    if (withMarker !== item.value) {
+      content[i] = { ...item, value: withMarker };
+      return;
+    }
+  }
+}
+
+/**
+ * Prefix that starts a `# %%` block marker on a fresh line with exactly one blank
+ * line above it, given the document text that precedes the insertion point.
+ *
+ * Every marker is written through this so blocks stay separated the same way
+ * whether they were appended by a streamer, by a tool result, or by hand. The
+ * parser reads markers line by line and so does not require the blank line, but
+ * without it the document renders as one run-on block.
+ */
+export function blockMarkerPrefix(textBefore: string): string {
+  if (textBefore.length === 0) {
+    // Start of the document: the first marker needs nothing above it
+    return "";
+  }
+  if (/\n[ \t]*\r?\n$/.test(textBefore)) {
+    // Already a blank line above
+    return "";
+  }
+  if (/\n$/.test(textBefore)) {
+    return "\n";
+  }
+  return "\n\n";
 }
 
 /**
