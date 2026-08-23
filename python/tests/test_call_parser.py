@@ -122,7 +122,9 @@ def test_preprocess_cdata_for_matching_hides_xml_like_tags() -> None:
     assert "<foo>" not in result
     assert "</foo>" not in result
     assert "bar" in result
-    assert "__XML_TAG_PLACEHOLDER_" in result
+    # Masking must be length preserving, because callers map offsets found in the
+    # masked text back onto the original.
+    assert len(result) == len(text)
 
 
 def test_preprocess_cdata_for_matching_leaves_non_cdata_text_untouched() -> None:
@@ -274,3 +276,60 @@ def test_append_wait_marker_two_calls_inserts_after_last_only() -> None:
     assert result == text + "\n" + CMD_WAIT_TOOL_RESULT_TAG
     # The marker must not have been inserted after the first call.
     assert first + "\n" + CMD_WAIT_TOOL_RESULT_TAG not in result
+
+
+# --------------------------------------------------------------------------- #
+# Offsets stay in the original text's coordinate system
+#
+# The TypeScript original substitutes variable-length placeholders for CDATA,
+# which shifts every offset after the first payload. Both regressions below are
+# real defects there, not stylistic differences.
+# --------------------------------------------------------------------------- #
+
+
+def test_end_index_of_a_call_containing_cdata_is_in_original_coordinates() -> None:
+    """An inflated end index lets the streamer write past the closing tag.
+
+    Everything after it — the end-of-batch marker included — would then land in
+    the document, and that marker is a control signal that must never be written.
+    """
+    text = (
+        CMD_TOOL_CALL_OPEN_TAG
+        + "\n<cmd:tool_name>write_file</cmd:tool_name>\n"
+        + '<cmd:param name="content"><![CDATA[<b>hello</b>]]></cmd:param>\n'
+        + CMD_TOOL_CALL_CLOSE_TAG
+        + "\n"
+        + CMD_WAIT_TOOL_RESULT_TAG
+        + "\n"
+    )
+    result = check_for_completed_tool_call(text)
+    assert result is not None
+
+    expected_end = text.index(CMD_TOOL_CALL_CLOSE_TAG) + len(CMD_TOOL_CALL_CLOSE_TAG)
+    assert result.end_index == expected_end
+    assert result.end_index <= len(text)
+    # What the streamer would buffer rather than write.
+    assert text[result.end_index :].strip() == CMD_WAIT_TOOL_RESULT_TAG
+
+
+def test_cdata_payload_mentioning_the_closing_tag_keeps_every_parameter() -> None:
+    """A lazy re-search of the original text would stop at the fake closing tag.
+
+    The parameters after it would be silently dropped, which is precisely what
+    masking the CDATA payload is supposed to prevent.
+    """
+    text = (
+        CMD_TOOL_CALL_OPEN_TAG
+        + "\n<cmd:tool_name>write_file</cmd:tool_name>\n"
+        + '<cmd:param name="a"><![CDATA[see '
+        + CMD_TOOL_CALL_CLOSE_TAG
+        + "\nnot the end]]></cmd:param>\n"
+        + '<cmd:param name="b">second</cmd:param>\n'
+        + CMD_TOOL_CALL_CLOSE_TAG
+    )
+    call = parse_tool_call(text)
+    assert call is not None
+    assert call.name == "write_file"
+    assert set(call.params) == {"a", "b"}
+    assert call.params["b"] == "second"
+    assert CMD_TOOL_CALL_CLOSE_TAG in call.params["a"]

@@ -16,10 +16,8 @@ substring never appears contiguously in this file's text either.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import re
-from base64 import b64encode
 from dataclasses import dataclass
 
 from chatmd.types import ToolCall
@@ -153,11 +151,16 @@ def preprocess_xml_with_cdata(xml: str) -> str:
 
     Only used for locating boundaries: parameter extraction always happens against
     the original, un-substituted text so CDATA content survives intact.
-    """
-    counter = itertools.count()
 
-    def _replace(_match: re.Match[str]) -> str:
-        return f"__CDATA_PLACEHOLDER_{next(counter)}__"
+    The filler is exactly as long as what it replaces. That is load-bearing: the
+    offsets a boundary match reports are used to slice the *original* text, and the
+    TypeScript version's variable-length placeholders made those offsets wrong
+    whenever a CDATA payload was present — far enough wrong to run past the end of
+    the text. Underscores also cannot reintroduce a tag-shaped substring.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        return "_" * len(match.group(0))
 
     return _CDATA_SECTION_RE.sub(_replace, xml)
 
@@ -205,13 +208,19 @@ def are_params_complete(text: str) -> bool:
 
 
 def preprocess_cdata_for_matching(text: str) -> str:
-    """Rewrites XML-like tags found *inside* CDATA sections into base64
-    placeholders, so a stray closing tag (or a nested-looking ``]]>``) written
-    inside a parameter's CDATA payload can never be mistaken for a real
-    structural tag by the boundary scanners that run on the result.
+    """Masks XML-like tags found *inside* CDATA sections, so a stray closing tag
+    (or a nested-looking ``]]>``) written inside a parameter's CDATA payload can
+    never be mistaken for a real structural tag by the boundary scanners that run
+    on the result.
 
     Walks character by character (see :func:`are_cdata_tags_balanced`) so nesting
     order, not just tag counts, determines what counts as "inside" CDATA.
+
+    Masking is length preserving, unlike the base64 placeholders the TypeScript
+    version substitutes. Callers map the offsets a match reports back onto the
+    original text, and inflating the text shifts every offset after the first
+    CDATA payload — enough to push a reported end index past the end of the input,
+    which then lets stream-control text leak into the document.
     """
     processed: list[str] = []
     is_inside_cdata = False
@@ -233,11 +242,10 @@ def preprocess_cdata_for_matching(text: str) -> str:
             if i + 2 < n and text[i : i + 3] == "]]>":
                 is_inside_cdata = False
 
-                def _encode_tag(match: re.Match[str]) -> str:
-                    encoded = b64encode(match.group(0).encode("utf-8")).decode("ascii")
-                    return f"__XML_TAG_PLACEHOLDER_{encoded}__"
+                def _mask_tag(match: re.Match[str]) -> str:
+                    return "_" * len(match.group(0))
 
-                safe_content = _XML_LIKE_TAG_RE.sub(_encode_tag, cdata_content)
+                safe_content = _XML_LIKE_TAG_RE.sub(_mask_tag, cdata_content)
                 processed.append(safe_content)
                 processed.append("]]>")
                 i += 3
@@ -291,11 +299,14 @@ def parse_tool_call(tool_call_xml: str) -> ToolCall | None:
 
         original_tool_call_content = ""
         if tool_call_content_match:
-            # Re-locate the same call in the (un-substituted) original text, then
-            # strip its open/close tags textually to get the raw body.
-            full_match = _TOOL_CALL_FULL_RE.search(xml_content)
-            if full_match:
-                original_tool_call_content = _STRIP_CALL_TAGS_RE.sub("", full_match.group(0))
+            # Slice the body straight out of the original text using the span the
+            # boundary match reported. Masking is length preserving, so the two
+            # texts share coordinates. Re-searching the original instead — what the
+            # TypeScript version does — lets a closing-tag-shaped string inside a
+            # CDATA payload end the lazy match early and silently truncate the
+            # parameters, which is exactly what the masking exists to prevent.
+            start, end = tool_call_content_match.span(1)
+            original_tool_call_content = xml_content[start:end]
         else:
             # Fallback: preprocessed matching failed (e.g. no newline before the
             # closing tag survived substitution) — try the original text directly.

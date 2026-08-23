@@ -115,30 +115,21 @@ export function extractXmlContent(toolCallXml: string): string {
 }
 
 /**
- * Preprocesses XML content with CDATA sections to handle special cases
- * This helps ensure that XML tags inside CDATA sections don't interfere with parsing
- * @param xml The XML content to preprocess
- * @returns The preprocessed XML
+ * Masks CDATA sections so that tag boundary matching is not confused by XML-like
+ * text sitting inside a parameter's CDATA payload.
+ *
+ * The mask is exactly as long as what it replaces, and that is load-bearing: the
+ * offsets a match reports here are used to slice the *original* text, so anything
+ * that changes the length shifts every offset after the first CDATA payload.
+ * Underscores also cannot reintroduce a tag-shaped substring.
+ *
+ * Only used for locating boundaries. Parameter extraction always runs against the
+ * original text, so CDATA content survives intact.
  */
 export function preprocessXmlWithCdata(xml: string): string {
-  const cdataSections: string[] = [];
-  let index = 0;
-
-  // Replace CDATA sections with placeholders
-  const processedXml = xml.replace(
-    /<!\[CDATA\[([\s\S]*?)\]\]>/gs,
-    (match, content) => {
-      const placeholder = `__CDATA_PLACEHOLDER_${index}__`;
-      cdataSections[index] = content;
-      index++;
-      return placeholder;
-    },
+  return xml.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gs, (match) =>
+    "_".repeat(match.length),
   );
-
-  // No need to restore placeholders as we're just using this for tag matching
-  // The actual CDATA content will be processed separately when parsing parameters
-
-  return processedXml;
 }
 
 /**
@@ -241,10 +232,17 @@ export function preprocessCdataForMatching(text: string): string {
         isInsideCdata = false;
         // Replace XML-like tags in the CDATA content with placeholders
         // This ensures they don't interfere with XML parsing
-        const safeContent = cdataContent.replace(/<\/?[^>]+(>|$)/g, (match) => {
-          // Create a distinctive placeholder that won't be confused with actual content
-          return `__XML_TAG_PLACEHOLDER_${Buffer.from(match).toString("base64")}__`;
-        });
+        // Masked with an equal length run of underscores rather than a
+        // placeholder. checkForCompletedToolCall reports the end index of a match
+        // found in this text but slices the original with it, so inflating the
+        // text pushes that index past the true end of the tool call - far enough,
+        // with a base64 placeholder, to run past the end of the input entirely.
+        // The streamer then writes everything after the closing tag into the
+        // document, including the end-of-batch marker that must never be written.
+        const safeContent = cdataContent.replace(
+          /<\/?[^>]+(>|$)/g,
+          (match) => "_".repeat(match.length),
+        );
         processedText += safeContent + "]]>"; // Add safe content and closing tag
         i += 3; // Skip the CDATA closing tag
       } else {
@@ -314,20 +312,19 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
     const toolCallContentMatch =
       /<cmd:tool_call>\s*([\s\S]*?)\n\s*<\/cmd:tool_call>/s.exec(preprocessedXml);
 
-    // Get the corresponding part from the original XML for parameter extraction
-    // This ensures we have the original CDATA tags intact when parsing parameters
+    // Slice the body straight out of the original XML using the span the boundary
+    // match reported. Masking is length preserving, so the two texts share
+    // coordinates. Re-searching the original instead would let a closing tag
+    // written inside a CDATA payload end the lazy match early and silently drop
+    // every parameter after it - exactly what masking the payload prevents.
     let originalToolCallContent = "";
     if (toolCallContentMatch) {
-      // Use the same pattern with newline requirement for the original content
-      const fullMatch = /<cmd:tool_call>[\s\S]*?\n\s*<\/cmd:tool_call>/s.exec(
-        xmlContent,
+      const bodyStart =
+        toolCallContentMatch.index + toolCallContentMatch[0].indexOf(toolCallContentMatch[1]);
+      originalToolCallContent = xmlContent.substring(
+        bodyStart,
+        bodyStart + toolCallContentMatch[1].length,
       );
-      if (fullMatch) {
-        originalToolCallContent = fullMatch[0].replace(
-          /<cmd:tool_call>\s*|\n\s*<\/cmd:tool_call>/g,
-          "",
-        );
-      }
     } else {
       // Fallback to the original string if preprocessed matching fails
       // Still require newline before closing tag
