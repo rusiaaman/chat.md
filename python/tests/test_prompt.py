@@ -76,15 +76,14 @@ def test_tool_entry_renders_schema_as_indented_json_block() -> None:
         name="x", description="desc", input_schema={"type": "object", "properties": {}}
     )
     schema_json = json.dumps(tool.input_schema, indent=2)
+    index = len(get_system_tool_definitions()) + 1  # the lone MCP tool follows the built-in one
 
     prompt = generate_tool_calling_system_prompt({"s": {"x": tool}}, {})
 
-    assert f"\n1. tool_name: `x`\n desc\n   Input Schema:\n   ```json\n{schema_json}\n   ```\n" in (
-        # built-in tool is numbered 1, so a lone MCP tool here is numbered 2 --
-        # check the templating shape directly rather than the exact index.
-        prompt.replace(f"{len(get_system_tool_definitions()) + 1}. tool_name", "1. tool_name")
+    expected_entry = (
+        f"\n{index}. tool_name: `x`\n desc\n   Input Schema:\n   ```json\n{schema_json}\n   ```\n"
     )
-    assert f"```json\n{schema_json}\n```" in prompt
+    assert expected_entry in prompt
 
 
 # --------------------------------------------------------------------------- #
@@ -186,13 +185,20 @@ def _unescape_ts_template_literal(text: str) -> str:
     return text.replace("\\`", "`").replace('\\"', '"')
 
 
-def _extract_template_literal(source: str, start_marker: str, search_from: int = 0) -> tuple[str, int]:
-    """Return the text between the backtick after ``start_marker`` and the
-    closing `` `; `` that ends a ``return `...`;`` statement, plus the index
-    right after that closing marker (so callers can find the *next* literal).
+_RETURN_BACKTICK = "  return `"
+
+
+def _extract_template_literal(source: str, anchor: str, search_from: int = 0) -> tuple[str, int]:
+    """Return the text of a ``return `...`;`` template literal, plus the index
+    right after its closing `` `; `` (so callers can find the *next* literal).
+
+    ``anchor`` locates the right ``return \\``` occurrence (there are two
+    matching ones in config.ts, one per function) without itself being part of
+    the literal's own text -- it must be a prefix of ``_RETURN_BACKTICK`` plus
+    the start of the literal, i.e. include the backtick.
     """
-    start = source.index(start_marker, search_from)
-    literal_start = start + len(start_marker)
+    start = source.index(_RETURN_BACKTICK + anchor, search_from)
+    literal_start = start + len(_RETURN_BACKTICK)
     literal_end = source.index("`;\n}", literal_start)
     return source[literal_start:literal_end], literal_end + len("`;\n}")
 
@@ -212,19 +218,16 @@ def test_persona_and_protocol_text_matches_config_ts() -> None:
     edit to either side that isn't mirrored on the other fails this test.
     """
     source = _CONFIG_TS.read_text(encoding="utf-8")
+    persona_opening = "The assistant is called 'Chatmd'."
 
-    tool_calling_literal, next_search_from = _extract_template_literal(
-        source, "  return `The assistant is called 'Chatmd'."
-    )
+    tool_calling_literal, next_search_from = _extract_template_literal(source, persona_opening)
     header, rest = tool_calling_literal.split("${toolsDescription}", 1)
     middle, tail = rest.split("${resourcesDescription}", 1)
     header = _unescape_ts_template_literal(header)
     middle = _unescape_ts_template_literal(middle)
     tail = _unescape_ts_template_literal(tail)
 
-    default_literal, _ = _extract_template_literal(
-        source, "  return `The assistant is called 'Chatmd'.", next_search_from
-    )
+    default_literal, _ = _extract_template_literal(source, persona_opening, next_search_from)
     default_literal = _unescape_ts_template_literal(default_literal)
 
     # getDefaultSystemPrompt's literal must be byte-identical to the Python port.
