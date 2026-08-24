@@ -36,6 +36,11 @@ async def batched_events(
 ) -> AsyncIterator[list[StreamEvent]]:
     """Yield lists of events collected over `interval` seconds each.
 
+    A failure from the source is held back until everything already collected has
+    been yielded, then raised. Providers signal a truncated response by failing
+    mid-stream, and the text they produced before failing is exactly what the
+    caller needs in order to continue the turn instead of restarting it.
+
     Closing this generator early closes the source, which aborts the underlying
     request. That matters: a turn ends the moment a tool call batch is complete,
     and without the abort the process would sit and pay for tokens nobody reads.
@@ -44,9 +49,10 @@ async def batched_events(
     pending: list[StreamEvent] = []
     task: asyncio.Task[StreamEvent | _Sentinel] | None = None
     exhausted = False
+    failure: Exception | None = None
 
     try:
-        while not exhausted:
+        while not exhausted and failure is None:
             deadline = time.monotonic() + interval
             while True:
                 if task is None:
@@ -59,6 +65,10 @@ async def batched_events(
                     # next pass awaits the same task instead of dropping an event.
                     event = await asyncio.wait_for(asyncio.shield(task), remaining)
                 except TimeoutError:
+                    break
+                except Exception as error:  # noqa: BLE001 - re-raised below, after flushing
+                    task = None
+                    failure = error
                     break
                 task = None
                 if isinstance(event, _Sentinel):
@@ -79,3 +89,6 @@ async def batched_events(
         aclose = getattr(iterator, "aclose", None)
         if aclose is not None:
             await aclose()
+
+    if failure is not None:
+        raise failure

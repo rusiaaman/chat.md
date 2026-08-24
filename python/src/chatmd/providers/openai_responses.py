@@ -18,16 +18,6 @@ from pathlib import Path
 from typing import Any
 
 from openai import APIConnectionError, APIStatusError, AsyncOpenAI
-from openai.types.responses import (
-    ResponseErrorEvent,
-    ResponseFailedEvent,
-    ResponseIncompleteEvent,
-    ResponseOutputItemDoneEvent,
-    ResponseReasoningItem,
-    ResponseReasoningSummaryTextDeltaEvent,
-    ResponseReasoningTextDeltaEvent,
-    ResponseTextDeltaEvent,
-)
 
 from ..config.model import ResolvedConfig
 from ..fileio import get_mime_type, read_bytes, resolve_file_path
@@ -260,6 +250,11 @@ class OpenAIResponsesClient:
     ) -> AsyncIterator[StreamEvent]:
         """Translate Responses SSE events into StreamEvents, tracking usage as it goes.
 
+        Dispatches on ``event.type`` rather than the SDK's typed event classes -- the
+        same duck-typed shape the TS client's ``switch (data.type)`` and the sibling
+        chat-completions/Anthropic clients use, so this reads production SSE events and
+        lightweight test stand-ins alike.
+
         Text arrives as ``response.output_text.delta``, reasoning summaries as
         ``response.reasoning_summary_text.delta``, and the encrypted payload only
         shows up once the reasoning item is done.
@@ -275,48 +270,47 @@ class OpenAIResponsesClient:
                 self.last_usage = merged
                 yield UsageDelta(usage=merged)
 
-            if isinstance(event, ResponseTextDeltaEvent):
-                if event.delta:
-                    yield TextDelta(text=event.delta)
-            elif isinstance(
-                event, (ResponseReasoningSummaryTextDeltaEvent, ResponseReasoningTextDeltaEvent)
+            event_type = getattr(event, "type", None)
+
+            if event_type == "response.output_text.delta":
+                delta = getattr(event, "delta", None)
+                if delta:
+                    yield TextDelta(text=delta)
+            elif event_type in (
+                "response.reasoning_summary_text.delta",
+                "response.reasoning_text.delta",
             ):
-                if event.delta:
-                    yield ThinkingDelta(text=event.delta)
-            elif isinstance(event, ResponseOutputItemDoneEvent):
-                item = event.item
-                if isinstance(item, ResponseReasoningItem) and item.encrypted_content:
-                    logger.info("Received encrypted reasoning item %s", item.id)
+                delta = getattr(event, "delta", None)
+                if delta:
+                    yield ThinkingDelta(text=delta)
+            elif event_type == "response.output_item.done":
+                item = getattr(event, "item", None)
+                encrypted_content = getattr(item, "encrypted_content", None)
+                if getattr(item, "type", None) == "reasoning" and encrypted_content:
+                    item_id = getattr(item, "id", None)
+                    logger.info("Received encrypted reasoning item %s", item_id)
                     yield ThinkingPayloadDelta(
                         model=model,
                         payload=ThinkingPayload(
                             kind="openai_encrypted",
-                            item_id=item.id,
-                            encrypted_content=item.encrypted_content,
+                            item_id=item_id,
+                            encrypted_content=encrypted_content,
                         ),
                     )
-            elif isinstance(event, ResponseIncompleteEvent):
-                reason = (
-                    event.response.incomplete_details.reason
-                    if event.response.incomplete_details
-                    else None
-                )
+            elif event_type == "response.incomplete":
+                response_obj = getattr(event, "response", None)
+                incomplete_details = getattr(response_obj, "incomplete_details", None)
+                reason = getattr(incomplete_details, "reason", None)
                 logger.info("Responses API incomplete: %s", reason)
                 if reason == "max_output_tokens":
                     raise MaxTokensError("Response incomplete due to token limit")
-            elif isinstance(event, ResponseFailedEvent):
+            elif event_type in ("response.failed", "error"):
+                response_obj = getattr(event, "response", None)
+                error_obj = getattr(response_obj, "error", None)
                 message = (
-                    event.response.error.message if event.response.error else "unknown error"
+                    getattr(error_obj, "message", None)
+                    or getattr(event, "message", None)
+                    or "unknown error"
                 )
                 logger.error("Responses API error event: %s", message)
                 raise RuntimeError(f"Responses API error: {message}")
-            elif isinstance(event, ResponseErrorEvent):
-                logger.error("Responses API error event: %s", event.message)
-                raise RuntimeError(f"Responses API error: {event.message}")
-            else:
-                # Fallback for anything not covered by a typed SDK event class.
-                etype = getattr(event, "type", None)
-                if etype in ("response.failed", "error"):
-                    message = getattr(event, "message", None) or "unknown error"
-                    logger.error("Responses API error event: %s", message)
-                    raise RuntimeError(f"Responses API error: {message}")

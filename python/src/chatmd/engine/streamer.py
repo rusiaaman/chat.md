@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 
 from ..assets import assets_dir
@@ -59,7 +59,7 @@ MAX_TOKEN_RETRIES = 10
 MAX_BACKOFF_SECONDS = 32.0
 
 
-class StreamOutcome(str, Enum):
+class StreamOutcome(StrEnum):
     """How a turn ended, which is what the driver needs to decide what happens next."""
 
     #: Natural finish; a fresh user block was appended.
@@ -252,7 +252,9 @@ class FileStreamer:
                     break
                 continue
 
-            to_write, stray_wait_marker = self._trim_wait_marker(rendered, current, scan_start, scan_end)
+            to_write, stray_wait_marker = self._trim_wait_marker(
+                rendered, current, scan_start, scan_end
+            )
             if to_write and not self._append(to_write):
                 update_failed = True
                 break

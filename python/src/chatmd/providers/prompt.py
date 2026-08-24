@@ -53,8 +53,11 @@ def _build_advertised_resource_section(
         for resource in resources.values():
             label = resource.title or resource.name or resource.uri
             detail_parts = [part for part in (resource.description, resource.mime_type) if part]
-            # config.ts joins with a middle dot and prefixes with an em dash.
-            detail = f" \u2014 {' \u00b7 '.join(detail_parts)}" if detail_parts else ""
+            # config.ts joins with a middle dot and prefixes with an em dash. The separator is
+            # pulled out to a variable because a backslash escape can't sit inside an f-string
+            # expression on Python 3.11 (only 3.12+ relaxes that, and we target 3.11+).
+            middle_dot_sep = " \u00b7 "
+            detail = f" \u2014 {middle_dot_sep.join(detail_parts)}" if detail_parts else ""
             lines.append(f"- serverId=`{server_id}`, uri=`{resource.uri}`, label={label}{detail}")
 
         sections.append(f"## Advertised resources from server: {server_id}\n" + "\n".join(lines))
