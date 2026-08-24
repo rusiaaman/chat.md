@@ -44,6 +44,11 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Typer declares options and arguments as call expressions in parameter
+# defaults; that is the framework's API, not an accident.
+"src/chatmd/cli/*" = ["B008"]
+
 [tool.mypy]
 python_version = "3.11"
 files = ["src/chatmd"]

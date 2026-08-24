@@ -102,7 +102,8 @@ def read_lock_info(path: str | Path) -> LockInfo | None:
         return None
 
 
-def _pid_alive(pid: int) -> bool:
+def pid_alive(pid: int) -> bool:
+    """Whether a process id belongs to a live process on this host."""
     if pid <= 0:
         return False
     try:
@@ -283,7 +284,7 @@ class FileLock:
         so a holder that stops beating for three intervals is treated as gone —
         which also covers a wedged editor that will never release.
         """
-        if existing.host == socket.gethostname() and not _pid_alive(existing.pid):
+        if existing.host == socket.gethostname() and not pid_alive(existing.pid):
             return True
         return (time.time() - existing.heartbeat) > self.stale_after
 
@@ -395,7 +396,7 @@ def lock_holder(chat_file: str | Path) -> LockInfo | None:
     existing = read_lock_info(path)
     if existing is None:
         return None
-    if existing.host == socket.gethostname() and not _pid_alive(existing.pid):
+    if existing.host == socket.gethostname() and not pid_alive(existing.pid):
         return None
     if (time.time() - existing.heartbeat) > (
         DEFAULT_HEARTBEAT_INTERVAL * DEFAULT_STALE_FACTOR
