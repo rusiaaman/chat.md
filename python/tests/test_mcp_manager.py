@@ -689,6 +689,22 @@ async def test_reconnect_attempts_are_capped(monkeypatch: pytest.MonkeyPatch) ->
     assert pool.status()[0].state == "errored"
 
 
+async def test_a_failure_after_connecting_still_closes_the_transport() -> None:
+    """A connect that succeeds but then fails while listing tools/prompts/etc.
+    must not leak the live transport (e.g. a spawned stdio child process)."""
+    session = FakeSession(tools=[_tool("foo")])
+    pool, connector = make_pool({"srv": session})
+    await pool.start()  # discovery succeeds first (no tools error yet)
+
+    session.list_tools_error = RuntimeError("listing failed after connecting")
+    result = await pool.call("srv.foo", {})
+
+    assert isinstance(result, str)
+    assert "Failed to connect" in result
+    assert connector.concurrent_opens["srv"] == 0
+    assert pool.status()[0].state == "errored"
+
+
 async def test_aclose_disconnects_kept_alive_sessions() -> None:
     session = FakeSession(tools=[_tool("foo")])
     session.call_tool_results.append(_call_result([]))

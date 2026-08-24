@@ -53,7 +53,9 @@ app.add_typer(mcp_app, name="mcp")
 app.add_typer(config_app, name="config")
 
 console = Console()
-error_console = Console(stderr=True)
+# Soft wrap on stderr: errors quote paths and commands, and rich's hard wrapping
+# breaks them mid-token, which makes them impossible to copy or grep for.
+error_console = Console(stderr=True, soft_wrap=True)
 
 
 # --------------------------------------------------------------------------- #

@@ -269,14 +269,29 @@ class McpPool:
                 await asyncio.sleep(backoff)
 
             runtime.state = "connecting"
+            cm = self._connect(server_id, runtime.config)
             try:
-                cm = self._connect(server_id, runtime.config)
                 session = await cm.__aenter__()
-                await self._absorb_listing(runtime, session)
             except Exception as exc:
+                # `cm.__aenter__()` failing means `connect_session` already
+                # unwound everything it opened before re-raising -- nothing of
+                # ours to close here.
                 runtime.reconnect_attempts += 1
                 runtime.state = "errored"
                 runtime.last_error = str(exc)
+                raise
+
+            try:
+                await self._absorb_listing(runtime, session)
+            except Exception as exc:
+                # Unlike the branch above, the transport genuinely connected
+                # here -- a stdio child is alive -- so it must be torn down
+                # explicitly or this leaks it for as long as it runs.
+                runtime.reconnect_attempts += 1
+                runtime.state = "errored"
+                runtime.last_error = str(exc)
+                with suppress(Exception):
+                    await cm.__aexit__(type(exc), exc, exc.__traceback__)
                 raise
 
             runtime.session = session
