@@ -14,8 +14,13 @@ from typing import Any
 
 import pytest
 
+from chatmd.config.model import ResolvedConfig
 from chatmd.providers.base import MaxTokensError
+
+# We reach into the client's private _translate_stream the same way
+# test_anthropic_client.py reaches into AnthropicClient's private helpers.
 from chatmd.providers.openai_responses import (
+    OpenAIResponsesClient,
     build_request_kwargs,
     convert_to_responses_input,
 )
@@ -31,11 +36,6 @@ from chatmd.types import (
     Usage,
     UsageDelta,
 )
-
-# We reach into the client's private _translate_stream the same way
-# test_anthropic_client.py reaches into AnthropicClient's private helpers.
-from chatmd.config.model import ResolvedConfig
-from chatmd.providers.openai_responses import OpenAIResponsesClient
 
 
 def make_client(**overrides: Any) -> OpenAIResponsesClient:
@@ -135,9 +135,7 @@ def test_build_request_thinking_disabled_omits_reasoning_and_include() -> None:
     assert "include" not in kwargs
 
 
-def test_build_request_falls_back_to_default_model() -> None:
-    client = make_client(model_name=None)
-    assert client.config.model_name is None
+def test_default_model_constant() -> None:
     from chatmd.providers.openai_responses import DEFAULT_MODEL
 
     assert DEFAULT_MODEL == "gpt-4.1-mini"
@@ -472,11 +470,37 @@ class _FakeResponsesEndpoint:
         raise self._error
 
 
+class _CapturingResponsesEndpoint:
+    """Stands in for ``client.responses`` -- records the kwargs it was called with."""
+
+    def __init__(self) -> None:
+        self.received_kwargs: dict[str, Any] | None = None
+
+    async def create(self, **kwargs: Any) -> Any:
+        self.received_kwargs = kwargs
+        return _aiter([])
+
+
+async def test_stream_falls_back_to_default_model_when_unconfigured() -> None:
+    from chatmd.providers.openai_responses import DEFAULT_MODEL
+
+    client = make_client(model_name=None)
+    endpoint = _CapturingResponsesEndpoint()
+    client._client.responses = endpoint  # type: ignore[attr-defined]
+
+    async for _ in client.stream([], "sys"):
+        pass
+
+    assert endpoint.received_kwargs is not None
+    assert endpoint.received_kwargs["model"] == DEFAULT_MODEL
+
+
 def _make_status_error(status_code: int) -> Exception:
     import openai
 
-    request = SimpleNamespace()
-    response = SimpleNamespace(request=request, headers={})
+    # APIStatusError.__init__ reads response.status_code/.request/.headers directly;
+    # nothing else about the response is ever touched.
+    response = SimpleNamespace(request=SimpleNamespace(), headers={}, status_code=status_code)
     if status_code == 429:
         return openai.RateLimitError(
             message="rate limited", response=response, body=None  # type: ignore[arg-type]
@@ -491,7 +515,6 @@ async def test_stream_maps_500_to_retryable_error() -> None:
 
     client = make_client()
     error = _make_status_error(500)
-    error.status_code = 500  # type: ignore[attr-defined]
     client._client.responses = _FakeResponsesEndpoint(error)  # type: ignore[attr-defined]
 
     with pytest.raises(RetryableError):
@@ -504,7 +527,6 @@ async def test_stream_maps_429_to_retryable_error() -> None:
 
     client = make_client()
     error = _make_status_error(429)
-    error.status_code = 429  # type: ignore[attr-defined]
     client._client.responses = _FakeResponsesEndpoint(error)  # type: ignore[attr-defined]
 
     with pytest.raises(RetryableError):
@@ -515,7 +537,6 @@ async def test_stream_maps_429_to_retryable_error() -> None:
 async def test_stream_400_propagates_unchanged() -> None:
     client = make_client()
     error = _make_status_error(400)
-    error.status_code = 400  # type: ignore[attr-defined]
     client._client.responses = _FakeResponsesEndpoint(error)  # type: ignore[attr-defined]
 
     import openai

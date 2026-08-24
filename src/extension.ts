@@ -29,6 +29,7 @@ import {
   getCurrentContext,
 } from "./utils/contextTemplateUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
+import { releaseAllChatFileLocks } from "./utils/fileLock";
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -1715,6 +1716,14 @@ async function checkApiConfiguration(): Promise<void> {
  * Deactivate the extension
  */
 export function deactivate() {
+  // Chat file locks live on disk, so anything still held would look like a live
+  // holder to the CLI until its heartbeat went stale.
+  try {
+    releaseAllChatFileLocks();
+  } catch (error) {
+    log(`Error releasing chat file locks: ${error}`);
+  }
+
   // Clean up happens automatically through disposables
   documentListeners.forEach((disposable) => {
     disposable.dispose();

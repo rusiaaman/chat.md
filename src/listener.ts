@@ -36,6 +36,7 @@ import {
   getAssetsRelativePath,
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
+import { acquireChatFileLock, ChatLockHandle } from "./utils/fileLock";
 
 /**
  * Counts the `# %% tool_execute` block markers in a chunk of text.
@@ -291,6 +292,14 @@ export class DocumentListener {
    * Execute tool from previous assistant block with tool call
    */
   private async executeToolFromPreviousBlock(): Promise<void> {
+    // The chat.md CLI may be driving this same file from a background process.
+    // Whoever holds the lock owns the document until it releases.
+    const fileLock = acquireChatFileLock(this.document.uri.fsPath);
+    if (!fileLock) {
+      log("Skipping tool execution: another chat.md process holds this file");
+      return;
+    }
+
     await this.lock.acquire();
 
     // Mark executing for this document and request status update
@@ -465,6 +474,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       await this.insertToolResult(formattedError, true); // Pass flag indicating this is already formatted
     } finally {
       this.lock.release();
+      fileLock.release();
       this.isExecutingTool = false;
       try { 
         requestStatusBarUpdate(this.document.uri.fsPath, "tool execution finished");
@@ -892,6 +902,16 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         log(`Streaming is already active for this document. Active streamer: messageIndex=${activeStreamer.messageIndex}, isActive=${activeStreamer.isActive}, tokensLength=${activeStreamer.tokens.length}, isHandlingToolCall=${activeStreamer.isHandlingToolCall}`);
         return;
     }
+    const fileLock = acquireChatFileLock(this.document.uri.fsPath);
+    if (!fileLock) {
+      log("Skipping streaming: another chat.md process holds this file");
+      this.removeLastEmptyBlock("assistant");
+      return;
+    }
+    // Streaming continues after this method returns, so the lock is handed to the
+    // background promise rather than released in the finally below.
+    let fileLockHandedOff = false;
+
     await this.lock.acquire();
     log("Acquired streaming lock.");
 
@@ -1038,6 +1058,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       } catch {}
 
       // **Start streaming in background, passing the FINAL system prompt and file config**
+      fileLockHandedOff = true;
       streamingService
         .streamResponse(messages, streamer, finalSystemPrompt, 0, 0, (parseResult as any).fileConfig) // Pass the combined prompt and file config
         .catch((err) => {
@@ -1045,6 +1066,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         })
         .finally(() => {
           log(`Streamer ${messageIndex} promise finally block reached.`);
+          fileLock.release();
           // Refresh status bar when stream ends
           try { 
             requestStatusBarUpdate(this.document.uri.fsPath, "start streaming finished");
@@ -1060,6 +1082,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       // Always release the lock
       this.lock.release();
       log("Released streaming lock.");
+      if (!fileLockHandedOff) {
+        fileLock.release();
+      }
     }
   }
 
