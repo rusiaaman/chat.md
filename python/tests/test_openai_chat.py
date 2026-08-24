@@ -237,7 +237,6 @@ async def _aiter(items: list[Any]) -> Any:
         yield item
 
 
-@pytest.mark.asyncio
 async def test_translate_stream_reasoning_then_content_ordering() -> None:
     chunks = [
         _chunk(content=None, reasoning_content="thinking..."),
@@ -253,7 +252,6 @@ async def test_translate_stream_reasoning_then_content_ordering() -> None:
     ]
 
 
-@pytest.mark.asyncio
 async def test_translate_stream_duplicate_reasoning_text_emitted_once() -> None:
     # OpenRouter-style chunk: identical reasoning in both reasoning_content and
     # reasoning_details. Only the flat-text field's emission should survive.
@@ -277,7 +275,6 @@ async def test_translate_stream_duplicate_reasoning_text_emitted_once() -> None:
     ]
 
 
-@pytest.mark.asyncio
 async def test_translate_stream_reasoning_run_closed_by_end_of_stream() -> None:
     chunks = [_chunk(content=None, reasoning_content="never followed by content")]
     events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o")]
@@ -287,7 +284,6 @@ async def test_translate_stream_reasoning_run_closed_by_end_of_stream() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_translate_stream_usage_merges_across_chunks() -> None:
     usage1 = SimpleNamespace(prompt_tokens=10, completion_tokens=None, prompt_tokens_details=None)
     details2 = SimpleNamespace(cached_tokens=3)
@@ -303,7 +299,6 @@ async def test_translate_stream_usage_merges_across_chunks() -> None:
     assert final == Usage(input_tokens=10, output_tokens=5, cache_read_tokens=3)
 
 
-@pytest.mark.asyncio
 async def test_translate_stream_length_finish_reason_raises_after_final_token() -> None:
     chunks = [_chunk(content="last bit", finish_reason="length")]
 
