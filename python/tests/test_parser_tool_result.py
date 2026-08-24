@@ -86,11 +86,16 @@ def test_single_link_to_an_existing_text_file_is_substituted_into_the_wrapper(
 
 def test_substitution_preserves_text_surrounding_the_wrapper(tmp_path: Path) -> None:
     (tmp_path / "result.txt").write_text("actual file content", encoding="utf-8")
-    content = "Preamble text\n<tool_result>\n[Tool Result](result.txt)\n</tool_result>\nTrailing text"
+    content = (
+        "Preamble text\n<tool_result>\n[Tool Result](result.txt)\n</tool_result>\nTrailing text"
+    )
     result = process_tool_result_content(content, tmp_path)
     assert result == [
         TextContent(
-            value="Preamble text\n<tool_result>\nactual file content\n</tool_result>\nTrailing text"
+            value=(
+                "Preamble text\n<tool_result>\nactual file content\n</tool_result>\n"
+                "Trailing text"
+            )
         )
     ]
 

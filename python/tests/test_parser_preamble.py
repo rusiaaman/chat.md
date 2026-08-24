@@ -174,7 +174,9 @@ def test_has_configuration_block_true_once_at_least_one_key_is_collected() -> No
     assert has_block is True
 
 
-@pytest.mark.parametrize("key", sorted(ALLOWED_FILE_CONFIG_KEYS - {"maxTokens", "maxThinkingTokens"}))
+@pytest.mark.parametrize(
+    "key", sorted(ALLOWED_FILE_CONFIG_KEYS - {"maxTokens", "maxThinkingTokens"})
+)
 def test_every_allowed_string_key_round_trips(key: str) -> None:
     cfg, has_block = parse_preamble(f"{key}=some-value\n")
     assert cfg == {key: "some-value"}

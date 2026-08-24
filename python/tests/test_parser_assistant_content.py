@@ -23,7 +23,10 @@ from chatmd.types import TextContent, ThinkingContent, ThinkingPayload
 
 def _tool_call(name: str) -> str:
     """A well-formed, multi-line ``<cmd:tool_call>`` for the given tool name."""
-    return f"{CMD_TOOL_CALL_OPEN_TAG}\n<cmd:tool_name>{name}</cmd:tool_name>\n{CMD_TOOL_CALL_CLOSE_TAG}"
+    return (
+        f"{CMD_TOOL_CALL_OPEN_TAG}\n<cmd:tool_name>{name}</cmd:tool_name>\n"
+        f"{CMD_TOOL_CALL_CLOSE_TAG}"
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -81,34 +84,26 @@ def test_thinking_hash_resolves_against_a_real_thinking_map(tmp_path: Path) -> N
     ]
 
 
-def test_the_model_on_thinking_content_comes_from_the_signature_line() -> None:
+def test_the_model_on_thinking_content_comes_from_the_signature_line(tmp_path: Path) -> None:
     """The document is the record of truth: ThinkingContent.model is always what
     the signature line literally says, never the map entry's own "model" field --
     even when they happen to differ (e.g. a hash reused by hand, or a map entry
     someone edited)."""
+    directory = assets_dir(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
     entries = {"aaaaaaaa": {"kind": "raw", "model": "storedModel", "createdAt": "2024-01-01"}}
-    map_dir = assets_dir(tmp_path := Path.cwd())  # placeholder overwritten below
-    del map_dir
+    thinking_map_path(directory).write_text(
+        json.dumps({"version": 1, "entries": entries}), encoding="utf-8"
+    )
 
-    def build(tmp_path: Path) -> None:
-        directory = assets_dir(tmp_path)
-        directory.mkdir(parents=True, exist_ok=True)
-        thinking_map_path(directory).write_text(
-            json.dumps({"version": 1, "entries": entries}), encoding="utf-8"
-        )
+    content = "## %% thinking\nSome thought\ndifferentModel::aaaaaaaa\n"
+    result = parse_assistant_content(content, tmp_path)
 
-    import tempfile
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        build(tmp_path)
-        content = "## %% thinking\nSome thought\ndifferentModel::aaaaaaaa\n"
-        result = parse_assistant_content(content, tmp_path)
-        assert len(result) == 1
-        thinking = result[0]
-        assert isinstance(thinking, ThinkingContent)
-        assert thinking.model == "differentModel"
-        assert thinking.payload is not None and thinking.payload.kind == "raw"
+    assert len(result) == 1
+    thinking = result[0]
+    assert isinstance(thinking, ThinkingContent)
+    assert thinking.model == "differentModel"
+    assert thinking.payload is not None and thinking.payload.kind == "raw"
 
 
 def test_hash_with_no_map_entry_degrades_to_display_only_without_raising(tmp_path: Path) -> None:
@@ -189,4 +184,6 @@ def test_append_wait_marker_false_by_default_leaves_tool_call_bare() -> None:
     content = f"Before.\n{_tool_call('foo')}\n"
     result = parse_assistant_content(content)
     assert result == [TextContent(value=f"Before.\n{_tool_call('foo')}")]
-    assert CMD_WAIT_TOOL_RESULT_TAG not in result[0].value  # type: ignore[union-attr]
+    only = result[0]
+    assert isinstance(only, TextContent)
+    assert CMD_WAIT_TOOL_RESULT_TAG not in only.value

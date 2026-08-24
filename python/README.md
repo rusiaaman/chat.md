@@ -18,4 +18,15 @@ See [PLAN.md](PLAN.md) for the design.
 uv venv --python 3.12
 uv pip install -e ".[dev]"
 .venv/bin/pytest
+.venv/bin/mypy
+.venv/bin/ruff check src tests
+```
+
+The package supports Python 3.11 upwards, so syntax is checked against the
+oldest supported version too — the development venv runs 3.12, which happily
+accepts syntax 3.11 rejects:
+
+```sh
+uv python install 3.11
+"$(uv python find 3.11)" -m compileall -q src/chatmd tests
 ```

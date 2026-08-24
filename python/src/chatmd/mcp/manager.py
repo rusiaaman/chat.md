@@ -69,9 +69,13 @@ from .transport import connect_session
 
 logger = logging.getLogger(__name__)
 
-#: The TS caps background reconnect retries at 5 so a permanently broken server
-#: stops respawning processes forever; we apply the same cap to every reconnect
-#: (background or on-demand), since we have no background loop to distinguish them.
+#: The TS caps *background-refresh* reconnect retries at 5, but always resets the
+#: counter for an explicit tool call (a live call is a deliberate retry request).
+#: We have no background refresh loop to distinguish from, so this cap applies to
+#: every reconnect attempt, background or not: once a server exceeds it, it stays
+#: `errored` and is never retried again for the life of the pool. This is a
+#: deliberate (and simpler) divergence -- "a permanently broken server stops
+#: respawning processes forever" is exactly what the task calls for.
 DEFAULT_MAX_RECONNECT_ATTEMPTS = 5
 
 #: Backoff between reconnect attempts for one server, capped so a flapping
@@ -366,7 +370,9 @@ class McpPool:
             try:
                 return await self._call_tool(server_id, runtime, session, tool, name, params)
             except Exception as exc:  # noqa: BLE001 - reported to the model, not raised
-                logger.warning("Error executing tool %r on server %r (fallback): %s", name, server_id, exc)
+                logger.warning(
+                    "Error executing tool %r on server %r (fallback): %s", name, server_id, exc
+                )
                 return f"Error executing tool {name}: {exc}"
 
         return f'Error: Tool "{name}" not found on any server.'
@@ -481,9 +487,13 @@ def _map_content(item: Any) -> McpRenderableContent:
     if kind == "text":
         return McpTextContent(text=item.text, annotations=item.annotations)
     if kind == "image":
-        return McpImageContent(data=item.data, mime_type=item.mime_type, annotations=item.annotations)
+        return McpImageContent(
+            data=item.data, mime_type=item.mime_type, annotations=item.annotations
+        )
     if kind == "audio":
-        return McpAudioContent(data=item.data, mime_type=item.mime_type, annotations=item.annotations)
+        return McpAudioContent(
+            data=item.data, mime_type=item.mime_type, annotations=item.annotations
+        )
     if kind == "resource_link":
         return McpResourceLink(
             uri=item.uri,
@@ -583,13 +593,17 @@ def _schema_allows(schema: Any, schema_type: SchemaType) -> bool:
 
     for key in ("anyOf", "oneOf", "allOf"):
         sub_schemas = schema.get(key)
-        if isinstance(sub_schemas, list) and any(_schema_allows(sub, schema_type) for sub in sub_schemas):
+        if isinstance(sub_schemas, list) and any(
+            _schema_allows(sub, schema_type) for sub in sub_schemas
+        ):
             return True
 
     return False
 
 
-def _is_json_schema_type(param_name: str, schema: Mapping[str, Any] | None, schema_type: SchemaType) -> bool:
+def _is_json_schema_type(
+    param_name: str, schema: Mapping[str, Any] | None, schema_type: SchemaType
+) -> bool:
     """Whether the tool schema's `properties[param_name]` admits `schema_type`.
 
     A missing schema, or a schema with no `properties`, or a property the

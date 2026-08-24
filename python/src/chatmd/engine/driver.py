@@ -11,6 +11,7 @@ loop the extension gets from re-triggering on its own edits.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -60,6 +61,11 @@ class StepResult:
     tool_name: str | None = None
     usage: Usage | None = None
     message: str | None = None
+    #: Which configuration actually served the turn, for grouping statistics.
+    model: str | None = None
+    provider: str | None = None
+    config_name: str | None = None
+    duration_ms: float = 0.0
 
     @property
     def is_terminal(self) -> bool:
@@ -161,6 +167,7 @@ class ChatDriver:
         streamer = FileStreamer(
             path, create_client(resolved), assets_path=resolved.assets_path
         )
+        started = time.monotonic()
         result = await streamer.run(list(parsed.messages), system_prompt)
 
         return StepResult(
@@ -169,6 +176,10 @@ class ChatDriver:
             outcome=result.outcome,
             usage=result.usage,
             message=result.error,
+            model=resolved.model_name,
+            provider=resolved.provider,
+            config_name=resolved.config_name,
+            duration_ms=(time.monotonic() - started) * 1000.0,
         )
 
     # -- tool execution ---------------------------------------------------- #
