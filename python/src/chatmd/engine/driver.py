@@ -21,6 +21,7 @@ from ..config.model import ChatmdConfig
 from ..errors import ChatmdError, ConfigError, LockHeld
 from ..mcp.manager import McpPool
 from ..parser.blocks import (
+    BLOCK_MARKER_RE,
     count_tool_execute_blocks,
     find_all_assistant_blocks,
     has_empty_assistant_block,
@@ -66,11 +67,20 @@ class StepResult:
     provider: str | None = None
     config_name: str | None = None
     duration_ms: float = 0.0
+    #: Characters the turn wrote into the document.
+    characters: int = 0
 
     @property
     def is_terminal(self) -> bool:
-        """Whether the loop should stop after this step."""
-        return self.action in (StepAction.IDLE, StepAction.LOCKED, StepAction.ERROR)
+        """Whether the loop should stop after this step.
+
+        A turn that wrote nothing counts as terminal. The trigger block is still
+        there, so continuing would make the identical request again, forever —
+        which unattended means burning API calls in a loop rather than stopping.
+        """
+        if self.action in (StepAction.IDLE, StepAction.LOCKED, StepAction.ERROR):
+            return True
+        return self.action is StepAction.STREAMED and self.characters == 0
 
 
 class ChatDriver:
@@ -176,6 +186,7 @@ class ChatDriver:
             outcome=result.outcome,
             usage=result.usage,
             message=result.error,
+            characters=result.characters_written,
             model=resolved.model_name,
             provider=resolved.provider,
             config_name=resolved.config_name,
@@ -238,17 +249,29 @@ class ChatDriver:
             search_from = found
 
     def _tool_calls_governing(self, text: str, block_start: int) -> tuple[list[str], int]:
-        """The tool calls of the assistant block this tool_execute block belongs to."""
+        """The tool calls of the assistant block this tool_execute block belongs to.
+
+        Also returns where that assistant block ends, which is the offset the
+        caller counts already-executed blocks from. That end is the *first* marker
+        after the assistant content — the first tool_execute block of the batch —
+        not the block being filled now. Using the latter makes the span between
+        them empty, so every pass would count zero completed calls and re-run the
+        first tool forever.
+        """
         blocks = [b for b in find_all_assistant_blocks(text) if b.marker_start < block_start]
         if not blocks:
             return [], 0
 
         last = blocks[-1]
-        # The assistant block runs to the next marker of any kind, which for this
-        # purpose is the tool_execute block being filled.
-        body = text[last.content_start : block_start]
+        next_marker = BLOCK_MARKER_RE.search(text, last.content_start)
+        assistant_end = (
+            next_marker.start()
+            if next_marker is not None and next_marker.start() <= block_start
+            else block_start
+        )
+        body = text[last.content_start : assistant_end]
         # Thinking is excluded: reasoning about a tool call is not a tool call.
-        return find_all_tool_calls(strip_thinking_sections(body)), last.content_start + len(body)
+        return find_all_tool_calls(strip_thinking_sections(body)), assistant_end
 
     def _write_tool_result(
         self,

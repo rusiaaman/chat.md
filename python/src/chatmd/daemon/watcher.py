@@ -1,169 +1,135 @@
-"""Turns the registered watch paths into a debounced stream of changed chat files.
+"""Turning registered paths into a stream of ``.chat.md`` files that changed.
 
-The daemon watches a mix of directories, single files and globs, registered by
-the CLI in ``paths.json``. This module resolves that list into concrete
-``watchfiles.awatch`` roots plus a filter, and coalesces bursts of filesystem
-events -- an editor can emit several write events for one keystroke -- into one
-set of paths per debounce window, so the supervisor drives each file once per
-burst instead of once per event.
+The engine writes into the very files it watches — tokens as they stream, tool
+results, asset files beside them — so the filter here matters as much as the
+watching does. Anything the engine produces itself is excluded, or the daemon
+would chase its own tail.
 """
 
 from __future__ import annotations
 
 import asyncio
-import fnmatch
 import logging
 from collections.abc import AsyncIterator, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import Path
-from typing import Any
 
-import watchfiles
+from watchfiles import awatch
 
 logger = logging.getLogger(__name__)
 
-#: Glob metacharacters that mark a registered path as a pattern rather than a
-#: plain directory or file.
-_GLOB_CHARS = frozenset("*?[")
+CHAT_SUFFIX = ".chat.md"
+ASSETS_DIR_NAME = "cmdassets"
+_GLOB_CHARACTERS = "*?["
 
-#: Directory component that holds engine-written assets -- reacting to writes
-#: there would make the daemon watch its own output and spin.
-_IGNORED_DIR_NAME = "cmdassets"
+DEFAULT_DEBOUNCE_MS = 300
 
 
 @dataclass(frozen=True)
 class WatchTarget:
-    """One root to watch, plus an optional filter on what under it matches."""
+    """A directory to watch, and an optional pattern narrowing what counts."""
 
-    root: Path  # a directory to hand to awatch
-    pattern: str | None  # fnmatch pattern to filter by, None means "any .chat.md"
-
-
-def _has_glob_chars(text: str) -> bool:
-    return any(char in text for char in _GLOB_CHARS)
+    root: Path
+    pattern: str | None = None
 
 
-def _split_glob(path: Path) -> WatchTarget:
-    """Split a glob path into its longest literal parent directory and a pattern.
-
-    Walks path components left to right; everything before the first component
-    containing a glob metacharacter is the literal root, and that component plus
-    everything after it becomes the fnmatch pattern (joined back with ``/`` so a
-    pattern spanning several components, e.g. ``**/*.chat.md``, still works).
-    """
-    literal: list[str] = []
-    pattern: list[str] = []
-    for part in path.parts:
-        if not pattern and not _has_glob_chars(part):
-            literal.append(part)
-        else:
-            pattern.append(part)
-    root = Path(*literal) if literal else Path(path.anchor or ".")
-    return WatchTarget(root=root, pattern="/".join(pattern) if pattern else "*")
+def _has_glob(text: str) -> bool:
+    return any(character in text for character in _GLOB_CHARACTERS)
 
 
-def resolve_targets(paths: Sequence[str]) -> list[WatchTarget]:
-    """Turn registered paths (dirs, globs, single files, ``~``) into watch targets.
+def resolve_targets(paths: Sequence[str | Path]) -> list[WatchTarget]:
+    """Turn registered paths into directories to watch plus filters.
 
-    Deliberately string-based rather than stat-ing the filesystem: a folder that
-    does not exist yet (registered ahead of its first file) must still resolve to
-    something watchable, so "is this a directory" is decided by whether it looks
-    like a ``.chat.md`` file, not by whether it currently exists.
+    A directory is watched whole; a glob is split into its longest literal parent
+    and the pattern beneath it; a single chat file watches its directory and
+    matches only that name (an editor replacing a file would otherwise be missed,
+    since many editors write a new inode rather than modifying the old one).
     """
     targets: list[WatchTarget] = []
     for raw in paths:
         expanded = Path(raw).expanduser()
-        text = str(expanded)
-        if _has_glob_chars(text):
-            targets.append(_split_glob(expanded))
-        elif text.endswith(".chat.md"):
+
+        if _has_glob(str(expanded)):
+            literal: list[str] = []
+            parts = expanded.parts
+            for part in parts:
+                if _has_glob(part):
+                    break
+                literal.append(part)
+            root = Path(*literal) if literal else Path()
+            pattern = str(Path(*parts[len(literal) :])) if len(parts) > len(literal) else "*"
+            targets.append(WatchTarget(root=root, pattern=pattern))
+            continue
+
+        if expanded.name.endswith(CHAT_SUFFIX):
             targets.append(WatchTarget(root=expanded.parent, pattern=expanded.name))
-        else:
-            targets.append(WatchTarget(root=expanded, pattern=None))
+            continue
+
+        targets.append(WatchTarget(root=expanded, pattern=None))
     return targets
 
 
-def _is_ignored(path: Path) -> bool:
-    """Paths the engine writes itself, which must never re-trigger the engine."""
-    if _IGNORED_DIR_NAME in path.parts:
-        return True
-    if path.name.endswith(".lock"):
-        return True
-    return path.name.startswith(".")
-
-
 def matches(target: WatchTarget, path: Path) -> bool:
-    """Whether a changed path is a ``.chat.md`` file this target cares about."""
-    if not path.name.endswith(".chat.md"):
+    """Whether a changed path is a chat file this target covers."""
+    name = path.name
+    if not name.endswith(CHAT_SUFFIX):
         return False
-    if _is_ignored(path):
+    # A hidden sibling is ours: the lock file is `.<name>.lock`, and reacting to
+    # our own bookkeeping would loop.
+    if name.startswith("."):
         return False
+    if ASSETS_DIR_NAME in path.parts:
+        return False
+
     try:
         relative = path.relative_to(target.root)
     except ValueError:
         return False
+
     if target.pattern is None:
         return True
-    return fnmatch.fnmatch(relative.as_posix(), target.pattern)
+    return fnmatch(str(relative), target.pattern) or fnmatch(name, target.pattern)
+
+
+def existing_roots(targets: Sequence[WatchTarget]) -> list[str]:
+    """Roots that exist right now.
+
+    A missing directory makes the underlying watcher raise, and one unregistered
+    folder must not stop the daemon watching every other one.
+    """
+    roots: list[str] = []
+    for target in targets:
+        if target.root.is_dir():
+            candidate = str(target.root)
+            if candidate not in roots:
+                roots.append(candidate)
+        else:
+            logger.warning("Not watching %s: it is not a directory", target.root)
+    return roots
 
 
 async def watch_chat_files(
-    paths: Sequence[str], *, debounce_ms: int = 300, stop: asyncio.Event | None = None
+    paths: Sequence[str | Path],
+    *,
+    debounce_ms: int = DEFAULT_DEBOUNCE_MS,
+    stop: asyncio.Event | None = None,
 ) -> AsyncIterator[set[Path]]:
-    """Yield sets of changed ``.chat.md`` paths, debounced per burst.
+    """Yield sets of chat files that changed, coalesced over the debounce window.
 
-    A background task pumps raw ``watchfiles`` batches into a queue; the
-    consumer loop here accumulates paths and flushes them once ``debounce_ms``
-    passes with no further activity. Reading via the queue (rather than calling
-    ``__anext__`` under a timeout directly) matters: cancelling a timed-out
-    ``__anext__`` would throw into the underlying async generator and could tear
-    it down, whereas cancelling a ``Queue.get`` only abandons our own wait.
+    Never yields an empty set: a batch containing only files we filtered out is
+    not a batch worth waking anything for.
     """
     targets = resolve_targets(paths)
-    if not targets:
+    roots = existing_roots(targets)
+    if not roots:
         return
 
-    roots = [str(target.root) for target in targets]
-
-    def watch_filter(change: Any, changed_path: str) -> bool:
-        candidate = Path(changed_path)
-        return any(matches(target, candidate) for target in targets)
-
-    stop_event = stop if stop is not None else asyncio.Event()
-    queue: asyncio.Queue[set[tuple[Any, str]] | None] = asyncio.Queue()
-
-    async def pump() -> None:
-        try:
-            async for batch in watchfiles.awatch(
-                *roots, watch_filter=watch_filter, stop_event=stop_event
-            ):
-                await queue.put(batch)
-        finally:
-            # Sentinel: tells the consumer the source is done, flushing whatever
-            # is still pending instead of leaving it stranded forever.
-            await queue.put(None)
-
-    pump_task = asyncio.create_task(pump())
-    try:
-        pending: set[Path] = set()
-        window = debounce_ms / 1000.0
-        while True:
-            timeout = window if pending else None
-            try:
-                batch = await asyncio.wait_for(queue.get(), timeout=timeout)
-            except TimeoutError:
-                if pending:
-                    yield pending
-                    pending = set()
-                continue
-            if batch is None:
-                break
-            for _, changed_path in batch:
-                pending.add(Path(changed_path))
-        if pending:
-            yield pending
-    finally:
-        pump_task.cancel()
-        with suppress(asyncio.CancelledError):
-            await pump_task
+    async for changes in awatch(*roots, debounce=debounce_ms, stop_event=stop, recursive=True):
+        matched = {
+            path
+            for path in (Path(raw) for _change, raw in changes)
+            if any(matches(target, path) for target in targets)
+        }
+        if matched:
+            yield matched
