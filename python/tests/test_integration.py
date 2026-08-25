@@ -8,6 +8,8 @@ written, executed, its result recorded, and the follow-up turn streamed.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import AsyncIterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -406,3 +408,125 @@ async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
     assert "# %%% assistant" in text
     assert '<cmd:param name="content"># %% user' in text
     assert len(parse_document(text, tmp_path).messages) == 4
+
+
+# --------------------------------------------------------------------------- #
+# Concurrency
+# --------------------------------------------------------------------------- #
+
+
+class StallingClient:
+    """Holds a turn open, and records how many are open at once."""
+
+    def __init__(self, delay: float, counter: dict[str, int]) -> None:
+        self.delay = delay
+        self.counter = counter
+        self.last_usage = None
+
+    def stream(
+        self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+    ) -> AsyncIterator[StreamEvent]:
+        async def generate() -> AsyncIterator[StreamEvent]:
+            self.counter["active"] += 1
+            self.counter["peak"] = max(self.counter["peak"], self.counter["active"])
+            try:
+                yield TextDelta("working")
+                await asyncio.sleep(self.delay)
+                yield TextDelta(" ... done.")
+            finally:
+                self.counter["active"] -= 1
+
+        return generate()
+
+
+async def test_separate_chats_stream_at_the_same_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
+) -> None:
+    """Nothing serialises across files; only one file against itself does."""
+    delay = 0.4
+    counter = {"active": 0, "peak": 0}
+    monkeypatch.setattr(
+        driver_module, "create_client", lambda _resolved: StallingClient(delay, counter)
+    )
+
+    chats = []
+    for index in range(4):
+        chat = tmp_path / f"chat{index}.chat.md"
+        chat.write_text("# %% user\nhi\n\n# %% assistant\n", encoding="utf-8")
+        chats.append(chat)
+
+    driver = ChatDriver(config, ScriptedPool())  # type: ignore[arg-type]
+    started = time.monotonic()
+    await asyncio.gather(*(driver.run(chat) for chat in chats))
+    elapsed = time.monotonic() - started
+
+    assert counter["peak"] == 4
+    # Comfortably under the serial time, without being brittle about scheduling.
+    assert elapsed < delay * len(chats) * 0.6
+    assert all("done." in chat.read_text() for chat in chats)
+
+
+class StallingPool(ScriptedPool):
+    """A tool that takes a while, counting overlapping calls."""
+
+    def __init__(self, delay: float) -> None:
+        super().__init__()
+        self.delay = delay
+        self.active = 0
+        self.peak = 0
+
+    async def call(
+        self, full_name: str, params: Mapping[str, str]
+    ) -> McpToolExecutionResult | str:
+        self.called.append((full_name, dict(params)))
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        try:
+            await asyncio.sleep(self.delay)
+        finally:
+            self.active -= 1
+        return McpToolExecutionResult(
+            server_id="fs", tool_name=full_name, content=[McpTextContent(text="ok")]
+        )
+
+
+async def test_tool_calls_from_different_chats_overlap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
+) -> None:
+    """The pool guards connecting, not calling, so tools run in parallel too."""
+    # Decides from the history rather than a shared script list: with several
+    # chats interleaving, a shared list hands turns to whichever asks first.
+    class ToolThenAnswer:
+        last_usage = None
+
+        def stream(
+            self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+        ) -> AsyncIterator[StreamEvent]:
+            already_ran = any(
+                "<tool_result>" in block.value
+                for message in messages
+                for block in message.content
+                if isinstance(block, TextContent)
+            )
+
+            async def generate() -> AsyncIterator[StreamEvent]:
+                if already_ran:
+                    yield TextDelta("read it.")
+                else:
+                    yield TextDelta(tool_call("fs.read_file", "a.py") + "\n")
+
+            return generate()
+
+    monkeypatch.setattr(driver_module, "create_client", lambda _resolved: ToolThenAnswer())
+    pool = StallingPool(0.3)
+
+    chats = []
+    for index in range(3):
+        chat = tmp_path / f"chat{index}.chat.md"
+        chat.write_text("# %% user\nhi\n\n# %% assistant\n", encoding="utf-8")
+        chats.append(chat)
+
+    driver = ChatDriver(config, pool)  # type: ignore[arg-type]
+    await asyncio.gather(*(driver.run(chat) for chat in chats))
+
+    assert pool.peak == 3
