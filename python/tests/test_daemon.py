@@ -544,3 +544,56 @@ async def test_a_file_waiting_on_a_tool_is_also_picked_up(state: Path) -> None:
         assert driver.seen == [pending]
 
     await run_briefly(daemon, body)
+
+
+# --------------------------------------------------------------------------- #
+# Symlinked roots
+# --------------------------------------------------------------------------- #
+
+
+def test_a_root_reached_through_a_symlink_is_canonicalised(tmp_path: Path) -> None:
+    """macOS reaches its temp directory through /var, a symlink to /private/var."""
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    target = resolve_targets([link])[0]
+    assert target.root == real.resolve()
+
+    # The watcher reports real paths; a person types the convenient one. Both must
+    # match, or every event for the folder is discarded and it looks empty forever.
+    assert matches(target, real / "a.chat.md")
+    assert matches(target, link / "a.chat.md")
+
+
+def test_find_chat_files_follows_a_symlinked_root(tmp_path: Path) -> None:
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "a.chat.md").write_text("x", encoding="utf-8")
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+
+    assert find_chat_files([link]) == {real.resolve() / "a.chat.md"}
+
+
+async def test_a_file_created_in_a_symlinked_folder_is_driven(state: Path) -> None:
+    """The regression: registered through the link, reported through the real path."""
+    real = state / "real"
+    real.mkdir()
+    link = state / "link"
+    link.symlink_to(real, target_is_directory=True)
+    write_registry([str(link)])
+
+    driver = FakeDriver()
+    daemon = make_daemon(driver)
+
+    async def body() -> None:
+        await asyncio.sleep(0.4)  # let the watcher settle before touching anything
+        (real / "job.chat.md").write_text(
+            "# %% user\nhi\n\n# %% assistant\n", encoding="utf-8"
+        )
+        await asyncio.wait_for(driver.ran.wait(), timeout=TIMEOUT)
+        assert driver.seen == [real.resolve() / "job.chat.md"]
+
+    await run_briefly(daemon, body)

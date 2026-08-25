@@ -38,6 +38,21 @@ def _has_glob(text: str) -> bool:
     return any(character in text for character in _GLOB_CHARACTERS)
 
 
+def _real(path: Path) -> Path:
+    """The path with symlinks resolved, or the path itself if that fails.
+
+    Roots are canonicalised because the file watcher reports real paths while a
+    person types whatever is convenient. On macOS the system temporary directory
+    is reached through /var, a symlink to /private/var, so a folder registered as
+    /var/folders/... has every one of its events reported under /private/var/... .
+    Comparing those two literally makes the folder look empty forever.
+    """
+    try:
+        return path.resolve()
+    except OSError:
+        return path
+
+
 def resolve_targets(paths: Sequence[str | Path]) -> list[WatchTarget]:
     """Turn registered paths into directories to watch plus filters.
 
@@ -59,14 +74,14 @@ def resolve_targets(paths: Sequence[str | Path]) -> list[WatchTarget]:
                 literal.append(part)
             root = Path(*literal) if literal else Path()
             pattern = str(Path(*parts[len(literal) :])) if len(parts) > len(literal) else "*"
-            targets.append(WatchTarget(root=root, pattern=pattern))
+            targets.append(WatchTarget(root=_real(root), pattern=pattern))
             continue
 
         if expanded.name.endswith(CHAT_SUFFIX):
-            targets.append(WatchTarget(root=expanded.parent, pattern=expanded.name))
+            targets.append(WatchTarget(root=_real(expanded.parent), pattern=expanded.name))
             continue
 
-        targets.append(WatchTarget(root=expanded, pattern=None))
+        targets.append(WatchTarget(root=_real(expanded), pattern=None))
     return targets
 
 
@@ -85,7 +100,13 @@ def matches(target: WatchTarget, path: Path) -> bool:
     try:
         relative = path.relative_to(target.root)
     except ValueError:
-        return False
+        # The root is canonical, but a caller may hand us a path that is not -- a
+        # file named through a symlink, say. Resolve and try once more before
+        # deciding it is somewhere else entirely.
+        try:
+            relative = _real(path).relative_to(target.root)
+        except ValueError:
+            return False
 
     if target.pattern is None:
         return True
