@@ -19,6 +19,7 @@ from pathlib import Path
 from ..assets import TOOL_RESULT_LINE_THRESHOLD, ensure_chat_md_gitignore, write_tool_result_file
 from ..config.model import ChatmdConfig
 from ..errors import ChatmdError, ConfigError, LockHeld
+from ..executable import find_chatmd_command
 from ..markers import escape_markers, unescape_markers
 from ..mcp.manager import McpPool
 from ..parser.blocks import (
@@ -173,7 +174,10 @@ class ChatDriver:
         ensure_chat_md_gitignore(base_dir)
 
         system_prompt = build_system_prompt(
-            parsed.system_prompt, self.pool.grouped_tools(), self.pool.grouped_resources()
+            parsed.system_prompt,
+            self.pool.grouped_tools(),
+            self.pool.grouped_resources(),
+            cli_command=find_chatmd_command(),
         )
         streamer = FileStreamer(
             path, create_client(resolved), assets_path=resolved.assets_path

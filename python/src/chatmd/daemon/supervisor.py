@@ -30,6 +30,7 @@ from ..engine.driver import ChatDriver, StepAction, StepResult
 from ..engine.locks import FileLock, daemon_lock
 from ..errors import LockHeld
 from ..mcp.manager import McpPool
+from ..parser.blocks import has_empty_assistant_block, has_empty_tool_execute_block
 from ..paths import config_path, registry_path
 from ..stats.events import Event, EventKind, EventLog
 from ..types import McpServerStatus
@@ -49,7 +50,7 @@ from .state import (
     write_daemon_info,
     write_status,
 )
-from .watcher import DEFAULT_DEBOUNCE_MS, watch_chat_files
+from .watcher import DEFAULT_DEBOUNCE_MS, find_chat_files, watch_chat_files
 
 logger = logging.getLogger(__name__)
 
@@ -210,6 +211,8 @@ class Daemon:
                 await asyncio.sleep(self.poll_interval)
                 continue
 
+            self._sweep(self._roots)
+
             self._restart_watch = asyncio.Event()
             stop_watch = asyncio.Event()
             waiter = asyncio.create_task(self._stop_watch_when_asked(stop_watch))
@@ -230,6 +233,24 @@ class Daemon:
                 waiter.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await waiter
+
+    def _sweep(self, roots: list[str]) -> None:
+        """Drive anything already waiting when a folder is first watched.
+
+        Only files that are actually asking for something are scheduled, so
+        registering a folder of finished chats costs a read each and nothing more.
+        """
+        waiting = 0
+        for path in sorted(find_chat_files(roots)):
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if has_empty_assistant_block(text) or has_empty_tool_execute_block(text):
+                self._schedule(path)
+                waiting += 1
+        if waiting:
+            logger.info("Picked up %d chat file(s) already waiting", waiting)
 
     async def _stop_watch_when_asked(self, stop_watch: asyncio.Event) -> None:
         stopping = asyncio.create_task(self._stopping.wait())

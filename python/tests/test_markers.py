@@ -27,6 +27,7 @@ from chatmd.render import split_assistant_sections
 _VECTOR_FILE = json.loads((Path(__file__).parent / "marker_vectors.json").read_text())
 VECTORS = _VECTOR_FILE["cases"]
 PARTIAL_LINES = _VECTOR_FILE["partialLines"]
+MID_LINE = _VECTOR_FILE["midLine"]
 
 
 @pytest.mark.parametrize(("raw", "escaped"), VECTORS, ids=[repr(case[0]) for case in VECTORS])
@@ -154,3 +155,48 @@ def test_every_prefix_of_a_marker_line_is_withheld() -> None:
         marker = f"# %% {role}"
         for length in range(1, len(marker) + 1):
             assert could_become_marker_line(marker[:length]), marker[:length]
+
+
+# --------------------------------------------------------------------------- #
+# Escaping knows where it lands
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("raw", "at_start", "mid_line"), MID_LINE, ids=[repr(case[0]) for case in MID_LINE]
+)
+def test_shared_mid_line_vectors(raw: str, at_start: str, mid_line: str) -> None:
+    assert escape_markers(raw, True) == at_start
+    assert escape_markers(raw, False) == mid_line
+
+
+def test_a_batch_beginning_mid_line_does_not_invent_a_marker() -> None:
+    """The reported bug: content right after a tag was escaped and never restored.
+
+    Unescaping sees whole lines, so it would not undo an escape applied to
+    something that was never at a line start — the extra percent sign would stay
+    in the value handed to the tool.
+    """
+    prefix = '<cmd:param name="content">'
+    body = "# %% user\nCreate a file\n"
+    document = prefix + escape_markers(body, False)
+
+    assert document.splitlines()[0] == prefix + "# %% user"
+    assert unescape_markers(document) == prefix + body
+
+
+def test_a_marker_later_in_a_mid_line_batch_is_still_escaped() -> None:
+    """Only the first line is a continuation; the rest are real lines."""
+    escaped = escape_markers("end of line\n# %% user\nbody\n", False)
+    assert escaped == "end of line\n# %%% user\nbody\n"
+
+
+def test_mid_line_escaping_round_trips_for_arbitrary_text() -> None:
+    rng = random.Random(99)
+    for _ in range(4000):
+        text = random_marker_soup(rng)
+        for at_line_start in (True, False):
+            escaped = escape_markers(text, at_line_start)
+            # Prefixed with what put us mid-line, the document reads back intact.
+            prefix = "" if at_line_start else "x"
+            assert unescape_markers(prefix + escaped) == prefix + text

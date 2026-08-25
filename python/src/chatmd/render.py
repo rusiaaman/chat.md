@@ -183,7 +183,7 @@ def render_stream_events(
     state: SectionState,
     record_payload: Callable[[str, ThinkingPayload], str | None],
     *,
-    escape: Callable[[str], str] = escape_markers,
+    escape: Callable[[str, bool], str] = escape_markers,
 ) -> str:
     """Renders a batch of stream events into the text to append to the assistant block.
 
@@ -198,13 +198,20 @@ def render_stream_events(
     ``escape`` is applied to the model's own text, and deliberately not to the
     section markers emitted here: those are real markers and must stay readable as
     such. Escaping inside this function rather than after it keeps the offsets it
-    records in ``state`` in the same coordinates as the document.
+    records in ``state`` in the same coordinates as the document, and lets it pass
+    the one thing escaping cannot work out for itself: whether the text lands at
+    the start of a line.
     """
     out = ""
 
     def needs_newline() -> bool:
         so_far = already_written + out
         return len(so_far) > 0 and not so_far.endswith("\n")
+
+    def emit(text: str) -> str:
+        """Escape content against its real position in the document."""
+        so_far = already_written + out
+        return escape(text, so_far == "" or so_far.endswith("\n"))
 
     def open_thinking_section() -> None:
         nonlocal out
@@ -253,7 +260,7 @@ def render_stream_events(
             if not state.thinking_open:
                 open_thinking_section()
                 state.thinking_open = True
-            out += escape(event.text)
+            out += emit(event.text)
             continue
 
         if not isinstance(event, TextDelta):
@@ -276,6 +283,6 @@ def render_stream_events(
             state.scan_offset = len(already_written) + len(out)
             # The new text section is open, so it extends to the end of the block
             state.text_section_end = None
-        out += escape(event.text)
+        out += emit(event.text)
 
     return out

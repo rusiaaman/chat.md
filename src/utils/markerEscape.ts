@@ -62,13 +62,8 @@ const sectionEscaped = (): RegExp => pattern("##", SECTION_ROLES, "%(%{2,})");
 const blockMarker = (): RegExp => pattern("#", BLOCK_ROLES, "%%");
 const sectionMarker = (): RegExp => pattern("##", SECTION_ROLES, "%%");
 
-/**
- * Makes marker-shaped lines safe to write into a document.
- *
- * Applied to everything the extension writes: streamed assistant text, tool
- * results, and anything appended on the user's behalf.
- */
-export function escapeMarkers(text: string): string {
+/** Escapes every marker-shaped line, assuming the text starts at a line start. */
+function escapeAll(text: string): string {
   const withBlocks = text.replace(
     blockEscapable(),
     (_match, percents: string, role: string, trailing: string) =>
@@ -79,6 +74,28 @@ export function escapeMarkers(text: string): string {
     (_match, percents: string, role: string, trailing: string) =>
       `## %${percents} ${role}${trailing}`,
   );
+}
+
+/**
+ * Makes marker-shaped lines safe to write into a document.
+ *
+ * `atLineStart` says whether `text` will land at the start of a line in the
+ * document. It matters because a streamer escapes one batch at a time, and a
+ * batch that begins mid-line would otherwise have its first character treated as
+ * a line start: text arriving right after `<cmd:param name="x">` would be escaped
+ * as though it were a marker, and since unescaping (which does see whole lines)
+ * would not undo it, the escaping would never come back off.
+ */
+export function escapeMarkers(text: string, atLineStart = true): string {
+  if (atLineStart) {
+    return escapeAll(text);
+  }
+  const newline = text.indexOf("\n");
+  if (newline === -1) {
+    // Still inside the line it started in: nothing here can be a marker.
+    return text;
+  }
+  return text.slice(0, newline + 1) + escapeAll(text.slice(newline + 1));
 }
 
 /**

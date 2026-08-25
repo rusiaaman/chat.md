@@ -204,6 +204,12 @@ export function renderStreamTokens(
     return soFar.length > 0 && !soFar.endsWith("\n");
   };
 
+  /** Escapes content against its real position in the document. */
+  const emit = (text: string): string => {
+    const soFar = alreadyWritten + out;
+    return escapeMarkers(text, soFar.length === 0 || soFar.endsWith("\n"));
+  };
+
   const openThinkingSection = (): void => {
     // Thinking closes whatever text section preceded it. Freeze the scannable
     // region here so the thinking text that follows is never scanned for tool
@@ -257,7 +263,7 @@ export function renderStreamTokens(
       // The model's own text is escaped; the section markers emitted above are
       // real markers and must stay readable as such. Escaping here rather than
       // afterwards keeps the offsets recorded in `state` in document coordinates.
-      out += escapeMarkers(thinkingText);
+      out += emit(thinkingText);
       continue;
     }
 
@@ -276,7 +282,7 @@ export function renderStreamTokens(
       // The new text section is open, so it extends to the end of the block
       state.textSectionEnd = null;
     }
-    out += escapeMarkers(token);
+    out += emit(token);
   }
 
   return out;

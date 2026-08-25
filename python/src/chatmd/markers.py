@@ -73,14 +73,31 @@ def _drop_percent(match: re.Match[str], hashes: str) -> str:
     return f"{hashes} {match.group(1)} {match.group(2)}{match.group(3)}"
 
 
-def escape_markers(text: str) -> str:
+def _escape_all(text: str) -> str:
+    text = _BLOCK_ESCAPABLE.sub(lambda match: _add_percent(match, "#"), text)
+    return _SECTION_ESCAPABLE.sub(lambda match: _add_percent(match, "##"), text)
+
+
+def escape_markers(text: str, at_line_start: bool = True) -> str:
     """Make marker-shaped lines safe to write into a document.
 
     Applied to everything the engine writes: streamed assistant text, tool
     results, and messages appended on a user's behalf.
+
+    ``at_line_start`` says whether `text` will land at the start of a line in the
+    document. It matters because a streamer escapes one batch at a time, and a
+    batch that begins mid-line would otherwise have its first character treated as
+    a line start: text arriving right after ``<cmd:param name="x">`` would be
+    escaped as though it were a marker, and since unescaping (which does see whole
+    lines) would not undo it, the escaping would never come back off.
     """
-    text = _BLOCK_ESCAPABLE.sub(lambda match: _add_percent(match, "#"), text)
-    return _SECTION_ESCAPABLE.sub(lambda match: _add_percent(match, "##"), text)
+    if at_line_start:
+        return _escape_all(text)
+    head, separator, rest = text.partition("\n")
+    if not separator:
+        # Still inside the line it started in: nothing here can be a marker.
+        return head
+    return head + separator + _escape_all(rest)
 
 
 def unescape_markers(text: str) -> str:

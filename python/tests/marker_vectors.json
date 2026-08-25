@@ -224,5 +224,48 @@
       " #",
       false
     ]
+  ],
+  "midLineComment": "escapeMarkers(text, atLineStart=false): a stream batch that begins mid-line. Each case is [input, escapedAtLineStart, escapedMidLine].",
+  "midLine": [
+    [
+      "# %% user",
+      "# %%% user",
+      "# %% user"
+    ],
+    [
+      "# %% user\nbody",
+      "# %%% user\nbody",
+      "# %% user\nbody"
+    ],
+    [
+      "tail\n# %% user",
+      "tail\n# %%% user",
+      "tail\n# %%% user"
+    ],
+    [
+      "\n# %% user",
+      "\n# %%% user",
+      "\n# %%% user"
+    ],
+    [
+      "## %% thinking",
+      "## %%% thinking",
+      "## %% thinking"
+    ],
+    [
+      "a\n## %% text\nb",
+      "a\n## %%% text\nb",
+      "a\n## %%% text\nb"
+    ],
+    [
+      "plain",
+      "plain",
+      "plain"
+    ],
+    [
+      "",
+      "",
+      ""
+    ]
   ]
 }

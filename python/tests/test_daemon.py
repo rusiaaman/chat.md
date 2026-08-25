@@ -33,6 +33,7 @@ from chatmd.daemon.supervisor import Daemon
 from chatmd.daemon.watcher import (
     WatchTarget,
     existing_roots,
+    find_chat_files,
     matches,
     resolve_targets,
     watch_chat_files,
@@ -482,3 +483,64 @@ async def test_collected_answers_are_swept_but_recent_ones_are_kept(state: Path)
     assert prune_completed_commands(max_age_seconds=300.0) == 1
     assert not old.exists()
     assert fresh.exists()
+
+
+# --------------------------------------------------------------------------- #
+# Picking up files that already exist
+# --------------------------------------------------------------------------- #
+
+
+def test_find_chat_files_enumerates_what_is_already_there(tmp_path: Path) -> None:
+    chats = tmp_path / "chats"
+    (chats / "nested").mkdir(parents=True)
+    (chats / "a.chat.md").write_text("x", encoding="utf-8")
+    (chats / "nested" / "b.chat.md").write_text("x", encoding="utf-8")
+    (chats / "notes.md").write_text("x", encoding="utf-8")
+    (chats / ".hidden.chat.md").write_text("x", encoding="utf-8")
+    (chats / "cmdassets").mkdir()
+    (chats / "cmdassets" / "c.chat.md").write_text("x", encoding="utf-8")
+
+    assert find_chat_files([chats]) == {chats / "a.chat.md", chats / "nested" / "b.chat.md"}
+
+
+async def test_a_file_written_before_the_folder_is_watched_is_still_driven(
+    state: Path,
+) -> None:
+    """The ordinary case for subagent work: write the brief, then register."""
+    chats = state / "chats"
+    chats.mkdir()
+    waiting = chats / "job.chat.md"
+    waiting.write_text("# %% user\ndo the thing\n\n# %% assistant\n", encoding="utf-8")
+    finished = chats / "done.chat.md"
+    finished.write_text("# %% user\nhi\n\n# %% assistant\nhello\n", encoding="utf-8")
+    write_registry([str(chats)])
+
+    driver = FakeDriver()
+    daemon = make_daemon(driver)
+
+    async def body() -> None:
+        await asyncio.wait_for(driver.ran.wait(), timeout=TIMEOUT)
+        # Only the one asking for a reply; the finished chat is left alone.
+        assert driver.seen == [waiting]
+
+    await run_briefly(daemon, body)
+
+
+async def test_a_file_waiting_on_a_tool_is_also_picked_up(state: Path) -> None:
+    chats = state / "chats"
+    chats.mkdir()
+    pending = chats / "job.chat.md"
+    pending.write_text(
+        "# %% user\nhi\n\n# %% assistant\ncalling\n\n# %% tool_execute\n",
+        encoding="utf-8",
+    )
+    write_registry([str(chats)])
+
+    driver = FakeDriver()
+    daemon = make_daemon(driver)
+
+    async def body() -> None:
+        await asyncio.wait_for(driver.ran.wait(), timeout=TIMEOUT)
+        assert driver.seen == [pending]
+
+    await run_briefly(daemon, body)

@@ -537,3 +537,42 @@ async def test_escaped_content_round_trips_back_through_the_parser(tmp_path: Pat
     assistant = next(m for m in parsed.messages if m.role == "assistant")
     body = "".join(b.value for b in assistant.content if isinstance(b, TextContent))
     assert body == written.strip()
+
+
+async def test_a_marker_arriving_mid_line_is_not_escaped(tmp_path: Path) -> None:
+    """The reported bug: a batch starting at `# %% user` inside a tool call.
+
+    Escaped there, the extra percent sign would never come off — unescaping works
+    on whole lines — and the subagent file would be written with a marker that
+    never triggers.
+    """
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient(
+        [
+            TextDelta('Writing it:\n<cmd:param name="content">'),
+            Pause(),
+            TextDelta("# %% user\nDo the thing\n"),
+        ]
+    )
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text()
+    assert '<cmd:param name="content"># %% user' in text
+    assert "# %%% user" not in text
+
+
+async def test_a_marker_on_its_own_line_in_a_later_batch_is_still_escaped(
+    tmp_path: Path,
+) -> None:
+    """The continuation rule applies to the first line only."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient(
+        [TextDelta("intro: "), Pause(), TextDelta("still here\n# %% user\nbody\n")]
+    )
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text()
+    assert "intro: still here" in text
+    assert "# %%% user" in text

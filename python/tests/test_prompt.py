@@ -12,10 +12,13 @@ silently changing what gets sent to the model.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from chatmd.providers.prompt import (
+    _AGENT_SECTION,
     build_system_prompt,
+    chatmd_agent_section,
     generate_tool_calling_system_prompt,
     get_default_system_prompt,
 )
@@ -185,22 +188,20 @@ def _unescape_ts_template_literal(text: str) -> str:
     return text.replace("\\`", "`").replace('\\"', '"')
 
 
-_RETURN_BACKTICK = "  return `"
-
-
 def _extract_template_literal(source: str, anchor: str, search_from: int = 0) -> tuple[str, int]:
-    """Return the text of a ``return `...`;`` template literal, plus the index
-    right after its closing `` `; `` (so callers can find the *next* literal).
+    """Return the text of a `` `...`; `` template literal, plus the index right
+    after its closing `` `; `` (so callers can find the *next* literal).
 
-    ``anchor`` locates the right ``return \\``` occurrence (there are two
-    matching ones in config.ts, one per function) without itself being part of
-    the literal's own text -- it must be a prefix of ``_RETURN_BACKTICK`` plus
-    the start of the literal, i.e. include the backtick.
+    ``anchor`` locates the right literal (there are two matching ones in
+    config.ts, one per function) without itself being part of the literal's own
+    text. Only the opening backtick is anchored on, not what comes before it: one
+    of the two is bound to a name rather than returned directly, so the agents
+    section can be appended after it without breaking this extraction.
     """
-    start = source.index(_RETURN_BACKTICK + anchor, search_from)
-    literal_start = start + len(_RETURN_BACKTICK)
-    literal_end = source.index("`;\n}", literal_start)
-    return source[literal_start:literal_end], literal_end + len("`;\n}")
+    start = source.index("`" + anchor, search_from)
+    literal_start = start + 1
+    literal_end = source.index("`;\n", literal_start)
+    return source[literal_start:literal_end], literal_end + len("`;\n")
 
 
 def test_persona_and_protocol_text_matches_config_ts() -> None:
@@ -236,13 +237,78 @@ def test_persona_and_protocol_text_matches_config_ts() -> None:
     # generateToolCallingSystemPrompt's header/middle-separator/tail must be
     # byte-identical too; the tool/resource text in between is covered by the
     # numbering and resource tests above.
-    tool_prompt = generate_tool_calling_system_prompt({}, {})
+    # Without a CLI command, so the comparison is against the template literal
+    # alone; the appended agents section has its own drift test below.
+    tool_prompt = generate_tool_calling_system_prompt({}, {}, cli_command=None)
     assert tool_prompt.startswith(header)
     assert middle == "\n\n"
     assert tool_prompt.endswith(tail)
+
+    # And with one, the section is appended after that same tail rather than
+    # replacing any of it.
+    with_agents = generate_tool_calling_system_prompt({}, {}, cli_command="chatmd")
+    assert with_agents.startswith(tool_prompt)
+    assert with_agents.endswith(chatmd_agent_section("chatmd"))
 
     # Sanity: the extraction actually found substantial text, not empty strings
     # (which would make every assertion above vacuously true).
     assert len(header) > 500
     assert len(tail) > 500
     assert len(default_literal) > 500
+
+
+# --------------------------------------------------------------------------- #
+# The chat.md agents section
+# --------------------------------------------------------------------------- #
+
+
+def test_the_agent_section_is_omitted_when_no_command_is_known() -> None:
+    """Guessing a command would have the model try, fail, and learn nothing."""
+    assert chatmd_agent_section(None) == ""
+    assert chatmd_agent_section("") == ""
+    prompt = generate_tool_calling_system_prompt({}, {}, cli_command=None)
+    assert "chat.md agents" not in prompt
+
+
+def test_the_agent_section_interpolates_the_command_everywhere() -> None:
+    section = chatmd_agent_section("/opt/bin/chatmd")
+    assert "{command}" not in section
+    assert "/opt/bin/chatmd watch /path/to/the/folder" in section
+    assert "`/opt/bin/chatmd status`" in section
+    assert "`/opt/bin/chatmd mcp status`" in section
+
+
+def test_the_agent_section_documents_every_end_state() -> None:
+    """How to tell finished from working is the whole point of polling."""
+    section = chatmd_agent_section("chatmd")
+    for state in (
+        'an empty "# %% user" block - finished',
+        '"# %% assistant" followed by text - still writing',
+        'a "# %% tool_execute" block - running a tool',
+        'an empty "# %% assistant" block - not started yet',
+    ):
+        assert state in section
+
+
+def test_the_agent_section_shows_the_file_format_it_asks_for() -> None:
+    section = chatmd_agent_section("chatmd")
+    assert "# %% user\n" in section
+    assert "# %% assistant\n" in section
+    # Unescaped: this is a prompt sent to the model, not written into a document.
+    assert "# %%%" not in section
+
+
+def test_the_agent_section_reaches_the_assembled_prompt() -> None:
+    prompt = build_system_prompt("Be brief.", {}, {}, cli_command="chatmd")
+    assert "Handing work to other chat.md agents" in prompt
+    assert "Be brief." in prompt
+
+
+def test_the_typescript_template_has_not_drifted() -> None:
+    """Both engines describe the same CLI, so the text has to be the same."""
+    source = (
+        Path(__file__).parents[2] / "src" / "utils" / "chatmdCli.ts"
+    ).read_text(encoding="utf-8")
+    match = re.search(r"^const AGENT_SECTION = (\".*\");$", source, re.MULTILINE)
+    assert match is not None, "AGENT_SECTION literal not found in chatmdCli.ts"
+    assert json.loads(match.group(1)) == _AGENT_SECTION

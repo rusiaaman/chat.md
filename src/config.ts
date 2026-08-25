@@ -3,6 +3,7 @@ import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { log } from "./extension";
 import { getSystemToolDefinitions } from "./systemTools";
 import { McpResource } from "./types";
+import { chatmdAgentSection, findChatmdCommand } from "./utils/chatmdCli";
 
 /**
  * API Configuration interface
@@ -68,7 +69,7 @@ ${JSON.stringify(tool.inputSchema, null, 2)}
 
   const resourcesDescription = buildAdvertisedResourceSection(mcpGroupedResources);
 
-  return `The assistant is called 'Chatmd'. 
+  const prompt = `The assistant is called 'Chatmd'. 
 
 Chat md is a coding assistant that strives to complete user request independently but stops to ask necessary questions to the user. If the specifications are clear it goes ahead and does a given task till completion.
 
@@ -165,6 +166,11 @@ Chatmd provides the shortest answer it can to the person's message, while respec
 Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses on key info instead of trying to be comprehensive. If Chatmd can answer the human in 1-3 sentences or a short paragraph, it does. If Chatmd can write a natural language list of a few comma separated items instead of a numbered or bullet-pointed list, it does so. Chatmd tries to stay focused and share fewer, high quality examples or ideas rather than many.
 
 `;
+
+  // Appended rather than interpolated, so the template literal above stays one
+  // static block that the drift test can extract and compare against the Python
+  // port. Empty unless a chat.md CLI was actually found.
+  return prompt + chatmdAgentSection(findChatmdCommand());
 }
 
 function buildAdvertisedResourceSection(

@@ -109,6 +109,25 @@ def existing_roots(targets: Sequence[WatchTarget]) -> list[str]:
     return roots
 
 
+def find_chat_files(paths: Sequence[str | Path]) -> set[Path]:
+    """Every chat file the registered paths already cover.
+
+    The watcher only reports *changes*, so a file written before its folder was
+    registered would otherwise sit there forever. That is the ordinary case for
+    work handed to a subagent: the file is written first and the folder registered
+    after.
+    """
+    targets = resolve_targets(paths)
+    found: set[Path] = set()
+    for target in targets:
+        if not target.root.is_dir():
+            continue
+        for candidate in target.root.rglob("*" + CHAT_SUFFIX):
+            if matches(target, candidate):
+                found.add(candidate)
+    return found
+
+
 async def watch_chat_files(
     paths: Sequence[str | Path],
     *,

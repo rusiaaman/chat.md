@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 
 from .config.model import ChatmdConfig, ResolvedConfig
+from .executable import find_chatmd_command
 from .mcp.manager import McpPool
 from .providers.client import create_client
 from .providers.prompt import build_system_prompt
@@ -184,7 +185,10 @@ class ChatSession:
     def system_prompt(self, custom: str = "") -> str:
         """The full system prompt, including the tools the pool advertises."""
         return build_system_prompt(
-            custom, self.pool.grouped_tools(), self.pool.grouped_resources()
+            custom,
+            self.pool.grouped_tools(),
+            self.pool.grouped_resources(),
+            cli_command=find_chatmd_command(),
         )
 
     async def turn(

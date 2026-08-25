@@ -273,6 +273,11 @@
           "description": "Reasoning effort level for LLM responses. For OpenAI: controls reasoning_effort parameter. For Anthropic: used to calculate thinking token budget if maxThinkingTokens is not set.",
           "scope": "application"
         },
+        "chatmd.cliPath": {
+          "type": "string",
+          "description": "Path to the chat.md CLI (the `chatmd` executable). Leave empty to search PATH. When a CLI is found, the system prompt gains a section telling the model how to hand work to other chat.md agents; when none is found, that section is left out entirely.",
+          "scope": "application"
+        },
         "chatmd.assetsPath": {
           "type": "string",
           "description": "Directory for chat.md assets such as tool results and reasoning payloads. Relative paths are resolved from each chat file.",

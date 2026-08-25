@@ -30,6 +30,7 @@ import {
 } from "./utils/contextTemplateUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { releaseAllChatFileLocks } from "./utils/fileLock";
+import { resetChatmdCommandCache } from "./utils/chatmdCli";
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -498,6 +499,11 @@ export function activate(contextParam: vscode.ExtensionContext) {
   // Listen for configuration changes to update MCP servers
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration("chatmd.cliPath")) {
+        // The lookup is cached, so a changed path would otherwise not take effect
+        // until the window was reloaded.
+        resetChatmdCommandCache();
+      }
       // Make the handler async
       let configNameNeedsUpdate = false;
       let newConfigName: string | undefined;
