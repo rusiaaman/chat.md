@@ -44,6 +44,7 @@ from .state import (
     clear_status,
     complete_command,
     pending_commands,
+    prune_completed_commands,
     read_registry,
     write_daemon_info,
     write_status,
@@ -119,6 +120,7 @@ class Daemon:
         self._errors = 0
         self._started_at = 0.0
         self._registry_stamp: float | None = None
+        self._last_prune = 0.0
         self._config_stamp: float | None = None
 
     # -- lifecycle --------------------------------------------------------- #
@@ -337,11 +339,20 @@ class Daemon:
                 await self._drain_commands()
                 self._check_registry()
                 await self._check_config()
+                self._prune_answers()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("Control loop error; continuing")
             await asyncio.sleep(self.poll_interval)
+
+    def _prune_answers(self) -> None:
+        """Sweep collected command answers, occasionally rather than every pass."""
+        now = time.time()
+        if now - self._last_prune < 60.0:
+            return
+        self._last_prune = now
+        prune_completed_commands()
 
     async def _drain_commands(self) -> None:
         for request, command in pending_commands():

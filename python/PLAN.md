@@ -1,5 +1,9 @@
 # chat.md Python engine — implementation plan
 
+> **Status: delivered.** Every phase below is built and tested (816 tests, mypy
+> and ruff clean, syntax checked on 3.11). This document is kept as the design
+> record; see [README.md](README.md) for how to use what it describes.
+
 A Python library (`chatmd`) and CLI (`chatmd`) that speak the exact same `.chat.md`
 format as the VS Code extension, so a single file can be driven by either side
 interchangeably. Same block markers, same `## %%` sub-sections, same
@@ -339,15 +343,48 @@ Contained change; no behaviour difference when the CLI is not running.
 
 ## Build order
 
-1. Pure core: types, parser, render, tool-call parser, thinking map, cleanup,
+All complete:
+
+1. ✅ Pure core: types, parser, render, tool-call parser, thinking map, cleanup,
    model capabilities. Golden tests against `samples/*.chat.md`.
-2. Providers + prompt assembly + `ChatClient`.
-3. MCP pool + tool executor + result formatter + assets.
-4. File engine (streamer + driver) + locks → `chatmd run` works end to end.
-5. Daemon: supervisor, registry, watcher, events.
-6. Stats store + TUI + `mcp status`.
-7. Config discovery + setup wizard.
-8. Extension lock support.
+2. ✅ Providers + prompt assembly + client factory.
+3. ✅ MCP pool + tool executor + result formatter + assets.
+4. ✅ File engine (streamer + driver) + locks; `chatmd run` works end to end.
+5. ✅ Daemon: supervisor, registry, watcher, events.
+6. ✅ Stats store + views + `mcp status`.
+7. ✅ Config discovery + setup wizard.
+8. ✅ Extension lock support, verified against the real Python implementation.
+
+Two things landed beyond the original plan: `chatmd.api`, the file-free library
+path (`complete_turn`, `run_tool_calls`, `ChatSession`), and end-to-end
+integration tests that drive real documents through the whole loop with only the
+LLM and MCP faked.
+
+## Bugs found on the way
+
+Worth recording, since most were pre-existing or would have run away unattended:
+
+- **Tool call offsets in the wrong coordinate system** (also fixed in the
+  TypeScript). Matching ran against a CDATA-preprocessed copy whose placeholders
+  were longer than what they replaced, so any call carrying CDATA reported an end
+  index past the true end — far enough to run past the end of the input. The
+  streamer truncates its write at that index, so the `<cmd:wait-tool-result/>`
+  control marker ended up written into the document.
+- **Parameters silently dropped**, from the same root: having located a call in
+  the preprocessed text, `parseToolCall` re-searched the *original* lazily, so a
+  closing tag inside a CDATA payload ended the match early.
+- **Events lost when a stream failed.** A provider failure propagated
+  immediately, discarding events already collected — and a truncated response is
+  signalled by exactly such a failure, so the output-limit restart replayed no
+  partial text and the model began its answer again.
+- **Infinite loop on an empty turn.** A streamed turn that wrote nothing left its
+  trigger block in place, so the driver made the identical request forever.
+- **Infinite loop on a multi-call batch.** Already-executed calls were counted
+  from the wrong offset, so every pass counted zero and re-ran the first tool.
+- **A Python 3.12-only f-string** in the prompt builder, invisible in a 3.12 venv
+  despite the package supporting 3.11.
+- **A test helper that swallowed failures** (`return` inside `finally`), which
+  made every daemon test pass regardless of its assertions.
 
 ## Tests
 

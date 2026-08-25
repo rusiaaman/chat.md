@@ -240,6 +240,32 @@ def complete_command(request: Path, result: dict[str, Any] | None = None) -> Non
         pass
 
 
+def prune_completed_commands(
+    max_age_seconds: float = 300.0, directory: Path | None = None
+) -> int:
+    """Delete answers nobody collected. Returns how many went.
+
+    A CLI reads its answer within seconds; anything much older belongs to a run
+    that has long since exited, and without this the drop directory grows for the
+    life of the machine.
+    """
+    target = directory or commands_dir()
+    cutoff = time.time() - max_age_seconds
+    removed = 0
+    try:
+        entries = list(target.glob("*.done.json"))
+    except OSError:
+        return 0
+    for entry in entries:
+        try:
+            if entry.stat().st_mtime < cutoff:
+                entry.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
 def read_command_result(identifier: str, directory: Path | None = None) -> dict[str, Any] | None:
     data = read_json((directory or commands_dir()) / f"{identifier}.done.json")
     return data if isinstance(data, dict) else None

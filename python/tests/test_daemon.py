@@ -19,6 +19,7 @@ from chatmd.daemon.state import (
     DaemonInfo,
     FileState,
     pending_commands,
+    prune_completed_commands,
     read_command_result,
     read_daemon_info,
     read_registry,
@@ -462,3 +463,22 @@ async def test_a_file_already_being_driven_is_not_driven_twice_at_once(state: Pa
         await _wait_until(lambda: len(driver.seen) == 2)
 
     await run_briefly(daemon, body)
+
+
+async def test_collected_answers_are_swept_but_recent_ones_are_kept(state: Path) -> None:
+    """Otherwise the drop directory grows for the life of the machine."""
+    import os
+    import time
+
+    directory = commands_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    old = directory / "old.done.json"
+    fresh = directory / "fresh.done.json"
+    write_json_atomic(old, {"ok": True})
+    write_json_atomic(fresh, {"ok": True})
+    stale = time.time() - 3600
+    os.utime(old, (stale, stale))
+
+    assert prune_completed_commands(max_age_seconds=300.0) == 1
+    assert not old.exists()
+    assert fresh.exists()
