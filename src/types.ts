@@ -287,6 +287,12 @@ export interface StreamerState {
   pendingText?: string;
 
   /**
+   * Whether the withheld text was reasoning rather than assistant text, so it
+   * goes back into the section it came from.
+   */
+  pendingIsThinking?: boolean;
+
+  /**
    * Function to cancel the stream. This can be called externally
    * by components holding a reference to the streamer.
    */

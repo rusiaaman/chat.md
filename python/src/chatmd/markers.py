@@ -100,3 +100,25 @@ def contains_marker_line(text: str) -> bool:
     reporting it here would mean escaped text still looked dangerous.
     """
     return bool(_BLOCK_MARKER.search(text) or _SECTION_MARKER.search(text))
+
+
+# A partial line that might still grow into a marker. Reached only for the tail of
+# a stream batch, so it must accept every prefix of an escapable marker line and as
+# little else as possible: holding a line back delays it reaching the reader.
+#
+#   "#", "##", "# ", "# %", "# %%", "# %% ", "# %% us", "# %% user"
+#
+# A markdown heading such as "# Introduction" is deliberately not matched — those
+# are common in assistant output and would be held back on every line.
+_COULD_BECOME_MARKER = re.compile(r"^#{1,2}( (%*|%{2,} [A-Za-z_]*))?$")
+
+
+def could_become_marker_line(partial_line: str) -> bool:
+    """Whether an unfinished line might still turn out to be a marker.
+
+    A marker is only a marker once its line ends, so a streamer cannot judge
+    ``# %% user`` until it sees the newline — the next token might make it
+    ``# %% username``. This says whether the line is still in that undecided
+    state and must be withheld.
+    """
+    return bool(_COULD_BECOME_MARKER.match(partial_line))

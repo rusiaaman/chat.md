@@ -21,6 +21,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from chatmd.markers import escape_markers
 from chatmd.types import (
     StreamEvent,
     TextDelta,
@@ -181,6 +182,8 @@ def render_stream_events(
     already_written: str,
     state: SectionState,
     record_payload: Callable[[str, ThinkingPayload], str | None],
+    *,
+    escape: Callable[[str], str] = escape_markers,
 ) -> str:
     """Renders a batch of stream events into the text to append to the assistant block.
 
@@ -191,6 +194,11 @@ def render_stream_events(
 
     ``record_payload`` stores the payload and returns its "model::hash" line, or
     None when the payload could not be stored.
+
+    ``escape`` is applied to the model's own text, and deliberately not to the
+    section markers emitted here: those are real markers and must stay readable as
+    such. Escaping inside this function rather than after it keeps the offsets it
+    records in ``state`` in the same coordinates as the document.
     """
     out = ""
 
@@ -245,7 +253,7 @@ def render_stream_events(
             if not state.thinking_open:
                 open_thinking_section()
                 state.thinking_open = True
-            out += event.text
+            out += escape(event.text)
             continue
 
         if not isinstance(event, TextDelta):
@@ -268,6 +276,6 @@ def render_stream_events(
             state.scan_offset = len(already_written) + len(out)
             # The new text section is open, so it extends to the end of the block
             state.text_section_end = None
-        out += event.text
+        out += escape(event.text)
 
     return out

@@ -366,11 +366,6 @@ async def test_a_tool_result_containing_a_whole_chat_file_does_not_split_the_doc
     assert "## %%% thinking" in text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="the streamer does not escape yet, so the call's own markers split the "
-    "document before it can be executed",
-)
 async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
 ) -> None:
@@ -397,4 +392,17 @@ async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
 
     assert len(pool.called) == 1
     _name, params = pool.called[0]
-    assert params["content"] == wanted
+    # Trimmed, because the tool-call parser trims every parameter value — that is
+    # long-standing behaviour and nothing to do with escaping. What matters here is
+    # that the markers arrive with two percent signs, not three.
+    assert params["content"] == wanted.strip()
+    assert "# %%% " not in params["content"]
+
+    # The document meanwhile keeps the escaped form, so it stays one document.
+    # Escaping is minimal: only lines that would really be markers are touched, so
+    # the `# %% user` sharing a line with the opening <cmd:param> tag is left alone
+    # while the `# %% assistant` at the start of its own line is escaped.
+    text = chat.read_text()
+    assert "# %%% assistant" in text
+    assert '<cmd:param name="content"># %% user' in text
+    assert len(parse_document(text, tmp_path).messages) == 4

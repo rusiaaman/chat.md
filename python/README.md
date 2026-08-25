@@ -107,6 +107,23 @@ what it wrote is still exactly what sits at the start of the block, and stops fo
 good if it is not — so editing a chat while it streams ends the stream instead of
 corrupting the file.
 
+### Markers inside content
+
+A document is structured entirely by its `# %%` marker lines, so content that
+contains one would tear it apart — which is exactly what happens the moment a
+chat reads or writes another chat through a tool. Content written into a document
+therefore gains a percent sign, and content read back out of a block loses one:
+
+```
+# %% user     stored as    # %%% user
+```
+
+Escaping is minimal — only lines that would really be markers are touched — and
+reversible for any input, including content that already contained `# %%%`. Tool
+arguments are unescaped before the tool runs, so a tool that writes a chat file
+receives exactly what the model wrote. Both engines escape identically; the shared
+vectors in `tests/marker_vectors.json` pin that.
+
 ### Sharing a file with the editor
 
 Both sides take a lock on a hidden sibling (`.notes.chat.md.lock`). The CLI also

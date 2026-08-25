@@ -448,3 +448,92 @@ async def test_a_document_with_no_empty_assistant_block_writes_nothing(
 
     assert result.outcome is StreamOutcome.ABORTED
     assert "nowhere to go" not in chat.read_text()
+
+
+# --------------------------------------------------------------------------- #
+# Marker escaping
+# --------------------------------------------------------------------------- #
+
+
+async def test_a_marker_line_in_assistant_text_is_escaped(tmp_path: Path) -> None:
+    """Written raw it would split the document the model is writing into."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient([TextDelta("Here is a chat file:\n# %% user\nhello\n")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text()
+    assert "# %%% user" in text
+    # Still exactly the blocks we started with, plus the appended user block.
+    assert text.count("\n# %% user") == 1
+
+
+async def test_a_marker_split_across_batches_is_still_escaped(tmp_path: Path) -> None:
+    """A marker is only decidable at end of line, so the partial line waits."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient([TextDelta("intro\n# %% us"), Pause(), TextDelta("er\nbody\n")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text()
+    assert "# %%% user" in text
+    assert "\n# %% user\nbody" not in text
+
+
+async def test_a_partial_line_that_never_becomes_a_marker_is_written_intact(
+    tmp_path: Path,
+) -> None:
+    """Holding a line back must delay it, never drop or mangle it."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient([TextDelta("a\n# %% us"), Pause(), TextDelta("ername is bob\n")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    assert "# %% username is bob" in chat.read_text()
+
+
+async def test_a_markdown_heading_is_not_held_back(tmp_path: Path) -> None:
+    """Headings are common in answers; delaying every one would be visible."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    engine = streamer(chat, FakeClient([TextDelta("# Introduction"), Pause(), TextDelta("\nbody")]))
+
+    async def read_midway() -> str:
+        await asyncio.sleep(0.03)
+        return chat.read_text()
+
+    midway, _ = await asyncio.gather(read_midway(), engine.run(one_message(), "sys"))
+
+    assert "# Introduction" in midway
+    assert "# Introduction\nbody" in chat.read_text()
+
+
+async def test_a_section_marker_in_thinking_is_escaped(tmp_path: Path) -> None:
+    """Reasoning about a chat file must not split the assistant block."""
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = FakeClient(
+        [
+            ThinkingDelta("the file says\n## %% text\nand more\n"),
+            TextDelta("Answer."),
+        ]
+    )
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text()
+    assert "## %%% text" in text
+    # One real thinking marker and one real text marker, both the streamer's own.
+    assert text.count("\n## %% thinking") == 1
+    assert text.count("\n## %% text") == 1
+
+
+async def test_escaped_content_round_trips_back_through_the_parser(tmp_path: Path) -> None:
+    from chatmd.parser.document import parse_document
+
+    chat = make_chat(tmp_path / "a.chat.md")
+    written = "Look:\n# %% user\nhi\n\n# %% assistant\nthere\n"
+    await streamer(chat, FakeClient([TextDelta(written)])).run(one_message(), "sys")
+
+    parsed = parse_document(chat.read_text(), tmp_path)
+    assistant = next(m for m in parsed.messages if m.role == "assistant")
+    body = "".join(b.value for b in assistant.content if isinstance(b, TextContent))
+    assert body == written.strip()

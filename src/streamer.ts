@@ -5,9 +5,12 @@ import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { OpenAIResponsesClient } from "./openaiResponsesClient";
+import { couldBecomeMarkerLine } from "./utils/markerEscape";
 import {
   stripThinkingSections,
   decodeThinkingPayloadToken,
+  decodeThinkingToken,
+  encodeThinkingToken,
   formatSignatureLine,
   isThinkingPayloadToken,
   isThinkingToken,
@@ -484,6 +487,104 @@ export class StreamingService {
   }
 
   /**
+   * Re-delivers text withheld from the previous batch.
+   *
+   * Prepended as a raw token rather than to the rendered output, so the section
+   * state machine accounts for it when computing the scan offsets, and so it is
+   * escaped exactly once - escaping before withholding would escape it again on
+   * the way back in.
+   */
+  private withPendingText(
+    streamer: StreamerState,
+    tokens: string[],
+  ): string[] {
+    const pending = streamer.pendingText ?? "";
+    if (!pending) {
+      return tokens;
+    }
+    const wasThinking = streamer.pendingIsThinking === true;
+    streamer.pendingText = "";
+    streamer.pendingIsThinking = false;
+    return [wasThinking ? encodeThinkingToken(pending) : pending, ...tokens];
+  }
+
+  /**
+   * Merges adjacent tokens of the same kind.
+   *
+   * Purely so the tail of a batch can be examined as one string; the renderer
+   * concatenates them anyway, so nothing else changes.
+   */
+  private coalesceTokens(tokens: string[]): string[] {
+    const merged: string[] = [];
+    for (const token of tokens) {
+      const previous = merged.length > 0 ? merged[merged.length - 1] : undefined;
+      if (previous === undefined || isThinkingPayloadToken(token)) {
+        merged.push(token);
+        continue;
+      }
+      const bothThinking = isThinkingToken(token) && isThinkingToken(previous);
+      const bothText =
+        !isThinkingToken(token) &&
+        !isThinkingPayloadToken(token) &&
+        !isThinkingToken(previous) &&
+        !isThinkingPayloadToken(previous);
+      if (bothThinking) {
+        merged[merged.length - 1] = encodeThinkingToken(
+          decodeThinkingToken(previous) + decodeThinkingToken(token),
+        );
+      } else if (bothText) {
+        merged[merged.length - 1] = previous + token;
+      } else {
+        merged.push(token);
+      }
+    }
+    return merged;
+  }
+
+  /**
+   * Withholds a trailing partial line that might still become a block marker.
+   *
+   * A marker is only a marker once its line ends: `# %% user` could still turn
+   * into `# %% username`. Escaping it early would corrupt ordinary prose, and
+   * writing it raw would split the document, so it waits for the newline.
+   *
+   * Only the tail needs checking. Any earlier partial line was withheld by this
+   * same rule on a previous batch and has just been prepended, so the undecided
+   * line is always wholly inside this batch. The exception is a block that
+   * already held a partial marker line before streaming began - a resumed turn -
+   * which append-only writing cannot go back and fix.
+   */
+  private holdBackMarkerLine(
+    streamer: StreamerState,
+    tokens: string[],
+  ): string[] {
+    if (tokens.length === 0) {
+      return tokens;
+    }
+    const last = tokens[tokens.length - 1];
+    if (isThinkingPayloadToken(last)) {
+      return tokens;
+    }
+
+    const isThinking = isThinkingToken(last);
+    const text = isThinking ? decodeThinkingToken(last) : last;
+    const newline = text.lastIndexOf("\n");
+    const line = text.substring(newline + 1);
+    if (!line || !couldBecomeMarkerLine(line)) {
+      return tokens;
+    }
+
+    streamer.pendingText = line;
+    streamer.pendingIsThinking = isThinking;
+    const kept = text.substring(0, newline + 1);
+    const head = tokens.slice(0, -1);
+    if (!kept) {
+      return head;
+    }
+    return [...head, isThinking ? encodeThinkingToken(kept) : kept];
+  }
+
+  /**
    * Classify buffered text that follows an already emitted tool call.
    *
    * - "tool_call": the buffer starts with another tool call
@@ -938,13 +1039,10 @@ export class StreamingService {
               // still have grown into the end-of-batch marker. It is prepended to
               // the raw tokens rather than the rendered output, so renderTokens
               // accounts for it when it computes the scan offsets.
-              const pendingText = streamer.pendingText ?? "";
-              if (pendingText) {
-                streamer.pendingText = "";
-              }
-              const batchTokens = pendingText
-                ? [pendingText, ...tokens]
-                : tokens;
+              const batchTokens = this.holdBackMarkerLine(
+                streamer,
+                this.coalesceTokens(this.withPendingText(streamer, tokens)),
+              );
 
               // Turn thinking/text tokens into document text with section markers
               const renderedTokens = this.renderTokens(streamer, batchTokens);
@@ -1119,11 +1217,15 @@ export class StreamingService {
             !cancelledExternally
           ) {
             const flushed = streamer.pendingText;
+            const flushedThinking = streamer.pendingIsThinking === true;
             streamer.pendingText = "";
+            streamer.pendingIsThinking = false;
             log(
-              `Flushing ${flushed.length} held-back chars that never became the end-of-batch marker`,
+              `Flushing ${flushed.length} held-back chars that never became a marker`,
             );
-            const flushTokens = this.renderTokens(streamer, [flushed]);
+            const flushTokens = this.renderTokens(streamer, [
+              flushedThinking ? encodeThinkingToken(flushed) : flushed,
+            ]);
             if (flushTokens.length > 0) {
               updateFailed = !(await this.updateDocumentWithTokens(
                 streamer,

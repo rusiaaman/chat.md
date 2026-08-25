@@ -3,8 +3,11 @@
  * turn, and for the streaming token protocol used to carry reasoning from the API
  * clients to the streamer.
  *
- * This module intentionally has no imports so it can be unit tested outside VS Code.
+ * This module depends only on marker escaping, and nothing on VS Code, so it can
+ * still be unit tested standalone.
  */
+
+import { escapeMarkers } from "./markerEscape";
 
 /** Marker that opens a thinking section inside an assistant block */
 export const THINKING_SECTION_MARKER = "## %% thinking";
@@ -251,7 +254,10 @@ export function renderStreamTokens(
         openThinkingSection();
         state.thinkingOpen = true;
       }
-      out += thinkingText;
+      // The model's own text is escaped; the section markers emitted above are
+      // real markers and must stay readable as such. Escaping here rather than
+      // afterwards keeps the offsets recorded in `state` in document coordinates.
+      out += escapeMarkers(thinkingText);
       continue;
     }
 
@@ -270,7 +276,7 @@ export function renderStreamTokens(
       // The new text section is open, so it extends to the end of the block
       state.textSectionEnd = null;
     }
-    out += token;
+    out += escapeMarkers(token);
   }
 
   return out;

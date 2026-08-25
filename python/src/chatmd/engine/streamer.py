@@ -20,6 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from ..assets import assets_dir
+from ..markers import could_become_marker_line
 from ..parser.assistant_content import parse_assistant_content
 from ..parser.blocks import find_all_assistant_blocks
 from ..providers.base import LlmClient, MaxTokensError, RetryableError
@@ -42,6 +43,7 @@ from ..types import (
     MessageParam,
     StreamEvent,
     TextDelta,
+    ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
     Usage,
@@ -92,9 +94,12 @@ class StreamerState:
     tokens: list[str] = field(default_factory=list)
     section: SectionState = field(default_factory=SectionState)
     #: Trailing text withheld because it could still grow into the end-of-batch
-    #: marker. Prepended to the next batch instead of being written, so a marker
-    #: split across two batches never reaches the document.
+    #: marker, or into a block marker line. Prepended to the next batch instead of
+    #: being written, so neither ever reaches the document split in half.
     pending_text: str = ""
+    #: Whether the withheld text was reasoning rather than assistant text, so it
+    #: goes back into the section it came from.
+    pending_is_thinking: bool = False
     is_handling_tool_call: bool = False
     active: bool = True
 
@@ -206,7 +211,9 @@ class FileStreamer:
                     break
                 continue
 
-            batch = self._with_pending_text(events)
+            batch = self._hold_back_marker_line(
+                self._coalesce(self._with_pending_text(events))
+            )
             rendered = render_stream_events(
                 batch, self.state.written, self.state.section, self._record_payload
             )
@@ -269,9 +276,14 @@ class FileStreamer:
         # assistant text, so write it rather than dropping the end of the turn.
         if healthy and self.state.pending_text:
             flushed = self.state.pending_text
+            was_thinking = self.state.pending_is_thinking
             self.state.pending_text = ""
+            self.state.pending_is_thinking = False
+            final: StreamEvent = (
+                ThinkingDelta(flushed) if was_thinking else TextDelta(flushed)
+            )
             rendered = render_stream_events(
-                [TextDelta(flushed)], self.state.written, self.state.section, self._record_payload
+                [final], self.state.written, self.state.section, self._record_payload
             )
             if rendered and not self._append(rendered):
                 update_failed = True
@@ -409,13 +421,71 @@ class FileStreamer:
         """Re-deliver held-back text ahead of this batch.
 
         Prepended as a raw event rather than to the rendered output, so the section
-        state machine accounts for it when it computes the scan offsets.
+        state machine accounts for it when it computes the scan offsets, and so it
+        is escaped exactly once — escaping it before withholding it would escape it
+        again on the way back in.
         """
         pending = self.state.pending_text
         if not pending:
             return list(events)
         self.state.pending_text = ""
-        return [TextDelta(pending), *events]
+        restored: StreamEvent = (
+            ThinkingDelta(pending) if self.state.pending_is_thinking else TextDelta(pending)
+        )
+        self.state.pending_is_thinking = False
+        return [restored, *events]
+
+    @staticmethod
+    def _coalesce(events: list[StreamEvent]) -> list[StreamEvent]:
+        """Merge adjacent content events of the same kind.
+
+        Purely so the tail of the batch can be looked at as one string; the
+        renderer concatenates them anyway, so nothing changes.
+        """
+        merged: list[StreamEvent] = []
+        for event in events:
+            previous = merged[-1] if merged else None
+            if isinstance(event, TextDelta) and isinstance(previous, TextDelta):
+                merged[-1] = TextDelta(previous.text + event.text)
+            elif isinstance(event, ThinkingDelta) and isinstance(previous, ThinkingDelta):
+                merged[-1] = ThinkingDelta(previous.text + event.text)
+            else:
+                merged.append(event)
+        return merged
+
+    def _hold_back_marker_line(self, events: list[StreamEvent]) -> list[StreamEvent]:
+        """Withhold a trailing partial line that might still become a marker.
+
+        A marker is only a marker once its line ends: `# %% user` could still turn
+        into `# %% username`. Escaping it early would corrupt ordinary prose, and
+        writing it raw would split the document, so it waits for the newline.
+
+        Only the tail needs checking. Any earlier partial line was withheld by this
+        same rule on a previous batch and has just been prepended, so by induction
+        the undecided line is always wholly inside this batch. The one exception is
+        a block that already held a partial marker line before streaming began — a
+        resumed turn — which append-only writing cannot go back and fix.
+        """
+        if not events:
+            return events
+        last = events[-1]
+        if not isinstance(last, TextDelta | ThinkingDelta):
+            return events
+
+        newline = last.text.rfind("\n")
+        line = last.text[newline + 1 :]
+        if not line or not could_become_marker_line(line):
+            return events
+
+        self.state.pending_text = line
+        self.state.pending_is_thinking = isinstance(last, ThinkingDelta)
+        kept = last.text[: newline + 1]
+        if not kept:
+            return events[:-1]
+        head: StreamEvent = (
+            ThinkingDelta(kept) if isinstance(last, ThinkingDelta) else TextDelta(kept)
+        )
+        return [*events[:-1], head]
 
     # -- document writes --------------------------------------------------- #
 

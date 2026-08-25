@@ -17,13 +17,16 @@ from chatmd.markers import (
     BLOCK_ROLES,
     SECTION_ROLES,
     contains_marker_line,
+    could_become_marker_line,
     escape_markers,
     unescape_markers,
 )
 from chatmd.parser.blocks import split_blocks
 from chatmd.render import split_assistant_sections
 
-VECTORS = json.loads((Path(__file__).parent / "marker_vectors.json").read_text())["cases"]
+_VECTOR_FILE = json.loads((Path(__file__).parent / "marker_vectors.json").read_text())
+VECTORS = _VECTOR_FILE["cases"]
+PARTIAL_LINES = _VECTOR_FILE["partialLines"]
 
 
 @pytest.mark.parametrize(("raw", "escaped"), VECTORS, ids=[repr(case[0]) for case in VECTORS])
@@ -135,3 +138,19 @@ def test_contains_marker_line_finds_what_would_break_a_document() -> None:
     assert contains_marker_line("## %% text")
     assert not contains_marker_line("# %%% user")  # already escaped
     assert not contains_marker_line("nothing here")
+
+
+@pytest.mark.parametrize(
+    ("line", "held"), PARTIAL_LINES, ids=[repr(case[0]) for case in PARTIAL_LINES]
+)
+def test_shared_partial_line_vectors(line: str, held: bool) -> None:
+    """Both engines must withhold the same partial lines, or they write differently."""
+    assert could_become_marker_line(line) is held
+
+
+def test_every_prefix_of_a_marker_line_is_withheld() -> None:
+    """Miss one and a marker gets written raw, splitting the document."""
+    for role in BLOCK_ROLES:
+        marker = f"# %% {role}"
+        for length in range(1, len(marker) + 1):
+            assert could_become_marker_line(marker[:length]), marker[:length]
