@@ -19,6 +19,7 @@ from pathlib import Path
 from ..assets import TOOL_RESULT_LINE_THRESHOLD, ensure_chat_md_gitignore, write_tool_result_file
 from ..config.model import ChatmdConfig
 from ..errors import ChatmdError, ConfigError, LockHeld
+from ..markers import escape_markers, unescape_markers
 from ..mcp.manager import McpPool
 from ..parser.blocks import (
     BLOCK_MARKER_RE,
@@ -270,8 +271,12 @@ class ChatDriver:
             else block_start
         )
         body = text[last.content_start : assistant_end]
-        # Thinking is excluded: reasoning about a tool call is not a tool call.
-        return find_all_tool_calls(strip_thinking_sections(body)), assistant_end
+        # Thinking is stripped from the raw text -- an escaped "## %%% thinking"
+        # is content, not a section -- and only then is the remainder unescaped,
+        # so a call whose arguments contain marker lines is handed to the tool
+        # exactly as the model wrote it rather than with the escaping still on.
+        calls = find_all_tool_calls(unescape_markers(strip_thinking_sections(body)))
+        return calls, assistant_end
 
     def _write_tool_result(
         self,
@@ -290,7 +295,11 @@ class ChatDriver:
         if pending_after > 0:
             logger.debug("%d tool call(s) still pending for %s", pending_after, path.name)
 
-        wrapped = format_tool_result(body.strip())
+        # Escaped on the way in: a tool that read or wrote another chat returns
+        # content full of marker lines, and writing those raw tears this document
+        # apart -- the wrapper loses its other half and turns that never happened
+        # appear in the history.
+        wrapped = format_tool_result(escape_markers(body.strip()))
         rendered = f"\n{wrapped}\n\n{next_marker}\n" if not fenced else (
             f"\n```\n{wrapped}\n```\n\n{next_marker}\n"
         )

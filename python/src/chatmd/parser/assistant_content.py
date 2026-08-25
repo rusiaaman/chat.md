@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 
 from chatmd.assets import assets_dir
+from chatmd.markers import unescape_markers
 from chatmd.render import parse_thinking_section, split_assistant_sections
 from chatmd.thinking_map import get_thinking_entry
 from chatmd.tools.call_parser import append_wait_marker_after_last_tool_call
@@ -77,13 +78,18 @@ def parse_assistant_content(
     result: list[Content] = []
 
     for section in split_assistant_sections(content):
+        # After the split, never before: an escaped "## %%% text" line inside the
+        # content would otherwise be restored to a real marker and split the block
+        # somewhere the writer never intended.
+        body = unescape_markers(section.content)
+
         if section.type == "text":
-            text = section.content.strip()
+            text = body.strip()
             if text:
                 result.append(TextContent(value=text))
             continue
 
-        parsed = parse_thinking_section(section.content)
+        parsed = parse_thinking_section(body)
         if not parsed.text and not parsed.hash:
             # Empty thinking section, nothing to carry over
             continue

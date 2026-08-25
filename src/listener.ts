@@ -37,6 +37,7 @@ import {
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { acquireChatFileLock, ChatLockHandle } from "./utils/fileLock";
+import { escapeMarkers, unescapeMarkers } from "./utils/markerEscape";
 
 /**
  * Counts the `# %% tool_execute` block markers in a chunk of text.
@@ -375,7 +376,13 @@ export class DocumentListener {
       // Look for tool call XML - the assistant block may contain several tool calls
       // (parallel tool calls), so collect all of them in order of appearance.
       // Thinking sections are excluded: reasoning about a tool call is not a call.
-      const toolCalls = findAllToolCalls(stripThinkingSections(assistantResponse));
+      // Thinking is stripped from the raw text — an escaped "## %%% thinking" is
+      // content, not a section — and only then is the remainder unescaped, so a
+      // call whose arguments contain marker lines reaches the tool exactly as the
+      // model wrote it rather than with the escaping still on.
+      const toolCalls = findAllToolCalls(
+        unescapeMarkers(stripThinkingSections(assistantResponse)),
+      );
 
       if (toolCalls.length === 0) {
         log("No tool call found in assistant response");
@@ -505,7 +512,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     }
 
     const toolCalls = findAllToolCalls(
-      stripThinkingSections(lastAssistantMatch[1].trim()),
+      unescapeMarkers(stripThinkingSections(lastAssistantMatch[1].trim())),
     );
     if (toolCalls.length <= 1) {
       return 0;
@@ -699,6 +706,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     const isMarkdownLink =
       shouldInsertAsMarkdown ||
       (resultText.split("\n").length > lineCountThreshold && contentToInsert.includes("[Tool Result]"));
+
+    // Escaped on the way in: a tool that read or wrote another chat returns
+    // content full of marker lines, and writing those raw tears this document
+    // apart — the wrapper loses its other half and turns that never happened
+    // appear in the history.
+    contentToInsert = escapeMarkers(contentToInsert);
 
     let textToInsert;
     if (isMarkdownLink) {

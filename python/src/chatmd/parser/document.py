@@ -9,7 +9,13 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from chatmd.types import ImageContent, MessageParam, ParsedDocument, TextContent
+from chatmd.markers import unescape_markers
+from chatmd.types import (
+    ImageContent,
+    MessageParam,
+    ParsedDocument,
+    TextContent,
+)
 
 from .assistant_content import parse_assistant_content
 from .blocks import split_blocks
@@ -53,7 +59,15 @@ def parse_document(
     settings: dict[str, Any] | None = None
 
     for index, block in enumerate(blocks):
-        content = block.raw_content.strip()
+        # Unescaped here, once the document has already been split: content that
+        # contains a marker line was written with an extra percent sign, and this
+        # is where it becomes ordinary text again. Assistant blocks are the
+        # exception -- they are unescaped after their sections are split, or an
+        # escaped "## %%% text" would turn into a real section marker.
+        raw = block.raw_content if block.type == "assistant" else unescape_markers(
+            block.raw_content
+        )
+        content = raw.strip()
 
         if block.type == "settings":
             if content:
@@ -62,7 +76,7 @@ def parse_document(
         elif block.type == "system":
             if content:
                 # Raw, not trimmed: a system prompt's own formatting is part of it.
-                system_parts.append(block.raw_content)
+                system_parts.append(raw)
                 if not has_image_in_system_block and contains_image_reference(content):
                     has_image_in_system_block = True
 

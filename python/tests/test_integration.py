@@ -315,3 +315,86 @@ async def test_a_locked_file_is_left_alone(
 
     assert [result.action for result in results] == [StepAction.LOCKED]
     assert chat.read_text() == original
+
+
+async def test_a_tool_result_containing_a_whole_chat_file_does_not_split_the_document(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
+) -> None:
+    """One chat reading another is the case marker escaping exists for.
+
+    Written raw, the other file's markers split this document: the tool_result
+    wrapper loses its other half and turns that never happened appear in the
+    history.
+    """
+    chat = tmp_path / "session.chat.md"
+    chat.write_text("# %% user\nRead notes.chat.md\n\n# %% assistant\n", encoding="utf-8")
+
+    other = "# %% user\nWhat is 2+2?\n\n# %% assistant\n4\n\n## %% thinking\nhmm\n"
+    install(
+        monkeypatch,
+        ScriptedClient(
+            [TextDelta(tool_call("fs.read_file", "notes.chat.md") + "\n")],
+            [TextDelta("It asks about arithmetic.")],
+        ),
+    )
+    pool = ScriptedPool(
+        McpToolExecutionResult(
+            server_id="fs", tool_name="read_file", content=[McpTextContent(text=other)]
+        )
+    )
+
+    await ChatDriver(config, pool).run(chat)  # type: ignore[arg-type]
+
+    text = chat.read_text()
+    parsed = parse_document(text, tmp_path)
+
+    # Four turns, not the six an unescaped result would produce.
+    assert [message.role for message in parsed.messages] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    # The other file survived verbatim, escaping removed, inside one tool result.
+    tool_message = "".join(
+        block.value for block in parsed.messages[2].content if isinstance(block, TextContent)
+    )
+    assert other in tool_message
+    assert tool_message.count("<tool_result>") == 1
+    # The document itself carries the escaped form, so it stays one document.
+    assert "# %%% user" in text
+    assert "## %%% thinking" in text
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the streamer does not escape yet, so the call's own markers split the "
+    "document before it can be executed",
+)
+async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
+) -> None:
+    """The tool must receive what the model wrote, not the escaped form."""
+    chat = tmp_path / "session.chat.md"
+    chat.write_text("# %% user\nMake me a chat\n\n# %% assistant\n", encoding="utf-8")
+
+    wanted = "# %% user\nhello\n\n# %% assistant\n"
+    call = (
+        f"{CMD_TOOL_CALL_OPEN_TAG}\n<cmd:tool_name>fs.write_file</cmd:tool_name>\n"
+        f'<cmd:param name="content">{wanted}</cmd:param>\n{CMD_TOOL_CALL_CLOSE_TAG}'
+    )
+    install(
+        monkeypatch,
+        ScriptedClient([TextDelta(call + "\n")], [TextDelta("Written.")]),
+    )
+    pool = ScriptedPool(
+        McpToolExecutionResult(
+            server_id="fs", tool_name="write_file", content=[McpTextContent(text="ok")]
+        )
+    )
+
+    await ChatDriver(config, pool).run(chat)  # type: ignore[arg-type]
+
+    assert len(pool.called) == 1
+    _name, params = pool.called[0]
+    assert params["content"] == wanted

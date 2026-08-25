@@ -36,6 +36,7 @@ from ..daemon.state import (
 )
 from ..engine.locks import pid_alive
 from ..errors import ChatmdError
+from ..markers import escape_markers
 from ..paths import config_path, daemon_log_path, state_dir
 from ..render import block_marker_prefix
 from ..stats import views
@@ -509,7 +510,8 @@ def send(
     """Append a user turn and an empty assistant block, which triggers a reply."""
     config = _require_config()
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
-    addition = f"{block_marker_prefix(existing)}# %% user\n{message}\n\n# %% assistant\n"
+    body = escape_markers(message)
+    addition = f"{block_marker_prefix(existing)}# %% user\n{body}\n\n# %% assistant\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(existing + addition, encoding="utf-8")
     console.print(f"[green]Appended to[/green] {path}")

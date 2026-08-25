@@ -15,6 +15,7 @@ import {
 } from "./utils/thinkingBlocks";
 import { getThinkingEntry } from "./utils/thinkingMap";
 import { appendWaitMarkerAfterLastToolCall } from "./tools/toolCallParser";
+import { unescapeMarkers } from "./utils/markerEscape";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -256,7 +257,13 @@ export function parseDocument(
     }
 
     const role = blocks[i].toLowerCase().trim();
-    const rawContent = blocks[i + 1]; // Keep original whitespace/newlines for system prompt
+    // Unescaped here, once the document has already been split: content that
+    // contains a marker line was written with an extra percent sign, and this is
+    // where it becomes ordinary text again. Assistant blocks are the exception —
+    // they are unescaped after their sections are split, or an escaped
+    // "## %%% text" would turn into a real section marker.
+    const rawContent =
+      role === "assistant" ? blocks[i + 1] : unescapeMarkers(blocks[i + 1]);
     const content = rawContent.trim();
 
     // Empty assistant/tool_execute blocks are handled by the endIdx logic above,
@@ -374,15 +381,20 @@ export function parseAssistantContent(
   const result: Content[] = [];
 
   for (const section of sections) {
+    // After the split, never before: an escaped "## %%% text" line inside the
+    // content would otherwise be restored to a real marker and split the block
+    // somewhere the writer never intended.
+    const body = unescapeMarkers(section.content);
+
     if (section.type === "text") {
-      const text = section.content.trim();
+      const text = body.trim();
       if (text) {
         result.push({ type: "text", value: text });
       }
       continue;
     }
 
-    const parsed = parseThinkingSection(section.content);
+    const parsed = parseThinkingSection(body);
     if (!parsed.text && !parsed.hash) {
       // Empty thinking section, nothing to carry over
       continue;
