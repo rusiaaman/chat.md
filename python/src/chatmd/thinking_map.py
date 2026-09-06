@@ -96,9 +96,39 @@ def compute_thinking_hash(entry: dict[str, Any]) -> str:
     return digest[:8]
 
 
+#: Parsed maps keyed by path, valid only while mtime and size are unchanged.
+#:
+#: Parsing a document looks a hash up once per thinking section, and the map grows
+#: with the number of thinking sections in the directory, so reading it afresh each
+#: time makes parsing quadratic in the length of the chat: at 4M characters that was
+#: over two seconds a parse, nearly all of it re-reading this one file. Another
+#: process (the VS Code extension driving the same chat) may write it, hence the
+#: stat rather than a plain memo.
+_map_cache: dict[Path, tuple[int, int, dict[str, dict[str, Any]]]] = {}
+
+
+def _stat_key(path: Path) -> tuple[int, int] | None:
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return info.st_mtime_ns, info.st_size
+
+
 def read_thinking_map(assets_dir: Path) -> dict[str, dict[str, Any]]:
-    """Read ``thinking_map.json``'s entries, or ``{}`` if missing/corrupt."""
-    raw = read_text(thinking_map_path(assets_dir))
+    """Read ``thinking_map.json``'s entries, or ``{}`` if missing/corrupt.
+
+    The returned mapping is shared with the cache, so callers must treat it as
+    read-only; :func:`put_thinking_entry` builds a new dict rather than mutating it.
+    """
+    path = thinking_map_path(assets_dir)
+    key = _stat_key(path)
+    if key is not None:
+        cached = _map_cache.get(path)
+        if cached is not None and cached[:2] == key:
+            return cached[2]
+
+    raw = read_text(path)
     if raw is None:
         return {}
     try:
@@ -107,18 +137,30 @@ def read_thinking_map(assets_dir: Path) -> dict[str, dict[str, Any]]:
         # Corrupt or unreadable map: behave as if empty rather than breaking the chat.
         return {}
     if isinstance(parsed, dict) and isinstance(parsed.get("entries"), dict):
-        return parsed["entries"]
+        entries: dict[str, dict[str, Any]] = parsed["entries"]
+        if key is not None:
+            _map_cache[path] = (key[0], key[1], entries)
+        return entries
     return {}
 
 
 def _write_thinking_map(assets_dir: Path, entries: dict[str, dict[str, Any]]) -> bool:
+    path = thinking_map_path(assets_dir)
     try:
         ensure_dir(assets_dir)
         content = json.dumps({"version": 1, "entries": entries}, indent=2)
-        write_text(thinking_map_path(assets_dir), content)
-        return True
+        write_text(path, content)
     except OSError:
+        _map_cache.pop(path, None)
         return False
+    # Seed the cache from what was just written rather than dropping it: the next
+    # read is the streamer parsing the turn it just wrote.
+    key = _stat_key(path)
+    if key is None:
+        _map_cache.pop(path, None)
+    else:
+        _map_cache[path] = (key[0], key[1], entries)
+    return True
 
 
 def put_thinking_entry(assets_dir: Path, model: str, payload: ThinkingPayload) -> str:
@@ -133,8 +175,10 @@ def put_thinking_entry(assets_dir: Path, model: str, payload: ThinkingPayload) -
 
     entries = read_thinking_map(assets_dir)
     if entry_hash not in entries:
-        entries[entry_hash] = entry
-        _write_thinking_map(assets_dir, entries)
+        # A new dict rather than a mutation: read_thinking_map hands back the cached
+        # mapping, and mutating it in place would leave the cache holding an entry
+        # that is not in the file if the write fails.
+        _write_thinking_map(assets_dir, {**entries, entry_hash: entry})
     return entry_hash
 
 

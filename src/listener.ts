@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import {
   parseDocument, // Updated signature: returns { messages, systemPrompt, hasImageInSystemBlock }
+  parseFileConfig, // Preamble only: cheap enough to run on every document change
   hasEmptyAssistantBlock,
   hasEmptyToolExecuteBlock,
   ParsedDocumentResult, // Import the return type interface
@@ -204,8 +205,14 @@ export class DocumentListener {
     const text = this.document.getText();
 
     try {
-        // Parse the document on every change to check for errors first (invalid start, images in system)
-        const parseResult = parseDocument(text, this.document);
+        // Only the preamble is parsed here. A full parseDocument on every change is
+        // what made a long chat unusable: it costs time proportional to the whole
+        // document (and re-reads every attachment) on every keystroke and every
+        // paste, while the only things this handler decides are whether the
+        // preamble is malformed and whether the document now ends in a trigger
+        // block. Both are cheap. The full parse happens once, at the point of
+        // actually calling an LLM.
+        const parseResult = parseFileConfig(text);
 
         // Update status bar with file-specific provider/config hover info
         try {
@@ -236,19 +243,11 @@ export class DocumentListener {
           }
         }
 
-        // **Handle Image in System Block Error**
-        if (parseResult.hasImageInSystemBlock) {
-          log("Change detected: Image found in system block. Aborting actions.");
-          vscode.window.showErrorMessage(
-            "Images are not allowed in '# %% system' blocks. Please remove image references and try again.",
-          );
-          // Prevent triggering stream/tool execution if there's an error
-          this.removeLastEmptyBlock("assistant"); // Remove trigger block if it exists
-          this.removeLastEmptyBlock("tool_execute"); // Remove trigger block if it exists
-          return;
-        }
+        // Images in a system block are rejected by startStreaming, which parses the
+        // document anyway. Checking here too would mean a full parse per keystroke
+        // to report an error that only matters at send time.
 
-        // If no errors, check for action triggers
+        // Check for action triggers. Both scans read only the tail of the document.
         // Check for empty assistant block first (streaming priority)
         if (hasEmptyAssistantBlock(text)) {
           log(`Change detected: Found empty assistant block, starting streaming`);
@@ -893,6 +892,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       })
       .finally(() => {
         log(`Resume streamer ${messageIndex} promise finally block reached.`);
+        // Same backstop as startStreaming: the turn is over once this settles.
+        streamer.isActive = false;
         try { 
           requestStatusBarUpdate(this.document.uri.fsPath, "resume streaming finished");
         } catch {}
@@ -936,8 +937,13 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       // **Handle Image in System Block Error**
       if (parseResult.hasImageInSystemBlock) {
         log("Error: Image found in system block during startStreaming. Aborting.");
+        // Reported here rather than on every document change: this is the first
+        // point at which the document is parsed, and the first at which the error
+        // actually matters.
+        vscode.window.showErrorMessage(
+          "Images are not allowed in '# %% system' blocks. Please remove image references and try again.",
+        );
         this.removeLastEmptyBlock("assistant"); // Clean up trigger
-        // Error message already shown by handleDocumentChange or checkDocument
         return;
       }
 
@@ -1080,6 +1086,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         .finally(() => {
           log(`Streamer ${messageIndex} promise finally block reached.`);
           fileLock.release();
+          // Nothing restarts a stream from out here: every retry and max-tokens
+          // restart is awaited inside streamResponse, so by the time this promise
+          // settles the turn is over. A streamer still marked active would make
+          // getActiveStreamer report one forever and silently block every later
+          // stream on this document until the extension was reloaded.
+          streamer.isActive = false;
           // Refresh status bar when stream ends
           try { 
             requestStatusBarUpdate(this.document.uri.fsPath, "start streaming finished");

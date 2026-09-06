@@ -18,7 +18,8 @@ import {
   ApiConfig,
   getDefaultSystemPrompt,
 } from "./config";
-import { getBlockInfoAtPosition, parseDocument, blockMarkerPrefix } from "./parser";
+import { getBlockInfoAtPosition, parseFileConfig, blockMarkerPrefix } from "./parser";
+import { flushChatHistoryWrites } from "./utils/fileUtils";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
 import { cancelCurrentToolExecution } from "./tools/toolExecutor";
@@ -52,6 +53,40 @@ export const statusManager = StatusManager.getInstance();
 export function log(message: string): void {
   outputChannel.appendLine(`[${new Date().toISOString()}] ${message}`);
   // Logging happens without showing the output channel automatically
+}
+
+/**
+ * Whether per-item diagnostics are written. Undefined until first read, because
+ * this module is imported before the workspace configuration is worth asking for.
+ */
+let verboseLogging: boolean | undefined;
+
+/** Re-reads the setting. Called when the configuration changes. */
+export function resetVerboseLoggingCache(): void {
+  verboseLogging = undefined;
+}
+
+/**
+ * Logs a message that is produced once per block, file reference or token batch.
+ *
+ * The callback is only invoked when verbose logging is on, which matters because
+ * these call sites build their message by slicing content: a parse of a long chat
+ * emitted well over a thousand of them, and paid for the string work even though
+ * nothing read the result.
+ */
+export function logVerbose(build: () => string): void {
+  if (verboseLogging === undefined) {
+    try {
+      verboseLogging = vscode.workspace
+        .getConfiguration("chatmd")
+        .get<boolean>("verboseLogging", false);
+    } catch {
+      verboseLogging = false;
+    }
+  }
+  if (verboseLogging) {
+    log(build());
+  }
 }
 
 function findGitRoot(startPath: string): string | undefined {
@@ -228,9 +263,11 @@ function updateStreamingStatusBarForActiveFile(): void {
 
   try {
     if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+      // Only the preamble is needed here. Parsing the whole document for this was
+      // the second of the two full parses every document change used to pay for.
       const text = activeEditor.document.getText();
-      const parsed = parseDocument(text, activeEditor.document);
-      const perFileConfigName: string | undefined = (parsed as any).fileConfig?.selectedConfig;
+      const parsed = parseFileConfig(text);
+      const perFileConfigName: string | undefined = parsed.fileConfig?.selectedConfig;
 
       // Update config name in status bar to reflect per-file override or global
       const globalSelected = getSelectedConfigName();
@@ -499,6 +536,9 @@ export function activate(contextParam: vscode.ExtensionContext) {
   // Listen for configuration changes to update MCP servers
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration(async (event) => {
+      if (event.affectsConfiguration("chatmd.verboseLogging")) {
+        resetVerboseLoggingCache();
+      }
       if (event.affectsConfiguration("chatmd.cliPath")) {
         // The lookup is cached, so a changed path would otherwise not take effect
         // until the window was reloaded.
@@ -1721,7 +1761,7 @@ async function checkApiConfiguration(): Promise<void> {
 /**
  * Deactivate the extension
  */
-export function deactivate() {
+export function deactivate(): Promise<void> {
   // Chat file locks live on disk, so anything still held would look like a live
   // holder to the CLI until its heartbeat went stale.
   try {
@@ -1744,4 +1784,9 @@ export function deactivate() {
 
   // Dispose of status manager
   statusManager.dispose();
+
+  // History is written in the background; give queued writes a chance to land.
+  return flushChatHistoryWrites().catch((error) => {
+    log(`Error flushing chat history writes: ${error}`);
+  });
 }

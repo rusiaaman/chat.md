@@ -124,6 +124,9 @@ def find_all_assistant_blocks(text: str) -> list[AssistantBlockPos]:
     search depends on this offset lining up with where tokens actually get
     inserted.
     """
+    # Splitting into lines and matching each one beats a single multiline finditer
+    # here by roughly 5x: Python's engine has no fast path for a multiline "^" and
+    # retries the pattern at every offset in the document.
     blocks: list[AssistantBlockPos] = []
     lines = text.split("\n")
     line_offset = 0

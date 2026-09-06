@@ -11,7 +11,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from chatmd.fileio import file_exists, is_image_file, read_text, resolve_file_path
+# Attachments are inlined afresh on every parse, and a long chat re-attaches the
+# same files turn after turn, so these go through the stat-validated cache.
+from chatmd.fileio import (
+    file_exists,
+    is_image_file,
+    read_text_cached as read_text,
+    resolve_file_path,
+)
 from chatmd.types import Content, ImageContent, TextContent
 
 # Deliberately consumes surrounding whitespace (leading and trailing `\s*`), which

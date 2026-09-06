@@ -18,7 +18,6 @@ import {
 } from "./utils/thinkingBlocks";
 import { putThinkingEntry } from "./utils/thinkingMap";
 import {
-  findAssistantBlocks,
   findAllAssistantBlocks,
   parseAssistantContent,
   blockMarkerPrefix,
@@ -861,6 +860,13 @@ export class StreamingService {
     // Set when a malformed tool call correction turn was appended, which already
     // includes its own user and assistant blocks
     let correctionInserted = false;
+    // Set only once a nested streamResponse call has taken over this streamer and
+    // returned. It is what tells the finally block that someone else already ran
+    // the end-of-turn cleanup, and it must never be inferred from "a max tokens
+    // error happened" -- a restart that throws leaves nobody to finish the turn,
+    // and a streamer left isActive blocks every future stream on this document
+    // until the extension is reloaded.
+    let handedOffToRestart = false;
 
     try {
       log(
@@ -1388,7 +1394,7 @@ export class StreamingService {
               vscode.window.showErrorMessage(
                 `Maximum token retry limit (${maxTokenRetries}) reached. Unable to complete response.`
               );
-              maxTokensReached = false; // Force cleanup in finally block
+              maxTokensReached = false; // Report this one to the user
               streamer.isActive = false;
               break;
             }
@@ -1476,7 +1482,10 @@ export class StreamingService {
                   tokenRetryAttempt, // Pass the token retry count
                   fileConfig // Pass the file configuration
                 );
-                return; // If successful, exit this function
+                // The nested call owns the streamer now and has already run the
+                // finally below on its own way out.
+                handedOffToRestart = true;
+                return;
               } catch (retryError) {
                 log(`❌ Error restarting stream after max tokens: ${retryError}`);
                 // Fall through to general error handling
@@ -1512,10 +1521,13 @@ export class StreamingService {
         maxTokensReached = true; // Ensure we mark this for proper handling
       }
     } finally {
-      // Only mark as inactive if not interrupted due to max tokens
-      if (!maxTokensReached) {
+      // Cleanup belongs to whoever finishes the turn. Only a nested restart that
+      // actually returned has already done it; every other exit -- normal
+      // completion, a server error, a max tokens restart that itself threw --
+      // lands here and must release the streamer.
+      if (!handedOffToRestart) {
         log(
-          `Streaming finished (${maxTokensReached ? "max tokens reached" : "normal completion"}), marking streamer as inactive`,
+          `Streaming finished (${maxTokensReached ? "after a max tokens error" : "normal completion"}), marking streamer as inactive`,
         );
         
         // Add a new user block after the assistant response completes successfully
@@ -1586,7 +1598,7 @@ export class StreamingService {
         }
       } else {
         log(
-          `Stream finished due to max tokens, keeping streamer active for restart`,
+          `Stream handed off to a max tokens restart, which has already cleaned up`,
         );
       }
     }

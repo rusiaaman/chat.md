@@ -11,7 +11,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from chatmd.fileio import file_exists, is_image_file, read_text, resolve_file_path
+# Same reasoning as parser/user_content.py: a tool result that links a file is
+# re-read on every parse of the document it lives in.
+from chatmd.fileio import (
+    file_exists,
+    is_image_file,
+    read_text_cached as read_text,
+    resolve_file_path,
+)
 from chatmd.types import Content, ImageContent, TextContent
 
 _TOOL_RESULT_RE = re.compile(r"<tool_result>(.*?)</tool_result>", re.DOTALL)

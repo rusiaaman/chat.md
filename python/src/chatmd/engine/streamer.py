@@ -498,6 +498,20 @@ class FileStreamer:
         with open(self.path, "w", encoding="utf-8") as handle:
             handle.write(text)
 
+    def _append_at_eof(self, addition: str) -> None:
+        """Append to the file without rewriting what is already there.
+
+        Streaming inserts at the end of the assistant block, which for the block
+        being streamed into is the end of the file, so the usual read-slice-rewrite
+        produced a byte-identical copy of the whole document on every token batch.
+        On a 4M character chat that was ~10ms and 4MB of writes per batch, i.e.
+        hundreds of megabytes over a single turn. Only ever called when the
+        insertion point is exactly the current end of the file, where appending and
+        rewriting give the same result.
+        """
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(addition)
+
     def _target_content_start(self, text: str) -> int | None:
         """Where the block being streamed into begins.
 
@@ -559,7 +573,10 @@ class FileStreamer:
             to_insert = "\n" + rendered
 
         try:
-            self._write(text[:insert_at] + to_insert + text[insert_at:])
+            if insert_at == len(text):
+                self._append_at_eof(to_insert)
+            else:
+                self._write(text[:insert_at] + to_insert + text[insert_at:])
         except OSError as error:
             logger.error("Could not write %s: %s", self.path, error)
             self.state.active = False

@@ -294,6 +294,11 @@
           "default": "auto",
           "description": "Which OpenAI API to use. 'auto' uses the Responses API for OpenAI hosted gpt and o-series models (required to keep encrypted reasoning across turns) and chat completions everywhere else.",
           "scope": "application"
+        },
+        "chatmd.verboseLogging": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log per-block and per-token diagnostics to the chat.md output channel. Off by default: on a long chat these dominate the log and cost measurable time to produce."
         }
       }
     },

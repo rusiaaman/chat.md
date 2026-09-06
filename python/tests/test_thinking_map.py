@@ -247,3 +247,95 @@ def test_put_thinking_entry_recovers_from_corrupt_map(tmp_path: Path) -> None:
     # The corrupt file is clobbered with a fresh, valid map containing just the new entry.
     entries = read_thinking_map(tmp_path)
     assert set(entries.keys()) == {hash_}
+
+
+# --------------------------------------------------------------------------- #
+# Caching: read_thinking_map memoizes on (mtime, size), which is what keeps
+# parsing a long chat from being quadratic. These pin that the cache is actually
+# used and that every way the file can change still invalidates it -- a stale map
+# would send the wrong reasoning payload to the provider.
+# --------------------------------------------------------------------------- #
+
+
+def test_read_thinking_map_reuses_parsed_map_while_file_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    put_thinking_entry(tmp_path, "m", ThinkingPayload(kind="anthropic_signature", signature="s"))
+    read_thinking_map(tmp_path)
+
+    import chatmd.thinking_map as module
+
+    reads = 0
+    original = module.read_text
+
+    def counting_read_text(path: Path) -> str | None:
+        nonlocal reads
+        reads += 1
+        return original(path)
+
+    monkeypatch.setattr(module, "read_text", counting_read_text)
+    for _ in range(50):
+        read_thinking_map(tmp_path)
+
+    assert reads == 0, "unchanged map should be parsed once, not once per lookup"
+
+
+def test_read_thinking_map_picks_up_an_external_rewrite(tmp_path: Path) -> None:
+    """The VS Code extension may write this file while the CLI holds it cached."""
+    first = put_thinking_entry(
+        tmp_path, "m", ThinkingPayload(kind="anthropic_signature", signature="one")
+    )
+    assert set(read_thinking_map(tmp_path)) == {first}
+
+    # Rewritten out from under us, by another process, with a different size.
+    entry = {"kind": "anthropic_signature", "signature": "two", "model": "m"}
+    (tmp_path / MAP_FILE_NAME).write_text(
+        json.dumps({"version": 1, "entries": {"deadbeef": entry}}), encoding="utf-8"
+    )
+
+    assert set(read_thinking_map(tmp_path)) == {"deadbeef"}
+
+
+def test_read_thinking_map_picks_up_a_same_size_rewrite(tmp_path: Path) -> None:
+    """Size alone is not enough to detect a change; mtime has to carry it."""
+    path = tmp_path / MAP_FILE_NAME
+    before = {"version": 1, "entries": {"aaaaaaaa": {"kind": "x", "signature": "1", "model": "m"}}}
+    after = {"version": 1, "entries": {"bbbbbbbb": {"kind": "x", "signature": "1", "model": "m"}}}
+    path.write_text(json.dumps(before), encoding="utf-8")
+    assert set(read_thinking_map(tmp_path)) == {"aaaaaaaa"}
+
+    payload = json.dumps(after)
+    assert len(payload) == len(json.dumps(before)), "test needs a same-size rewrite"
+    stat_before = path.stat()
+    path.write_text(payload, encoding="utf-8")
+    if path.stat().st_mtime_ns == stat_before.st_mtime_ns:
+        pytest.skip("filesystem mtime is too coarse to distinguish these writes")
+
+    assert set(read_thinking_map(tmp_path)) == {"bbbbbbbb"}
+
+
+def test_deleting_the_map_stops_resolving_entries(tmp_path: Path) -> None:
+    hash_ = put_thinking_entry(
+        tmp_path, "m", ThinkingPayload(kind="anthropic_signature", signature="s")
+    )
+    assert get_thinking_entry(tmp_path, hash_) is not None
+
+    (tmp_path / MAP_FILE_NAME).unlink()
+
+    assert get_thinking_entry(tmp_path, hash_) is None
+
+
+def test_put_thinking_entry_after_a_cached_read_keeps_both_entries(tmp_path: Path) -> None:
+    """put must not be fooled by, or corrupt, the mapping the cache handed it."""
+    first = put_thinking_entry(
+        tmp_path, "m", ThinkingPayload(kind="anthropic_signature", signature="one")
+    )
+    read_thinking_map(tmp_path)  # populate the cache
+    second = put_thinking_entry(
+        tmp_path, "m", ThinkingPayload(kind="anthropic_signature", signature="two")
+    )
+
+    assert first != second
+    on_disk = json.loads((tmp_path / MAP_FILE_NAME).read_text(encoding="utf-8"))["entries"]
+    assert set(on_disk) == {first, second}
+    assert set(read_thinking_map(tmp_path)) == {first, second}

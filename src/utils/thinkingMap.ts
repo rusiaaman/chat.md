@@ -54,18 +54,38 @@ export function computeThinkingHash(entry: ThinkingMapEntry): string {
     .substring(0, 8);
 }
 
+/**
+ * Parsed maps keyed by file path, valid only while the file's mtime and size are
+ * unchanged.
+ *
+ * Parsing a document looks a hash up once per thinking section, and the map grows
+ * with the number of thinking sections in the directory, so reading it afresh each
+ * time makes parsing quadratic in the length of the chat. At 4M characters that was
+ * 92% of the parse. Another process (the chat.md CLI driving the same file) may
+ * write the map, hence the stat rather than a plain memo.
+ */
+const mapCache = new Map<
+  string,
+  { mtimeMs: number; size: number; map: ThinkingMapFile }
+>();
+
 export function readThinkingMap(docDir: string): ThinkingMapFile {
   const mapPath = getThinkingMapPath(docDir);
   try {
-    if (!fs.existsSync(mapPath)) {
-      return { version: 1, entries: {} };
+    const stat = fs.statSync(mapPath);
+    const cached = mapCache.get(mapPath);
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      return cached.map;
     }
     const parsed = JSON.parse(fs.readFileSync(mapPath, "utf8"));
     if (parsed && typeof parsed === "object" && parsed.entries) {
-      return { version: 1, entries: parsed.entries };
+      const map: ThinkingMapFile = { version: 1, entries: parsed.entries };
+      mapCache.set(mapPath, { mtimeMs: stat.mtimeMs, size: stat.size, map });
+      return map;
     }
   } catch {
-    // Corrupt or unreadable map: behave as if empty rather than breaking the chat
+    // Missing, corrupt or unreadable map: behave as if empty rather than breaking
+    // the chat. Not cached, so a map that appears later is picked up.
   }
   return { version: 1, entries: {} };
 }
@@ -75,8 +95,14 @@ function writeThinkingMap(docDir: string, map: ThinkingMapFile): boolean {
   try {
     fs.mkdirSync(path.dirname(mapPath), { recursive: true });
     fs.writeFileSync(mapPath, JSON.stringify(map, null, 2), "utf8");
+    // Seed the cache from what was just written rather than invalidating it: the
+    // next read is the streamer parsing the turn it just wrote, and a same-
+    // millisecond mtime would otherwise be indistinguishable from a stale entry.
+    const stat = fs.statSync(mapPath);
+    mapCache.set(mapPath, { mtimeMs: stat.mtimeMs, size: stat.size, map });
     return true;
   } catch {
+    mapCache.delete(mapPath);
     return false;
   }
 }
@@ -99,8 +125,13 @@ export function putThinkingEntry(
 
   const map = readThinkingMap(docDir);
   if (!map.entries[hash]) {
-    map.entries[hash] = entry;
-    writeThinkingMap(docDir, map);
+    // A fresh object rather than a mutation: readThinkingMap hands back the cached
+    // map, and mutating it in place would leave the cache holding an entry that is
+    // not in the file if the write below fails.
+    writeThinkingMap(docDir, {
+      version: 1,
+      entries: { ...map.entries, [hash]: entry },
+    });
   }
   return hash;
 }

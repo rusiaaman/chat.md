@@ -1,5 +1,5 @@
 import { MessageParam, Content, Role, ThinkingContent } from "./types";
-import { log } from "./extension";
+import { log, logVerbose } from "./extension";
 import * as vscode from "vscode"; // Ensure vscode is imported
 import * as path from "path";
 import {
@@ -7,7 +7,9 @@ import {
   resolveFilePath,
   // readFileAsText, // No longer reading file content directly here for system block check
   fileExists,
-  readFileAsText, // Keep readFileAsText as it's used in parseUserContent
+  // Attachments are inlined afresh on every parse, and a long chat re-attaches the
+  // same files turn after turn, so these go through the stat-validated cache.
+  readFileAsTextCached as readFileAsText,
 } from "./utils/fileUtils";
 import {
   splitAssistantSections,
@@ -139,6 +141,122 @@ export function parseSettingsBlock(settingsText: string): Record<string, any> | 
 }
 
 /**
+ * The configuration preamble a document carries before its first block marker.
+ *
+ * Split out from parseDocument because reading it is cheap and reading the rest
+ * is not: the listener needs the preamble on every document change (to know which
+ * API config the file selects, and to report a malformed preamble) but only needs
+ * the message history when it is about to call an LLM. Parsing the whole document
+ * for this was the second of the two full parses every keystroke used to pay for.
+ */
+export interface ParsedFileConfig {
+  fileConfig?: Record<string, any>;
+  hasConfigurationBlock: boolean;
+}
+
+/** Matches the first block marker line; everything before it is the preamble. */
+const FIRST_BLOCK_MARKER_REGEX =
+  /^# %% (user|assistant|system|tool_execute|settings)[ \t]*$/im;
+
+// selectedConfig and the token/reasoning parameters are allowed per-file. The
+// four connection keys (type, apiKey, base_url, model_name) must come from the
+// named config in global settings, and apiConfigs belongs there too.
+const ALLOWED_CONFIG_KEYS = new Set([
+  "selectedConfig",
+  "reasoningEffort",
+  "maxTokens",
+  "maxThinkingTokens",
+  "openaiApi",
+]);
+const FORBIDDEN_CONFIG_KEYS = new Set([
+  "type",
+  "apiKey",
+  "base_url",
+  "model_name",
+  "apiConfigs",
+]);
+
+/**
+ * Parses the '.env'-like preamble text (everything before the first marker).
+ *
+ * Throws INVALID_START_CONTENT for prose outside a block and
+ * FORBIDDEN_INLINE_CONFIG_KEY:<key> for a key that only belongs in global
+ * settings — both are surfaced to the user by the listener.
+ */
+function parsePreamble(preamble: string): ParsedFileConfig {
+  if (preamble.trim() === "") {
+    return { hasConfigurationBlock: false };
+  }
+
+  const cfg: Record<string, any> = {};
+  const lines = preamble.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;                 // allow empty lines
+    if (trimmed.startsWith("#")) continue;  // allow comments
+    const m = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+    if (!m) {
+      // Non key=value content is invalid before first block
+      log("Invalid line in configuration preamble: " + trimmed);
+      throw new Error("INVALID_START_CONTENT");
+    }
+    const key = m[1];
+    let value = m[2].trim();
+
+    if (FORBIDDEN_CONFIG_KEYS.has(key)) {
+      const errorMsg = `Configuration key '${key}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`;
+      log(errorMsg);
+      throw new Error(`FORBIDDEN_INLINE_CONFIG_KEY: ${key}`);
+    }
+
+    // Strip inline comment for unquoted values
+    if (!/^["']/.test(value)) {
+      const hashIdx = value.indexOf("#");
+      if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
+    }
+    // Remove surrounding quotes if present
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    if (ALLOWED_CONFIG_KEYS.has(key)) {
+      // Parse numeric values for token configurations
+      if (key === "maxTokens" || key === "maxThinkingTokens") {
+        const numValue = parseInt(value, 10);
+        if (!isNaN(numValue)) {
+          cfg[key] = numValue;
+        } else {
+          log(`Invalid numeric value for ${key}: ${value}, ignoring`);
+        }
+      } else {
+        cfg[key] = value;
+      }
+    } else {
+      log(`Ignoring unsupported config key '${key}' in configuration block. Only ${Array.from(ALLOWED_CONFIG_KEYS).join(', ')} are supported.`);
+    }
+  }
+
+  if (Object.keys(cfg).length === 0) {
+    return { hasConfigurationBlock: false };
+  }
+  log(`Parsed configuration block with keys: ${Object.keys(cfg).join(", ")}`);
+  return { fileConfig: cfg, hasConfigurationBlock: true };
+}
+
+/**
+ * Reads just the configuration preamble of a document.
+ *
+ * Cost is proportional to the preamble, not the document: a 4M character chat
+ * costs the same as an empty one. Use this anywhere the message history is not
+ * actually needed.
+ */
+export function parseFileConfig(text: string): ParsedFileConfig {
+  const match = FIRST_BLOCK_MARKER_REGEX.exec(text);
+  // No marker at all means the whole document is preamble, which is how a
+  // malformed first marker gets reported rather than silently sending nothing.
+  return parsePreamble(match ? text.slice(0, match.index) : text);
+}
+
+/**
  * Parses a .chat.md file into structured messages and extracts system prompts.
  * Returns an object containing messages, system prompt, and image detection flag.
  *
@@ -160,71 +278,10 @@ export function parseDocument(
   // Debug logging
   log(`Split document into ${blocks.length} blocks`);
 
-  // Parse optional configuration preamble ('.env'-like) before first marker
-  let fileConfig: Record<string, any> | undefined = undefined;
-  let hasConfigurationBlock = false;
-  if (blocks.length > 0 && blocks[0].trim() !== "") {
-    const preamble = blocks[0];
-    const cfg: Record<string, any> = {};
-    
-    // selectedConfig and the three token/reasoning parameters are allowed in per-file configuration
-    // The four keys (type, apiKey, base_url, model_name) should come from the named config in global settings
-    // apiConfigs should also NOT be inline - it belongs in global settings only
-    const allowedKeys = new Set(["selectedConfig", "reasoningEffort", "maxTokens", "maxThinkingTokens", "openaiApi"]);
-    const explicitlyForbiddenKeys = new Set(["type", "apiKey", "base_url", "model_name", "apiConfigs"]);
-    
-    const lines = preamble.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;                 // allow empty lines
-      if (trimmed.startsWith("#")) continue;  // allow comments
-      const m = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
-      if (!m) {
-        // Non key=value content is invalid before first block
-        log("Invalid line in configuration preamble: " + trimmed);
-        throw new Error("INVALID_START_CONTENT");
-      }
-      const key = m[1];
-      let value = m[2].trim();
-      
-      // Check for explicitly forbidden keys and give clear error
-      if (explicitlyForbiddenKeys.has(key)) {
-        const errorMsg = `Configuration key '${key}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`;
-        log(errorMsg);
-        throw new Error(`FORBIDDEN_INLINE_CONFIG_KEY: ${key}`);
-      }
-      
-      // Strip inline comment for unquoted values
-      if (!/^["']/.test(value)) {
-        const hashIdx = value.indexOf("#");
-        if (hashIdx >= 0) value = value.slice(0, hashIdx).trim();
-      }
-      // Remove surrounding quotes if present
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
-      if (allowedKeys.has(key)) {
-        // Parse numeric values for token configurations
-        if (key === "maxTokens" || key === "maxThinkingTokens") {
-          const numValue = parseInt(value, 10);
-          if (!isNaN(numValue)) {
-            cfg[key] = numValue;
-          } else {
-            log(`Invalid numeric value for ${key}: ${value}, ignoring`);
-          }
-        } else {
-          cfg[key] = value;
-        }
-      } else {
-        log(`Ignoring unsupported config key '${key}' in configuration block. Only ${Array.from(allowedKeys).join(', ')} are supported.`);
-      }
-    }
-    if (Object.keys(cfg).length > 0) {
-      fileConfig = cfg;
-      hasConfigurationBlock = true;
-      log(`Parsed configuration block with keys: ${Object.keys(cfg).join(", ")}`);
-    }
-  }
+  // Parse optional configuration preamble ('.env'-like) before first marker.
+  // Shared with parseFileConfig so the listener's cheap path reports exactly the
+  // same errors this one does.
+  const { fileConfig, hasConfigurationBlock } = parsePreamble(blocks[0] ?? "");
 
   for (let i = 0; i < Math.min(blocks.length, 10); i++) {
     // Minimal logging for brevity
@@ -272,7 +329,7 @@ export function parseDocument(
     if (role === "settings") {
       if (content) {
         settingsBlock = content;
-        log(`Found settings block: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
+        logVerbose(() => `Found settings block: "${content.substring(0, 50)}${content.length > 50 ? '...' : ''}"`);
       }
     }
     // Detect system block
@@ -282,7 +339,7 @@ export function parseDocument(
         // Check for images within this system block only if we haven't found one yet
         if (!hasImageInSystemBlock && document && containsImageReference(content, document)) {
           hasImageInSystemBlock = true;
-          log(`Image reference detected in system block starting with: "${content.substring(0, 50)}..."`);
+          logVerbose(() => `Image reference detected in system block starting with: "${content.substring(0, 50)}..."`);
         }
       }
     }
@@ -311,7 +368,7 @@ export function parseDocument(
           content: parsedContent,
         });
       } else {
-        log("Skipping user block as it resulted in empty content after parsing.");
+        logVerbose(() => "Skipping user block as it resulted in empty content after parsing.");
       }
     }
     // Detect assistant block
@@ -336,10 +393,10 @@ export function parseDocument(
              content: assistantContent,
            });
          } else {
-           log("Skipping assistant block that parsed to empty content.");
+           logVerbose(() => "Skipping assistant block that parsed to empty content.");
          }
        } else {
-         log("Skipping empty assistant block (non-triggering).");
+         logVerbose(() => "Skipping empty assistant block (non-triggering).");
        }
     }
   }
@@ -413,8 +470,9 @@ export function parseAssistantContent(
         const { model: _entryModel, createdAt: _createdAt, ...payload } = entry;
         thinking.payload = payload;
       } else {
-        log(
-          `No thinking_map entry for hash ${parsed.hash}, treating thinking as display only`,
+        logVerbose(
+          () =>
+            `No thinking_map entry for hash ${parsed.hash}, treating thinking as display only`,
         );
       }
     }
@@ -590,7 +648,7 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
     
     // Check for MCP prompt links first
     if (linkText.startsWith('MCP Prompt:')) {
-      log(`Found MCP prompt link: ${linkText} -> ${filePath}`);
+      logVerbose(() => `Found MCP prompt link: ${linkText} -> ${filePath}`);
       fileRefs.push({
         path: filePath,
         isImage: false, // MCP prompts are text
@@ -659,11 +717,11 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
             type: "text",
             value: fileContent || `[Error: Could not read MCP prompt file: ${ref.path}]`
           });
-          log(`Added MCP prompt content from: ${ref.path} (resolved: ${resolvedPath})`);
+          logVerbose(() => `Added MCP prompt content from: ${ref.path} (resolved: ${resolvedPath})`);
         } else if (ref.isImage) {
           // For images, add an image block using the *original* path provided by the user
           content.push({ type: "image", path: ref.path });
-          log(`Added image reference: ${ref.path} (resolved: ${resolvedPath})`);
+          logVerbose(() => `Added image reference: ${ref.path} (resolved: ${resolvedPath})`);
         } else {
           // For text files, read content and add a text block
           const fileContent = readFileAsText(resolvedPath);
@@ -672,12 +730,12 @@ function parseUserContent(text: string, document?: vscode.TextDocument): Content
             type: "text",
             value: `Attached file: ${ref.path}\n\`\`\`\n${fileContent}\n\`\`\``,
           });
-          log(`Added text file content from: ${ref.path} (resolved: ${resolvedPath})`);
+          logVerbose(() => `Added text file content from: ${ref.path} (resolved: ${resolvedPath})`);
         }
       } else {
         // File not found, add placeholder text
         content.push({ type: "text", value: `[File not found: ${ref.path}]` });
-        log(`File reference not found: ${ref.path} (resolved: ${resolvedPath})`);
+        logVerbose(() => `File reference not found: ${ref.path} (resolved: ${resolvedPath})`);
       }
     } catch (error) {
       // Error during path resolution or file reading
@@ -760,31 +818,6 @@ export function hasEmptyToolExecuteBlock(text: string): boolean {
 }
 
 /**
- * Gets all assistant block positions in a document
- * Used to find where to place streamed content
- */
-export function findAssistantBlocks(
-  text: string,
-): { start: number; end: number }[] {
-  const blocks: { start: number; end: number }[] = [];
-  const regex = /^# %% assistant\s*$/im;
-
-  let match;
-  const lines = text.split("\n");
-
-  for (let i = 0; i < lines.length; i++) {
-    if (regex.test(lines[i])) {
-      // Found an assistant block
-      const start = lines.slice(0, i).join("\n").length + (i > 0 ? 1 : 0); // Add newline except for first line
-      const end = start + lines[i].length;
-      blocks.push({ start, end });
-    }
-  }
-
-  return blocks;
-}
-
-/**
  * Process tool result content - extracting images and replacing markdown links with file content when appropriate
  * Returns Content[] to properly handle both text and images
  */
@@ -830,7 +863,7 @@ function processToolResultContent(
 
       // Add the image
       contentArray.push({ type: "image", path: imagePath });
-      log(`Extracted image from tool result: ${imagePath}`);
+      logVerbose(() => `Extracted image from tool result: ${imagePath}`);
 
       lastIndex = matchIndex + fullMatch.length;
     }
@@ -875,7 +908,7 @@ function processToolResultContent(
   }
 
   if (isImageFile(resolvedPath)) {
-    log(`Found tool result image link to local file: ${linkTarget}`);
+    logVerbose(() => `Found tool result image link to local file: ${linkTarget}`);
     return [{ type: "image", path: linkTarget }];
   }
 
@@ -884,7 +917,7 @@ function processToolResultContent(
     : linkText.startsWith("MCP Prompt:")
       ? "MCP prompt"
       : "embedded resource";
-  log(`Found a ${linkType} with single markdown link to local file: ${linkTarget}`);
+  logVerbose(() => `Found a ${linkType} with single markdown link to local file: ${linkTarget}`);
 
   const fileContent = readFileAsText(resolvedPath);
   if (!fileContent) {
@@ -892,7 +925,7 @@ function processToolResultContent(
     return [{ type: "text", value: content }];
   }
 
-  log(`Successfully loaded content from ${linkType} file: ${linkTarget}`);
+  logVerbose(() => `Successfully loaded content from ${linkType} file: ${linkTarget}`);
 
   // Return the file content as text
   const replacedContent = content.replace(

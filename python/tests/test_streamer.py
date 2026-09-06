@@ -576,3 +576,58 @@ async def test_a_marker_on_its_own_line_in_a_later_batch_is_still_escaped(
     text = chat.read_text()
     assert "intro: still here" in text
     assert "# %%% user" in text
+
+
+# --------------------------------------------------------------------------- #
+# Appending without rewriting the document
+#
+# Streaming inserts at the end of the assistant block, which is normally the end
+# of the file, so the naive read-slice-rewrite produced a byte-identical copy of
+# the whole document on every token batch -- hundreds of megabytes of writes over
+# one turn on a long chat. The fast path must be indistinguishable in its result.
+# --------------------------------------------------------------------------- #
+
+
+async def test_appending_at_eof_leaves_the_rest_of_the_document_untouched(
+    tmp_path: Path,
+) -> None:
+    chat = make_chat(
+        tmp_path / "a.chat.md",
+        "# %% user\nOne\n\n# %% assistant\nEarlier reply\n\n# %% user\nTwo\n\n# %% assistant\n",
+    )
+    prefix = chat.read_text(encoding="utf-8")
+    client = FakeClient([TextDelta("Second "), TextDelta("reply")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text(encoding="utf-8")
+    assert text.startswith(prefix), "everything before the insertion point must be byte-identical"
+    assert "Second reply" in text
+
+
+async def test_a_trailing_blank_line_after_the_marker_still_streams(tmp_path: Path) -> None:
+    """The insertion point is not EOF here, so the slower rewrite path has to run.
+
+    An empty assistant block is empty up to the next assistant marker, so trailing
+    whitespace after the marker is the ordinary way content ends up sitting after
+    the insertion point -- a file simply saved with a trailing newline.
+    """
+    chat = make_chat(tmp_path / "a.chat.md", "# %% user\nHi\n\n# %% assistant\n\n")
+    client = FakeClient([TextDelta("Reply "), TextDelta("here")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text(encoding="utf-8")
+    assert "# %% assistant\nReply here" in text
+
+
+async def test_multibyte_text_appends_at_the_right_offset(tmp_path: Path) -> None:
+    """Offsets are in characters; appending must not confuse them with bytes."""
+    chat = make_chat(tmp_path / "a.chat.md", "# %% user\nHi ünïcodé ✨\n\n# %% assistant\n")
+    client = FakeClient([TextDelta("héllo "), TextDelta("wörld ✨"), TextDelta(" 日本語")])
+
+    await streamer(chat, client).run(one_message(), "sys")
+
+    text = chat.read_text(encoding="utf-8")
+    assert "# %% assistant\nhéllo wörld ✨ 日本語" in text
+    assert "Hi ünïcodé ✨" in text

@@ -46,6 +46,77 @@ export function readFileAsText(filePath: string): string | undefined {
   }
 }
 
+/**
+ * Attachment contents keyed by path, valid only while mtime and size are unchanged.
+ *
+ * Parsing a document inlines every attached file, and a long chat re-attaches the
+ * same handful of files in turn after turn, so a parse of a 4M character chat was
+ * doing thousands of reads of a few distinct files. A stat is two orders of
+ * magnitude cheaper than the read and still notices an edit from outside VS Code.
+ */
+const textCache = new Map<
+  string,
+  { mtimeMs: number; size: number; content: string }
+>();
+
+/** Total cached bytes, so a chat full of large attachments cannot grow unbounded. */
+let textCacheBytes = 0;
+const TEXT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
+
+/** A file larger than this is never cached: one of them would evict everything else. */
+const TEXT_CACHE_MAX_FILE_BYTES = 4 * 1024 * 1024;
+
+function evictOldestUntilUnder(limit: number): void {
+  // Map iterates in insertion order, and a cache hit re-inserts, so the front is
+  // the least recently used.
+  for (const [key, entry] of textCache) {
+    if (textCacheBytes <= limit) {
+      return;
+    }
+    textCache.delete(key);
+    textCacheBytes -= entry.content.length;
+  }
+}
+
+/**
+ * Reads a text file, reusing the last read when the file has not changed.
+ *
+ * Use this for content that is read repeatedly and only displayed or sent onward.
+ * Anything that must observe a write it just made should call readFileAsText.
+ */
+export function readFileAsTextCached(filePath: string): string | undefined {
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    return readFileAsText(filePath);
+  }
+
+  const cached = textCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    // Re-insert so this entry moves to the back of the LRU order.
+    textCache.delete(filePath);
+    textCache.set(filePath, cached);
+    return cached.content;
+  }
+
+  const content = readFileAsText(filePath);
+  if (content === undefined) {
+    return undefined;
+  }
+
+  if (cached) {
+    textCache.delete(filePath);
+    textCacheBytes -= cached.content.length;
+  }
+  if (content.length <= TEXT_CACHE_MAX_FILE_BYTES) {
+    textCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, content });
+    textCacheBytes += content.length;
+    evictOldestUntilUnder(TEXT_CACHE_MAX_BYTES);
+  }
+  return content;
+}
+
 export function isImageFile(filePath: string): boolean {
   return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(
     path.extname(filePath).toLowerCase(),
@@ -101,6 +172,39 @@ function createHistoryFileName(document: vscode.TextDocument): string {
   return `${baseName}-${timestamp}-${Math.random().toString(36).slice(2, 8)}.json`;
 }
 
+/**
+ * In-flight write for each history file, so writes to one file stay ordered.
+ *
+ * History is diagnostics: nothing in the chat waits on it, but a later update
+ * (token usage, appended text) has to land on top of the save that preceded it.
+ * A per-path promise chain gives that ordering without making any caller async.
+ */
+const historyWrites = new Map<string, Promise<void>>();
+
+function queueHistoryWrite(filePath: string, work: () => Promise<void>): void {
+  const previous = historyWrites.get(filePath) ?? Promise.resolve();
+  const next = previous
+    // A macrotask before the work: the payload of a long chat is tens of
+    // megabytes, and serializing it is the one part that still blocks. Yielding
+    // first keeps it from landing between building an API request and sending it.
+    .then(() => new Promise<void>((resolve) => setImmediate(resolve)))
+    .then(work)
+    .catch((error) => {
+      console.error(`Error writing chat history ${filePath}:`, error);
+    });
+  historyWrites.set(filePath, next);
+  void next.then(() => {
+    if (historyWrites.get(filePath) === next) {
+      historyWrites.delete(filePath);
+    }
+  });
+}
+
+/** Waits for every queued history write. Called on deactivate. */
+export async function flushChatHistoryWrites(): Promise<void> {
+  await Promise.all(Array.from(historyWrites.values()));
+}
+
 export function saveChatHistory(
   document: vscode.TextDocument,
   messages: readonly MessageParam[],
@@ -123,7 +227,11 @@ export function saveChatHistory(
         ...metadata,
       },
     };
-    writeFile(filePath, JSON.stringify(history, null, 2) + "\n");
+    // The path is returned now and the bytes are written later. Callers only ever
+    // use the path to address subsequent updates, which queue behind this write.
+    queueHistoryWrite(filePath, () =>
+      fs.promises.writeFile(filePath, JSON.stringify(history, null, 2) + "\n", "utf8"),
+    );
     return filePath;
   } catch (error) {
     console.error("Error saving chat history:", error);
@@ -157,14 +265,24 @@ export function updateChatHistory(
   historyFilePath: string,
   update: (history: ChatHistoryFile) => void,
 ): void {
-  try {
-    if (!historyFilePath || !fileExists(historyFilePath)) return;
-    const parsed = JSON.parse(readFileAsText(historyFilePath) || "") as ChatHistoryFile;
-    update(parsed);
-    writeFile(historyFilePath, JSON.stringify(parsed, null, 2) + "\n");
-  } catch (error) {
-    console.error("Error updating chat history:", error);
-  }
+  if (!historyFilePath) return;
+  // Queued rather than done here, so it runs after the save that created the file.
+  // The old version tested fileExists and gave up if the file was not there yet,
+  // which is exactly what an in-flight save looks like.
+  queueHistoryWrite(historyFilePath, async () => {
+    try {
+      const raw = await fs.promises.readFile(historyFilePath, "utf8");
+      const parsed = JSON.parse(raw) as ChatHistoryFile;
+      update(parsed);
+      await fs.promises.writeFile(
+        historyFilePath,
+        JSON.stringify(parsed, null, 2) + "\n",
+        "utf8",
+      );
+    } catch (error) {
+      console.error("Error updating chat history:", error);
+    }
+  });
 }
 
 export function updateChatHistoryUsage(
