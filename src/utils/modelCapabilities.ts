@@ -3,10 +3,10 @@
  * can be tested outside VS Code.
  */
 
-export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high";
+export type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "max";
 
 /** Anthropic effort levels accepted by adaptive thinking */
-export type AdaptiveEffort = "low" | "medium" | "high";
+export type AdaptiveEffort = "low" | "medium" | "high" | "max";
 
 interface ClaudeVersion {
   family: string;
@@ -98,6 +98,8 @@ export function toAdaptiveEffort(effort: ReasoningEffort): AdaptiveEffort {
       return "low";
     case "medium":
       return "medium";
+    case "max":
+      return "max";
     default:
       return "high";
   }

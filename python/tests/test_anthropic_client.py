@@ -92,6 +92,17 @@ THINKING_CASES = [
         expected_beta=False,
     ),
     ThinkingCase(
+        label="adaptive_effort_max",
+        model_name="claude-opus-4-6",
+        reasoning_effort="max",
+        max_tokens=8000,
+        max_thinking_tokens=DEFAULT_MAX_THINKING_TOKENS,
+        expected_thinking={"type": "adaptive"},
+        expected_output_config={"effort": "max"},
+        expected_max_tokens=8000,
+        expected_beta=False,
+    ),
+    ThinkingCase(
         label="adaptive_4_7_plus_summarized_display",
         model_name="claude-opus-4-7",
         reasoning_effort="high",

@@ -15,7 +15,7 @@ from urllib.parse import urlparse
 from ..types import OpenaiApiStyle, ReasoningEffort
 
 #: Anthropic effort levels accepted by adaptive thinking.
-AdaptiveEffort = Literal["low", "medium", "high"]
+AdaptiveEffort = Literal["low", "medium", "high", "max"]
 
 _CLAUDE_VERSION_RE = re.compile(
     r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)(?:[-.](\d+))?", re.IGNORECASE
@@ -95,6 +95,8 @@ def to_adaptive_effort(effort: ReasoningEffort) -> AdaptiveEffort:
         return "low"
     if effort == "medium":
         return "medium"
+    if effort == "max":
+        return "max"
     return "high"
 
 
@@ -126,6 +128,7 @@ _EFFORT_RATIOS: dict[ReasoningEffort, float] = {
     "low": 0.2,
     "medium": 0.5,
     "high": 0.8,
+    "max": 1.0,
 }
 
 

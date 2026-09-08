@@ -1325,7 +1325,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         title: "Advanced Configuration",
       });
 
-      let reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | undefined;
+      let reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "max" | undefined;
       let maxTokens: number | undefined;
       let maxThinkingTokens: number | undefined;
 
@@ -1338,6 +1338,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
           { label: "Low", value: "low" as const },
           { label: "Medium", value: "medium" as const },
           { label: "High", value: "high" as const },
+          { label: "Max", value: "max" as const },
         ];
 
         const selectedEffort = await vscode.window.showQuickPick(effortOptions, {

@@ -13,7 +13,7 @@ export interface ApiConfig {
   apiKey: string;
   model_name?: string;
   base_url?: string;
-  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high";
+  reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "max";
   maxTokens?: number;
   maxThinkingTokens?: number;
   /**
@@ -465,9 +465,9 @@ export function getMaxThinkingTokens(configName?: string, fileConfig?: Record<st
  * Gets the reasoning effort setting
  * @param configName Optional specific config name to check first
  * @param fileConfig Optional file-specific configuration
- * @returns The reasoning effort level (minimal, low, medium, high) or undefined if not set
+ * @returns The reasoning effort level (minimal, low, medium, high, max) or undefined if not set
  */
-export function getReasoningEffort(configName?: string, fileConfig?: Record<string, any>): "none" | "minimal" | "low" | "medium" | "high" | undefined {
+export function getReasoningEffort(configName?: string, fileConfig?: Record<string, any>): "none" | "minimal" | "low" | "medium" | "high" | "max" | undefined {
   // 1. First check file-specific config (highest priority)
   if (fileConfig?.reasoningEffort !== undefined) {
     log(`Using reasoningEffort from file config: ${fileConfig.reasoningEffort}`);
@@ -485,7 +485,7 @@ export function getReasoningEffort(configName?: string, fileConfig?: Record<stri
 
   // 3. Finally check global config
   const config = vscode.workspace.getConfiguration("chatmd");
-  const globalValue = config.get<"none" | "minimal" | "low" | "medium" | "high">("reasoningEffort");
+  const globalValue = config.get<"none" | "minimal" | "low" | "medium" | "high" | "max">("reasoningEffort");
   log(`Using reasoningEffort from global config: ${globalValue}`);
   return globalValue;
 }
@@ -499,7 +499,7 @@ export function getReasoningEffort(configName?: string, fileConfig?: Record<stri
  */
 export function calculateThinkingTokensFromEffort(
   maxTokens: number, 
-  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high"
+  reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "max"
 ): number {
   // Use similar ratios as OpenRouter's approach
   const effortRatios = {
@@ -507,7 +507,8 @@ export function calculateThinkingTokensFromEffort(
     minimal: 0.1,  // Very minimal thinking
     low: 0.2,      // Low thinking
     medium: 0.5,   // Medium thinking (default)
-    high: 0.8      // High thinking
+    high: 0.8,      // High thinking
+    max: 1.0        // Maximum thinking
   };
   
   const ratio = effortRatios[reasoningEffort];

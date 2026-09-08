@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 Role = Literal["user", "assistant"]
 BlockType = Literal["user", "assistant", "system", "tool_execute", "settings"]
-ReasoningEffort = Literal["none", "minimal", "low", "medium", "high"]
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "max"]
 OpenaiApiStyle = Literal["auto", "chat", "responses"]
 ProviderType = Literal["anthropic", "openai"]
 ApiStyle = Literal["anthropic", "openai_chat", "openai_responses"]

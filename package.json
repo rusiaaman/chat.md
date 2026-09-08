@@ -149,7 +149,8 @@
                   "minimal",
                   "low",
                   "medium",
-                  "high"
+                  "high",
+                  "max"
                 ],
                 "description": "Reasoning effort level for this provider configuration (overrides global setting)"
               },
@@ -268,9 +269,10 @@
             "minimal",
             "low",
             "medium",
-            "high"
+            "high",
+            "max"
           ],
-          "description": "Reasoning effort level for LLM responses. For OpenAI: controls reasoning_effort parameter. For Anthropic: used to calculate thinking token budget if maxThinkingTokens is not set.",
+          "description": "Reasoning effort level for LLM responses. For OpenAI: controls reasoning_effort parameter. For Anthropic: controls adaptive effort or calculates the thinking token budget when maxThinkingTokens is not set.",
           "scope": "application"
         },
         "chatmd.cliPath": {

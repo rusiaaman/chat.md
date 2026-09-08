@@ -4,3 +4,7 @@ dist
 *.vsix
 .DS_Store
 .cmd_history
+
+# chat.md generated files
+.cmd_history/
+cmdassets/

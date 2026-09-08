@@ -70,7 +70,7 @@ def test_build_request_omits_reasoning_effort_when_not_configured() -> None:
     assert "reasoning_effort" not in kwargs
 
 
-@pytest.mark.parametrize("effort", ["low", "medium", "high", "minimal", "none"])
+@pytest.mark.parametrize("effort", ["low", "medium", "high", "max", "minimal", "none"])
 def test_build_request_includes_reasoning_effort_when_configured(effort: Any) -> None:
     # "none" is included too: the TS client's `if (reasoningEffort)` truthiness
     # check treats the literal string "none" the same as any other configured value.

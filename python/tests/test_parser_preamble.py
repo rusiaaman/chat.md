@@ -33,10 +33,11 @@ def test_a_single_key_value_pair_is_collected() -> None:
     assert parse_preamble("selectedConfig=work\n") == ({"selectedConfig": "work"}, True)
 
 
-def test_multiple_key_value_pairs_are_all_collected() -> None:
-    cfg, has_block = parse_preamble("selectedConfig=work\nreasoningEffort=high\n")
-    assert cfg == {"selectedConfig": "work", "reasoningEffort": "high"}
-    assert has_block is True
+def test_max_reasoning_effort_is_supported_in_chat_file_config() -> None:
+    assert parse_preamble("reasoningEffort=max\n") == (
+        {"reasoningEffort": "max"},
+        True,
+    )
 
 
 def test_comments_and_blanks_interleaved_with_real_keys() -> None:

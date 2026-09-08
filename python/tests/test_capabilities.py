@@ -145,6 +145,7 @@ def test_missing_minor_part_means_zero() -> None:
         ("none", "low"),
         ("medium", "medium"),
         ("high", "high"),
+        ("max", "max"),
     ],
 )
 def test_to_adaptive_effort(effort: ReasoningEffort, expected: str) -> None:
@@ -182,6 +183,7 @@ def test_is_openai_base_url(base_url: str | None, expected: bool) -> None:
         (8000, "low", 1600),
         (8000, "medium", 4000),
         (8000, "high", 6400),
+        (8000, "max", 8000),
         (100_000, "high", 32000),  # clamped at the maximum
         (100_000, "none", 1024),  # minimum still wins even with a huge budget
     ],
