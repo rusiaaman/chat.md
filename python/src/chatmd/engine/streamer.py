@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from ..assets import assets_dir
-from ..markers import could_become_marker_line
+from ..markers import could_become_marker_line, escape_markers, unescape_markers
 from ..parser.assistant_content import parse_assistant_content
 from ..parser.blocks import find_all_assistant_blocks
 from ..providers.base import LlmClient, MaxTokensError, RetryableError
@@ -250,7 +250,13 @@ class FileStreamer:
                     break
 
                 buffering = True
-                buffer_text = current[end_index:]
+                # The buffer holds raw model text, including a partial marker
+                # withheld before rendering. Escape complete calls only on write.
+                buffer_text = unescape_markers(current[end_index:]) + (
+                    "" if self.state.pending_is_thinking else self.state.pending_text
+                )
+                self.state.pending_text = ""
+                self.state.pending_is_thinking = False
                 result = await self._process_buffered_tool_calls(buffer_text)
                 buffer_text = result.remaining
                 tool_calls_written = self._count_tool_calls()
@@ -377,7 +383,7 @@ class FileStreamer:
 
             call_text = buffer[: completed.end_index]
             logger.debug("Emitting parallel tool call (%d chars)", len(call_text))
-            if not self._append(call_text):
+            if not self._append(escape_markers(call_text, self.state.written.endswith("\n"))):
                 self.state.active = False
                 return _BufferResult(remaining="", stop=True, failed=True)
             buffer = buffer[completed.end_index :]

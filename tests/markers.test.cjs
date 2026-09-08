@@ -3,7 +3,7 @@ const { readFileSync } = require("node:fs");
 const path = require("node:path");
 const Module = require("node:module");
 const { test } = require("node:test");
-const { buildSync } = require("esbuild");
+const { buildSync, transformSync } = require("esbuild");
 
 function loadHelpers(relativePath) {
   const filename = path.resolve(__dirname, "..", relativePath);
@@ -90,4 +90,40 @@ test("batch accounting starts at the first tool result", () => {
   const match = blockContentRegex("assistant").exec(text.slice(0, current));
   const end = match.index + match[0].length;
   assert.equal(text.slice(end, current), '# %% tool_execute\nresult\n');
+});
+
+test("the extension writes buffered calls with exactly one layer of escaping", async () => {
+  // Load the real service with VS Code and provider dependencies stubbed; only
+  // document writes are replaced, leaving buffered-call processing intact.
+  const filename = path.resolve(__dirname, "../src/streamer.ts");
+  const loaded = new Module(filename, module);
+  loaded.require = (specifier) => {
+    if (specifier === "./utils/markerEscape") return loadHelpers("src/utils/markerEscape.ts");
+    if (specifier === "./tools/toolCallParser") return loadHelpers("src/tools/toolCallParser.ts");
+    if (specifier === "./extension") return { log() {} };
+    return {};
+  };
+  loaded._compile(transformSync(readFileSync(filename, "utf8"), {
+    loader: "ts", format: "cjs",
+  }).code, filename);
+  const service = Object.create(loaded.exports.StreamingService.prototype);
+  service.updateDocumentWithTokens = async (state, tokens) => {
+    state.tokens.push(...tokens);
+    return true;
+  };
+  const state = { tokens: ['first call'], isActive: true };
+  const wanted = '# %% user\nhello\n# %% assistant\n## %% thinking\nreason\n# %%% user';
+  const call = '\n<cmd:tool_call>\n<cmd:tool_name>write</cmd:tool_name>\n'
+    + '<cmd:param name="content">' + wanted + '</cmd:param>\n</cmd:tool_call>';
+  const split = call.indexOf('# %% assistant') + 6;
+  const pending = await service.processBufferedToolCalls(state, call.slice(0, split));
+  assert.equal(state.tokens.length, 1);
+  const result = await service.processBufferedToolCalls(state,
+    pending.remainingBuffer + call.slice(split) + call + '<cmd:wait-tool-result/>');
+  assert.equal(result.waitMarker, true);
+  const written = state.tokens.slice(1).join('');
+  assert.equal([...written.matchAll(blockContentRegex('assistant'))].length, 0);
+  const calls = findAllToolCalls(unescapeMarkers(written));
+  assert.equal(calls.length, 2);
+  assert.deepEqual(calls.map(value => parseToolCall(value).params.content), [wanted, wanted]);
 });

@@ -5,7 +5,7 @@ import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { OpenAIResponsesClient } from "./openaiResponsesClient";
-import { couldBecomeMarkerLine } from "./utils/markerEscape";
+import { couldBecomeMarkerLine, escapeMarkers, unescapeMarkers } from "./utils/markerEscape";
 import {
   stripThinkingSections,
   decodeThinkingPayloadToken,
@@ -685,7 +685,7 @@ export class StreamingService {
         `Emitting additional parallel tool call (${toolCallText.length} chars) without executing it`,
       );
       const updateSuccess = await this.updateDocumentWithTokens(streamer, [
-        toolCallText,
+        escapeMarkers(toolCallText, streamer.tokens.join("").endsWith("\n")),
       ]);
       if (!updateSuccess) {
         log("Token update failed when emitting buffered tool call, canceling");
@@ -1141,7 +1141,13 @@ export class StreamingService {
                   // follows this tool call and keep emitting further tool calls.
                   // The tool_execute block is added once the sequence ends.
                   bufferingMode = true;
-                  bufferText = currentTokens.substring(endIndex);
+                  // Keep the buffer in model-text form, including any partial
+                  // marker withheld before rendering this batch. Later batches
+                  // arrive raw; complete buffered calls are escaped on write.
+                  bufferText = unescapeMarkers(currentTokens.substring(endIndex))
+                    + (streamer.pendingIsThinking ? "" : (streamer.pendingText ?? ""));
+                  streamer.pendingText = "";
+                  streamer.pendingIsThinking = false;
                   log(
                     `Entering buffering mode with ${bufferText.length} buffered chars`,
                   );

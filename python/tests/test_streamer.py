@@ -16,11 +16,16 @@ from typing import Any
 import pytest
 
 from chatmd.engine.streamer import FileStreamer, StreamOutcome
+from chatmd.markers import unescape_markers
+from chatmd.parser.blocks import split_blocks
 from chatmd.providers.base import MaxTokensError, RetryableError
+from chatmd.render import strip_thinking_sections
 from chatmd.tools.call_parser import (
     CMD_TOOL_CALL_CLOSE_TAG,
     CMD_TOOL_CALL_OPEN_TAG,
     CMD_WAIT_TOOL_RESULT_TAG,
+    find_all_tool_calls,
+    parse_tool_call,
 )
 from chatmd.types import (
     MessageParam,
@@ -453,6 +458,38 @@ async def test_a_document_with_no_empty_assistant_block_writes_nothing(
 # --------------------------------------------------------------------------- #
 # Marker escaping
 # --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize("split_at", ["same_batch", "after_first", "partial_marker", "after_marker"])
+async def test_buffered_tool_calls_escape_markers_once(tmp_path: Path, split_at: str) -> None:
+    chat = make_chat(tmp_path / "a.chat.md")
+    wanted = (
+        "# %% user\nhello\n# %% assistant\n## %% thinking\nreason\n"
+        "## %% text\nanswer\n# %%% user\n# %% settings\nconfig"
+    )
+    first = tool_call("first", "one")
+    second = tool_call("second", wanted)
+    third = tool_call("third", wanted)
+    content = first + "\n" + second + "\n" + third + CMD_WAIT_TOOL_RESULT_TAG
+    offsets = {
+        "same_batch": len(content),
+        "after_first": len(first),
+        "partial_marker": content.index("\n# %% assistant") + len("\n# %% ass"),
+        "after_marker": content.index("\n## %% thinking") + 1,
+    }
+    offset = offsets[split_at]
+    client = FakeClient([TextDelta(content[:offset]), Pause(), TextDelta(content[offset:])])
+
+    result = await streamer(chat, client).run(one_message(), "sys")
+
+    assert result.outcome is StreamOutcome.TOOL_BATCH_READY
+    blocks = split_blocks(chat.read_text())
+    assert [block.type for block in blocks] == ["user", "assistant", "tool_execute"]
+    calls = find_all_tool_calls(unescape_markers(strip_thinking_sections(blocks[1].raw_content)))
+    assert len(calls) == 3
+    parsed = [parse_tool_call(call) for call in calls]
+    assert all(call is not None for call in parsed)
+    assert [call.params["p"] for call in parsed if call is not None] == ["one", wanted, wanted]
 
 
 async def test_a_marker_line_in_assistant_text_is_escaped(tmp_path: Path) -> None:
