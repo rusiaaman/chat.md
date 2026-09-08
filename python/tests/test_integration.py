@@ -368,14 +368,19 @@ async def test_a_tool_result_containing_a_whole_chat_file_does_not_split_the_doc
     assert "## %%% thinking" in text
 
 
+@pytest.mark.parametrize("wanted", [
+    "# %% user\nhello\n\n# %% assistant\n",
+    "# %% user\nhello\n\n# %% assistant\n## %% thinking\nnested reasoning\n"
+    "## %% text\nnested response\n# %% tool_execute\nresult\n"
+    "# %% settings\nconfig\n# %% system\ninstructions\n",
+])
 async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig, wanted: str
 ) -> None:
     """The tool must receive what the model wrote, not the escaped form."""
     chat = tmp_path / "session.chat.md"
     chat.write_text("# %% user\nMake me a chat\n\n# %% assistant\n", encoding="utf-8")
 
-    wanted = "# %% user\nhello\n\n# %% assistant\n"
     call = (
         f"{CMD_TOOL_CALL_OPEN_TAG}\n<cmd:tool_name>fs.write_file</cmd:tool_name>\n"
         f'<cmd:param name="content">{wanted}</cmd:param>\n{CMD_TOOL_CALL_CLOSE_TAG}'

@@ -39,6 +39,19 @@ export const BLOCK_ROLES = [
 /** Roles that open a section inside an assistant block. */
 export const SECTION_ROLES = ["thinking", "text"] as const;
 
+/**
+ * Captures a block body up to the next complete block marker or end of document.
+ * Matches Python's BLOCK_MARKER_RE: escaped markers and inline marker text are
+ * content. With multiline enabled, `$` alone would also end a body on any line.
+ * Return a fresh regex so callers do not share the global match cursor.
+ */
+export function blockContentRegex(role: (typeof BLOCK_ROLES)[number]): RegExp {
+  return new RegExp(
+    `^# %% ${role}\\s*$([\\s\\S]*?)(?=^# %% (?:${BLOCK_ROLES.join("|")})\\s*$|(?![\\s\\S]))`,
+    "gim",
+  );
+}
+
 // Trailing whitespace is limited to spaces, tabs and a carriage return so these
 // match exactly the *lines* the parser treats as markers. The parser's own regex
 // ends in `\s*$`, which also swallows following newlines, but that affects where

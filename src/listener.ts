@@ -38,7 +38,11 @@ import {
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { acquireChatFileLock, ChatLockHandle } from "./utils/fileLock";
-import { escapeMarkers, unescapeMarkers } from "./utils/markerEscape";
+import {
+  blockContentRegex,
+  escapeMarkers,
+  unescapeMarkers,
+} from "./utils/markerEscape";
 
 /**
  * Counts the `# %% tool_execute` block markers in a chunk of text.
@@ -311,7 +315,7 @@ export class DocumentListener {
       const text = this.document.getText();
 
       // Find all tool_execute blocks and check which ones are empty
-      const blockRegex = /# %% tool_execute\s*([\s\S]*?)(?=# %%|$)/gm;
+      const blockRegex = blockContentRegex("tool_execute");
       const emptyBlocks = [];
       let match;
 
@@ -343,7 +347,7 @@ export class DocumentListener {
 
       // Find the previous assistant block with a tool call
       const textBeforeToolExecute = text.substring(0, toolExecutePosition);
-      const assistantBlockRegex = /# %% assistant\s+([\s\S]*?)(?=\n# %%|$)/g;
+      const assistantBlockRegex = blockContentRegex("assistant");
 
       // Find the last match
       let assistantBlockMatch;
@@ -498,7 +502,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     toolExecutePosition: number,
   ): number {
     const textBefore = text.substring(0, toolExecutePosition);
-    const assistantBlockRegex = /# %% assistant\s+([\s\S]*?)(?=\n# %%|$)/g;
+    const assistantBlockRegex = blockContentRegex("assistant");
 
     let match;
     let lastAssistantMatch: RegExpExecArray | null = null;
@@ -641,7 +645,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     }
 
     // Find the insertion point (within the last empty tool_execute block)
-    const blockRegex = /# %% tool_execute\s*([\s\S]*?)(?=# %%|$)/gm;
+    const blockRegex = blockContentRegex("tool_execute");
     const emptyBlocks = [];
     let match;
 
@@ -672,12 +676,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
     // We need to replace the empty content within the block, not insert after it.
     const startPos = this.document.positionAt(insertOffset);
-    // Find the end of the empty block content (before the next # %% or EOF)
-    const endOffset = text.indexOf("%%#", insertOffset); // Look for the start of the next marker reversed
-    const actualEndOffset =
-      endOffset !== -1
-        ? text.substring(0, endOffset).lastIndexOf("#")
-        : text.length; // Find the actual start of the next marker or EOF
+    const actualEndOffset = lastEmptyBlock.position + lastEmptyBlock.blockLength;
     const endPos = this.document.positionAt(actualEndOffset);
 
     log(
