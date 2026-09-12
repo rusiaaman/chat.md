@@ -6,6 +6,8 @@ helper in ``src/parser.ts``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from pathlib import Path
 
@@ -13,8 +15,14 @@ from chatmd.assets import assets_dir
 from chatmd.markers import unescape_markers
 from chatmd.render import parse_thinking_section, split_assistant_sections
 from chatmd.thinking_map import get_thinking_entry
-from chatmd.tools.call_parser import append_wait_marker_after_last_tool_call
-from chatmd.types import Content, TextContent, ThinkingContent, ThinkingPayload
+from chatmd.tools.call_parser import find_all_tool_calls, parse_tool_call
+from chatmd.types import (
+    Content,
+    TextContent,
+    ThinkingContent,
+    ThinkingPayload,
+    ToolUseContent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,20 +48,52 @@ def _lookup_payload(
     return payload
 
 
-def _append_wait_marker_to_last_tool_call(content: list[Content]) -> None:
-    """Put the end-of-batch marker back after the last tool call, in place.
+def _tool_use_id(raw_xml: str, ordinal: int) -> str:
+    digest = hashlib.sha256(f"{ordinal}:{raw_xml}".encode()).hexdigest()[:24]
+    return f"chatmd_{digest}"
 
-    Only text sections are considered: a tool call written inside thinking was
-    never a call, so a marker must never be attached to one.
-    """
-    for index in range(len(content) - 1, -1, -1):
-        item = content[index]
-        if not isinstance(item, TextContent):
-            continue
-        with_marker = append_wait_marker_after_last_tool_call(item.value)
-        if with_marker != item.value:
-            content[index] = TextContent(value=with_marker)
-            return
+
+def _parse_text_and_tools(text: str) -> list[Content]:
+    """Split display text around calls and turn every complete call into data."""
+    output: list[Content] = []
+    calls = find_all_tool_calls(text)
+    cursor = 0
+    for ordinal, raw_xml in enumerate(calls):
+        start = text.find(raw_xml, cursor)
+        before = text[cursor:start].strip()
+        if before:
+            output.append(TextContent(value=before))
+        parsed = parse_tool_call(raw_xml)
+        if parsed is not None:
+            output.append(
+                ToolUseContent(
+                    id=parsed.id or _tool_use_id(raw_xml, ordinal),
+                    name=parsed.name,
+                    input=(
+                        parsed.input
+                        if parsed.input is not None
+                        else {
+                            key: _parse_legacy_value(value)
+                            for key, value in parsed.params.items()
+                        }
+                    ),
+                    raw_xml=raw_xml,
+                )
+            )
+        else:
+            output.append(TextContent(value=raw_xml))
+        cursor = start + len(raw_xml)
+    after = text[cursor:].strip()
+    if after:
+        output.append(TextContent(value=after))
+    return output
+
+
+def _parse_legacy_value(value: str) -> object:
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def parse_assistant_content(
@@ -61,7 +101,6 @@ def parse_assistant_content(
     base_dir: Path | None = None,
     *,
     assets_path: str = "cmdassets",
-    append_wait_marker: bool = False,
 ) -> list[Content]:
     """Parse an assistant block into content blocks.
 
@@ -70,10 +109,8 @@ def parse_assistant_content(
     content and their trailing ``model::hash8`` line is resolved against the
     thinking map.
 
-    ``append_wait_marker`` re-synthesises the end-of-batch marker after the last
-    tool call. It is a stream-control signal that never lives in the document, but
-    the model is told to always emit one, so replaying history without it would
-    show the model its own past turns in a shape it was told not to produce.
+    Complete tool calls are emitted as :class:`ToolUseContent` values. Providers
+    decide whether to replay those as native items or the custom Google syntax.
     """
     result: list[Content] = []
 
@@ -86,7 +123,7 @@ def parse_assistant_content(
         if section.type == "text":
             text = body.strip()
             if text:
-                result.append(TextContent(value=text))
+                result.extend(_parse_text_and_tools(text))
             continue
 
         parsed = parse_thinking_section(body)
@@ -111,8 +148,5 @@ def parse_assistant_content(
                 payload=payload,
             )
         )
-
-    if append_wait_marker:
-        _append_wait_marker_to_last_tool_call(result)
 
     return result

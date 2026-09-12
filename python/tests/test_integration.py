@@ -36,6 +36,8 @@ from chatmd.types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultContent,
+    ToolUseContent,
     Usage,
     UsageDelta,
 )
@@ -58,7 +60,12 @@ class ScriptedClient:
         self.last_usage: Usage | None = None
 
     def stream(
-        self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: Sequence[Any],
+        *,
+        base_dir: Any = None,
     ) -> AsyncIterator[StreamEvent]:
         self.prompts.append(system_prompt)
         self.histories.append(list(messages))
@@ -181,15 +188,14 @@ async def test_a_tool_using_conversation_runs_to_completion(
     # The system prompt the model saw carried the file's own system block.
     assert "Be brief." in client.prompts[0]
 
-    # The second turn replayed the first, marker restored, plus the tool result.
+    # The second turn replays the call and result as native provider structures.
     replayed = client.histories[1]
     assert [message.role for message in replayed] == ["user", "assistant", "user"]
-    assistant_text = "".join(
-        block.value for block in replayed[1].content if isinstance(block, TextContent)
-    )
-    assert CMD_WAIT_TOOL_RESULT_TAG in assistant_text
+    assert any(isinstance(block, ToolUseContent) for block in replayed[1].content)
+    result = replayed[2].content[0]
+    assert isinstance(result, ToolResultContent)
     assert "DB_HOST" in "".join(
-        block.value for block in replayed[2].content if isinstance(block, TextContent)
+        block.value for block in result.content if isinstance(block, TextContent)
     )
 
 
@@ -256,8 +262,10 @@ async def test_a_long_tool_result_is_spilled_to_a_file_and_linked(
     # And the parser reads it back in, so the model still sees the whole thing.
     parsed = parse_document(text, tmp_path)
     tool_message = parsed.messages[2]
+    result = tool_message.content[0]
+    assert isinstance(result, ToolResultContent)
     assert "line 199" in "".join(
-        block.value for block in tool_message.content if isinstance(block, TextContent)
+        block.value for block in result.content if isinstance(block, TextContent)
     )
 
 
@@ -358,11 +366,13 @@ async def test_a_tool_result_containing_a_whole_chat_file_does_not_split_the_doc
         "assistant",
     ]
     # The other file survived verbatim, escaping removed, inside one tool result.
+    result = parsed.messages[2].content[0]
+    assert isinstance(result, ToolResultContent)
     tool_message = "".join(
-        block.value for block in parsed.messages[2].content if isinstance(block, TextContent)
+        block.value for block in result.content if isinstance(block, TextContent)
     )
-    assert other in tool_message
-    assert tool_message.count("<tool_result>") == 1
+    assert other.rstrip() in tool_message
+    assert result.raw_text.count("<tool_result>") == 1
     # The document itself carries the escaped form, so it stays one document.
     assert "# %%% user" in text
     assert "## %%% thinking" in text
@@ -429,7 +439,12 @@ class StallingClient:
         self.last_usage = None
 
     def stream(
-        self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: Sequence[Any],
+        *,
+        base_dir: Any = None,
     ) -> AsyncIterator[StreamEvent]:
         async def generate() -> AsyncIterator[StreamEvent]:
             self.counter["active"] += 1
@@ -505,13 +520,17 @@ async def test_tool_calls_from_different_chats_overlap(
         last_usage = None
 
         def stream(
-            self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+            self,
+            messages: list[MessageParam],
+            system_prompt: str,
+            tools: Sequence[Any],
+            *,
+            base_dir: Any = None,
         ) -> AsyncIterator[StreamEvent]:
             already_ran = any(
-                "<tool_result>" in block.value
+                isinstance(block, ToolResultContent)
                 for message in messages
                 for block in message.content
-                if isinstance(block, TextContent)
             )
 
             async def generate() -> AsyncIterator[StreamEvent]:

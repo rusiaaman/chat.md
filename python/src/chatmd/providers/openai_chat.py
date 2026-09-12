@@ -12,8 +12,10 @@ declare.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -35,11 +37,23 @@ from ..types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultContent,
+    ToolUseContent,
     Usage,
     UsageDelta,
 )
 from .base import MaxTokensError, RetryableError
 from .cleanup import clean_messages_for_api
+from .native_tools import (
+    NativeToolDefinition,
+    api_tool_name,
+    canonical_tool_name,
+    openai_chat_tool_schemas,
+    render_tool_arguments_delta,
+    render_tool_call_end,
+    render_tool_call_start,
+    uses_native_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,8 +212,99 @@ def format_message(message: MessageParam, base_dir: str | Path | None = None) ->
     return formatted
 
 
+def _custom_protocol_message(
+    message: MessageParam, base_dir: str | Path | None
+) -> dict[str, Any]:
+    materialized: list[Content] = []
+    has_tool_use = False
+    for item in message.content:
+        if isinstance(item, ToolUseContent):
+            materialized.append(TextContent(value=item.raw_xml))
+            has_tool_use = True
+        elif isinstance(item, ToolResultContent):
+            materialized.append(TextContent(value=item.raw_text))
+        else:
+            materialized.append(item)
+    if has_tool_use:
+        materialized.append(TextContent(value="<cmd:wait-tool-result/>"))
+    return format_message(MessageParam(role=message.role, content=materialized), base_dir)
+
+
+def format_messages(
+    messages: Sequence[MessageParam],
+    tools: Sequence[NativeToolDefinition],
+    native: bool,
+    base_dir: str | Path | None,
+) -> list[dict[str, Any]]:
+    if not native:
+        return [_custom_protocol_message(message, base_dir) for message in messages]
+
+    formatted: list[dict[str, Any]] = []
+    for message in messages:
+        results = [
+            item for item in message.content if isinstance(item, ToolResultContent)
+        ]
+        if results:
+            for result in results:
+                text_parts = [
+                    part.value if isinstance(part, TextContent) else "[Tool result image]"
+                    for part in result.content
+                ]
+                formatted.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": result.tool_use_id,
+                        "content": "\n\n".join(text_parts),
+                    }
+                )
+                image_parts = [
+                    _format_image(part, base_dir)
+                    for part in result.content
+                    if isinstance(part, ImageContent)
+                ]
+                if image_parts:
+                    formatted.append({"role": "user", "content": image_parts})
+            continue
+
+        tool_uses = [item for item in message.content if isinstance(item, ToolUseContent)]
+        normal: list[Content] = [
+            item
+            for item in message.content
+            if not isinstance(item, (ToolUseContent, ToolResultContent))
+        ]
+        base_message = format_message(
+            MessageParam(role=message.role, content=normal), base_dir
+        )
+        if tool_uses:
+            base_message["tool_calls"] = [
+                {
+                    "id": tool.id,
+                    "type": "function",
+                    "function": {
+                        "name": api_tool_name(tool.name, tools),
+                        "arguments": json.dumps(tool.input, separators=(",", ":")),
+                    },
+                }
+                for tool in tool_uses
+            ]
+        formatted.append(base_message)
+    return formatted
+
+
+@dataclass
+class _PartialToolCall:
+    index: int
+    id: str = ""
+    name: str = ""
+    arguments: str = ""
+    emitted: int = 0
+    started: bool = False
+
+
 async def _translate_stream(
-    chunks: AsyncIterable[Any], model_name: str
+    chunks: AsyncIterable[Any],
+    model_name: str,
+    tools: Sequence[NativeToolDefinition],
 ) -> AsyncIterator[StreamEvent]:
     """Turn raw stream chunks into :class:`StreamEvent` values.
 
@@ -213,6 +318,8 @@ async def _translate_stream(
     reasoning_field: ReasoningFieldName = "reasoning_content"
     reasoning_open = False
     running_usage: Usage | None = None
+    partial_calls: dict[int, _PartialToolCall] = {}
+    active_call: int | None = None
 
     def close_reasoning() -> ThinkingPayloadDelta:
         nonlocal accumulator, reasoning_open
@@ -273,6 +380,40 @@ async def _translate_stream(
 
         content = getattr(delta, "content", None) if delta is not None else None
 
+        tool_call_deltas = getattr(delta, "tool_calls", None) if delta is not None else None
+        if tool_call_deltas:
+            if reasoning_open:
+                yield close_reasoning()
+            for tool_delta in tool_call_deltas:
+                index = getattr(tool_delta, "index", 0)
+                state = partial_calls.setdefault(index, _PartialToolCall(index=index))
+                call_id = getattr(tool_delta, "id", None)
+                if call_id:
+                    state.id += call_id
+                function = getattr(tool_delta, "function", None)
+                name = getattr(function, "name", None)
+                if name:
+                    state.name += name
+                argument_delta = getattr(function, "arguments", None)
+                if argument_delta:
+                    state.arguments += argument_delta
+
+                if active_call is None and state.name and argument_delta:
+                    active_call = index
+                if active_call == index and not state.started and state.name:
+                    state.started = True
+                    yield TextDelta(
+                        render_tool_call_start(
+                            state.id or f"chatmd_call_{index}",
+                            canonical_tool_name(state.name, tools),
+                        )
+                    )
+                if active_call == index and state.started:
+                    pending = state.arguments[state.emitted :]
+                    if pending:
+                        state.emitted = len(state.arguments)
+                        yield TextDelta(render_tool_arguments_delta(pending))
+
         # The first content delta closes the reasoning run.
         if content and reasoning_open:
             yield close_reasoning()
@@ -285,6 +426,40 @@ async def _translate_stream(
 
         if content:
             yield TextDelta(text=content)
+
+        if finish_reason is not None and partial_calls:
+            if active_call is not None:
+                yield TextDelta(render_tool_call_end())
+            for index, state in partial_calls.items():
+                if index == active_call:
+                    continue
+                yield TextDelta(
+                    render_tool_call_start(
+                        state.id or f"chatmd_call_{index}",
+                        canonical_tool_name(state.name, tools),
+                    )
+                )
+                if state.arguments:
+                    yield TextDelta(render_tool_arguments_delta(state.arguments))
+                yield TextDelta(render_tool_call_end())
+            partial_calls.clear()
+            active_call = None
+
+    if partial_calls:
+        if active_call is not None:
+            yield TextDelta(render_tool_call_end())
+        for index, state in partial_calls.items():
+            if index == active_call:
+                continue
+            yield TextDelta(
+                render_tool_call_start(
+                    state.id or f"chatmd_call_{index}",
+                    canonical_tool_name(state.name, tools),
+                )
+            )
+            if state.arguments:
+                yield TextDelta(render_tool_arguments_delta(state.arguments))
+            yield TextDelta(render_tool_call_end())
 
     if reasoning_open:
         yield close_reasoning()
@@ -302,12 +477,14 @@ class OpenAIChatClient:
         self,
         messages: list[MessageParam],
         system_prompt: str,
+        tools: Sequence[NativeToolDefinition],
         *,
         base_dir: str | Path | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Yield events for one assistant turn."""
         self.last_usage = None
         model_name = self.config.model_name or DEFAULT_MODEL
+        native = uses_native_tools(model_name)
 
         cleaned = clean_messages_for_api(
             messages,
@@ -315,7 +492,7 @@ class OpenAIChatClient:
             thinking_enabled=self.config.thinking_enabled,
             api_style="openai_chat",
         )
-        formatted_messages = [format_message(message, base_dir) for message in cleaned]
+        formatted_messages = format_messages(cleaned, tools, native, base_dir)
         request = build_request_kwargs(
             model=model_name,
             system_prompt=system_prompt,
@@ -323,11 +500,13 @@ class OpenAIChatClient:
             max_tokens=self.config.max_tokens,
             reasoning_effort=self.config.reasoning_effort,
         )
+        if native and tools:
+            request["tools"] = openai_chat_tool_schemas(tools)
 
         logger.debug("Starting OpenAI chat completion request for model %s", model_name)
         try:
             response = await self._client.chat.completions.create(**request)
-            async for event in _translate_stream(response, model_name):
+            async for event in _translate_stream(response, model_name, tools):
                 if isinstance(event, UsageDelta):
                     self.last_usage = event.usage
                 yield event

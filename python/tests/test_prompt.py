@@ -149,7 +149,9 @@ def test_build_system_prompt_drops_blank_custom_prompt() -> None:
     default = get_default_system_prompt()
     tool_prompt = generate_tool_calling_system_prompt({}, {})
 
-    result = build_system_prompt("   ", {}, {})
+    result = build_system_prompt(
+        "   ", {}, {}, cli_command=None, native_tools=False
+    )
 
     assert result == f"{default}\n\n{tool_prompt}"
 
@@ -158,7 +160,9 @@ def test_build_system_prompt_keeps_non_blank_custom_prompt_between_the_other_two
     default = get_default_system_prompt()
     tool_prompt = generate_tool_calling_system_prompt({}, {})
 
-    result = build_system_prompt("Be extra terse.", {}, {})
+    result = build_system_prompt(
+        "Be extra terse.", {}, {}, cli_command=None, native_tools=False
+    )
 
     assert result == f"{default}\n\nBe extra terse.\n\n{tool_prompt}"
 
@@ -299,7 +303,9 @@ def test_the_agent_section_shows_the_file_format_it_asks_for() -> None:
 
 
 def test_the_agent_section_reaches_the_assembled_prompt() -> None:
-    prompt = build_system_prompt("Be brief.", {}, {}, cli_command="chatmd")
+    prompt = build_system_prompt(
+        "Be brief.", {}, {}, cli_command="chatmd", native_tools=False
+    )
     assert "Handing work to other chat.md agents" in prompt
     assert "Be brief." in prompt
 

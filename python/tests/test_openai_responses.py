@@ -326,7 +326,9 @@ async def _aiter(items: list[Any]) -> Any:
 
 async def test_translate_stream_text_delta() -> None:
     client = make_client()
-    events = [e async for e in client._translate_stream(_aiter([_text_delta_event("Hi")]), "m")]
+    events = [
+        e async for e in client._translate_stream(_aiter([_text_delta_event("Hi")]), "m", [])
+    ]
     assert events == [TextDelta(text="Hi")]
 
 
@@ -335,7 +337,7 @@ async def test_translate_stream_reasoning_summary_delta() -> None:
     events = [
         e
         async for e in client._translate_stream(
-            _aiter([_reasoning_summary_delta_event("pondering")]), "m"
+            _aiter([_reasoning_summary_delta_event("pondering")]), "m", []
         )
     ]
     assert events == [ThinkingDelta(text="pondering")]
@@ -346,7 +348,7 @@ async def test_translate_stream_reasoning_text_delta() -> None:
     events = [
         e
         async for e in client._translate_stream(
-            _aiter([_reasoning_text_delta_event("more pondering")]), "m"
+            _aiter([_reasoning_text_delta_event("more pondering")]), "m", []
         )
     ]
     assert events == [ThinkingDelta(text="more pondering")]
@@ -357,7 +359,9 @@ async def test_translate_stream_reasoning_item_done_yields_payload() -> None:
     events = [
         e
         async for e in client._translate_stream(
-            _aiter([_reasoning_item_done_event("rs_1", "encrypted-blob")]), "gpt-4.1"
+            _aiter([_reasoning_item_done_event("rs_1", "encrypted-blob")]),
+            "gpt-4.1",
+            [],
         )
     ]
     assert events == [
@@ -377,7 +381,7 @@ async def test_translate_stream_reasoning_item_done_without_encrypted_content_yi
     events = [
         e
         async for e in client._translate_stream(
-            _aiter([_reasoning_item_done_event("rs_1", None)]), "gpt-4.1"
+            _aiter([_reasoning_item_done_event("rs_1", None)]), "gpt-4.1", []
         )
     ]
     assert events == []
@@ -386,7 +390,10 @@ async def test_translate_stream_reasoning_item_done_without_encrypted_content_yi
 async def test_translate_stream_non_reasoning_item_done_yields_nothing() -> None:
     client = make_client()
     events = [
-        e async for e in client._translate_stream(_aiter([_message_item_done_event()]), "gpt-4.1")
+        e
+        async for e in client._translate_stream(
+            _aiter([_message_item_done_event()]), "gpt-4.1", []
+        )
     ]
     assert events == []
 
@@ -413,6 +420,7 @@ async def test_translate_stream_usage_merges_across_events() -> None:
                 ]
             ),
             "gpt-4.1",
+            [],
         )
     ]
     usage_events = [e for e in events if isinstance(e, UsageDelta)]
@@ -425,7 +433,7 @@ async def test_translate_stream_incomplete_max_output_tokens_raises() -> None:
     client = make_client()
     with pytest.raises(MaxTokensError):
         async for _ in client._translate_stream(
-            _aiter([_incomplete_event("max_output_tokens")]), "gpt-4.1"
+            _aiter([_incomplete_event("max_output_tokens")]), "gpt-4.1", []
         ):
             pass
 
@@ -435,7 +443,7 @@ async def test_translate_stream_incomplete_other_reason_does_not_raise() -> None
     events = [
         e
         async for e in client._translate_stream(
-            _aiter([_incomplete_event("content_filter")]), "gpt-4.1"
+            _aiter([_incomplete_event("content_filter")]), "gpt-4.1", []
         )
     ]
     assert events == []
@@ -444,14 +452,18 @@ async def test_translate_stream_incomplete_other_reason_does_not_raise() -> None
 async def test_translate_stream_response_failed_raises_with_provider_message() -> None:
     client = make_client()
     with pytest.raises(RuntimeError, match="boom"):
-        async for _ in client._translate_stream(_aiter([_failed_event("boom")]), "gpt-4.1"):
+        async for _ in client._translate_stream(
+            _aiter([_failed_event("boom")]), "gpt-4.1", []
+        ):
             pass
 
 
 async def test_translate_stream_error_event_raises_with_provider_message() -> None:
     client = make_client()
     with pytest.raises(RuntimeError, match="kaboom"):
-        async for _ in client._translate_stream(_aiter([_error_event("kaboom")]), "gpt-4.1"):
+        async for _ in client._translate_stream(
+            _aiter([_error_event("kaboom")]), "gpt-4.1", []
+        ):
             pass
 
 
@@ -488,7 +500,7 @@ async def test_stream_falls_back_to_default_model_when_unconfigured() -> None:
     endpoint = _CapturingResponsesEndpoint()
     client._client.responses = endpoint  # type: ignore[attr-defined]
 
-    async for _ in client.stream([], "sys"):
+    async for _ in client.stream([], "sys", []):
         pass
 
     assert endpoint.received_kwargs is not None
@@ -518,7 +530,7 @@ async def test_stream_maps_500_to_retryable_error() -> None:
     client._client.responses = _FakeResponsesEndpoint(error)  # type: ignore[attr-defined]
 
     with pytest.raises(RetryableError):
-        async for _ in client.stream([], "sys"):
+        async for _ in client.stream([], "sys", []):
             pass
 
 
@@ -530,7 +542,7 @@ async def test_stream_maps_429_to_retryable_error() -> None:
     client._client.responses = _FakeResponsesEndpoint(error)  # type: ignore[attr-defined]
 
     with pytest.raises(RetryableError):
-        async for _ in client.stream([], "sys"):
+        async for _ in client.stream([], "sys", []):
             pass
 
 
@@ -542,5 +554,5 @@ async def test_stream_400_propagates_unchanged() -> None:
     import openai
 
     with pytest.raises(openai.APIStatusError):
-        async for _ in client.stream([], "sys"):
+        async for _ in client.stream([], "sys", []):
             pass

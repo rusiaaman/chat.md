@@ -5,12 +5,22 @@ import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
-import { generateToolCallingSystemPrompt } from "./config";
+import { generateToolCallingSystemPrompt, getDefaultSystemPrompt } from "./config";
 import {
   encodeThinkingPayloadToken,
   encodeThinkingToken,
 } from "./utils/thinkingBlocks";
 import { cleanMessagesForApi } from "./utils/messageCleanup";
+import {
+  NativeToolDefinition,
+  anthropicToolSchemas,
+  apiToolName,
+  canonicalToolName,
+  renderToolArgumentsDelta,
+  renderToolCallEnd,
+  renderToolCallStart,
+  usesNativeTools,
+} from "./nativeTools";
 import {
   isAdaptiveThinkingModel,
   needsInterleavedThinkingBeta,
@@ -35,6 +45,7 @@ export class AnthropicClient {
    */
   public async *streamCompletion(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -59,9 +70,13 @@ export class AnthropicClient {
 
       // Use fallback if needed
       modelName = modelName || "claude-3-5-haiku-latest";
+      const native = usesNativeTools(modelName);
 
       const systemPromptToUse =
-        systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
+        systemPrompt ||
+        (native
+          ? getDefaultSystemPrompt()
+          : generateToolCallingSystemPrompt(new Map(), new Map()));
 
       // Get configuration values with proper precedence (file config > provider config > global config)
       const { getMaxTokens, getMaxThinkingTokens, getReasoningEffort, calculateThinkingTokensFromEffort } = require("./config");
@@ -143,7 +158,15 @@ export class AnthropicClient {
         thinkingEnabled: thinkingActive,
         apiStyle: "anthropic",
       });
-      requestBody.messages = this.formatMessages(cleanedMessages, document);
+      requestBody.messages = this.formatMessages(
+        cleanedMessages,
+        nativeTools,
+        native,
+        document,
+      );
+      if (native && nativeTools.length > 0) {
+        requestBody.tools = anthropicToolSchemas(nativeTools);
+      }
 
       log(
         `Using system prompt for tool calling (${systemPromptToUse.length} chars)`,
@@ -233,7 +256,7 @@ export class AnthropicClient {
       }
 
       log("Processing streaming response");
-      yield* this.createStreamGenerator(response, modelName);
+      yield* this.createStreamGenerator(response, modelName, nativeTools);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
@@ -250,11 +273,13 @@ export class AnthropicClient {
   private async *createStreamGenerator(
     response: http.IncomingMessage,
     modelName: string,
+    nativeTools: readonly NativeToolDefinition[],
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
     // Accumulated thinking text of the block currently being streamed
     let thinkingText = "";
+    const activeToolBlocks = new Set<number>();
 
     try {
       for await (const chunk of response) {
@@ -333,6 +358,12 @@ export class AnthropicClient {
                 };
                 thinkingText = "";
                 yield [encodeThinkingPayloadToken(payload)];
+              } else if (
+                data.type === "content_block_delta" &&
+                data.delta?.type === "input_json_delta" &&
+                data.delta.partial_json
+              ) {
+                yield [renderToolArgumentsDelta(data.delta.partial_json)];
               } else if (data.type === "content_block_start") {
                 log(
                   `Content block start: ${JSON.stringify(data.content_block)}`,
@@ -352,7 +383,25 @@ export class AnthropicClient {
                 } else if (block && block.type === "thinking" && block.thinking) {
                   thinkingText += block.thinking;
                   yield [encodeThinkingToken(block.thinking)];
+                } else if (block && block.type === "tool_use") {
+                  activeToolBlocks.add(data.index || 0);
+                  const tokens = [
+                    renderToolCallStart(
+                      block.id || `chatmd_call_${data.index || 0}`,
+                      canonicalToolName(block.name, nativeTools),
+                    ),
+                  ];
+                  if (block.input && Object.keys(block.input).length > 0) {
+                    tokens.push(renderToolArgumentsDelta(JSON.stringify(block.input)));
+                  }
+                  yield tokens;
                 }
+              } else if (
+                data.type === "content_block_stop" &&
+                activeToolBlocks.has(data.index || 0)
+              ) {
+                activeToolBlocks.delete(data.index || 0);
+                yield [renderToolCallEnd()];
               } else if (data.type === "message_delta") {
                 if (data.usage) {
                   this.lastUsage = {
@@ -416,11 +465,13 @@ export class AnthropicClient {
    */
   private formatMessages(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
+    native: boolean,
     document?: vscode.TextDocument,
   ): any[] {
     return messages.map((msg) => ({
       role: msg.role,
-      content: this.formatContent(msg.content, document),
+      content: this.formatContent(msg.content, nativeTools, native, document),
     }));
   }
 
@@ -429,6 +480,8 @@ export class AnthropicClient {
    */
   private formatContent(
     contentItems: readonly Content[],
+    nativeTools: readonly NativeToolDefinition[],
+    native: boolean,
     document?: vscode.TextDocument,
   ): any[] {
     const blocks: any[] = [];
@@ -487,7 +540,36 @@ export class AnthropicClient {
             text: `[Failed to load image: ${content.path}]`,
           });
         }
+      } else if (content.type === "tool_use") {
+        blocks.push(
+          native
+            ? {
+                type: "tool_use",
+                id: content.id,
+                name: apiToolName(content.name, nativeTools),
+                input: content.input,
+              }
+            : { type: "text", text: content.rawXml },
+        );
+      } else if (content.type === "tool_result") {
+        if (native) {
+          const resultContent = content.content.flatMap((part) =>
+            this.formatContent([part], nativeTools, native, document),
+          );
+          blocks.push({
+            type: "tool_result",
+            tool_use_id: content.toolUseId,
+            content: resultContent,
+            is_error: content.isError,
+          });
+        } else {
+          blocks.push({ type: "text", text: content.rawText });
+        }
       }
+    }
+
+    if (!native && contentItems.some((item) => item.type === "tool_use")) {
+      blocks.push({ type: "text", text: "<cmd:wait-tool-result/>" });
     }
 
     if (blocks.length === 0) {

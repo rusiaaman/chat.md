@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from chatmd.engine.streamer import FileStreamer, StreamOutcome
+from chatmd.engine.streamer import FileStreamer, StreamOutcome, StreamResult
 from chatmd.markers import unescape_markers
 from chatmd.parser.blocks import split_blocks
 from chatmd.providers.base import MaxTokensError, RetryableError
@@ -62,6 +62,7 @@ class FakeClient:
         self,
         messages: list[MessageParam],
         system_prompt: str,
+        tools: Sequence[Any],
         *,
         base_dir: Any = None,
     ) -> AsyncIterator[StreamEvent]:
@@ -87,8 +88,13 @@ def make_chat(path: Path, body: str = "# %% user\nHi\n\n# %% assistant\n") -> Pa
     return path
 
 
-def streamer(path: Path, client: FakeClient) -> FileStreamer:
-    return FileStreamer(path, client, batch_interval=0.01)  # type: ignore[arg-type]
+class StreamingHarness(FileStreamer):
+    async def run(self, messages: list[MessageParam], system_prompt: str) -> StreamResult:
+        return await super().run(messages, system_prompt, [])
+
+
+def streamer(path: Path, client: FakeClient) -> StreamingHarness:
+    return StreamingHarness(path, client, batch_interval=0.01)  # type: ignore[arg-type]
 
 
 def one_message() -> list[MessageParam]:
@@ -337,7 +343,9 @@ async def test_an_edit_under_a_running_stream_stops_it(tmp_path: Path) -> None:
     chat = make_chat(tmp_path / "a.chat.md")
 
     class Editing(FakeClient):
-        def stream(self, messages: Any, system_prompt: Any, *, base_dir: Any = None) -> Any:
+        def stream(
+            self, messages: Any, system_prompt: Any, tools: Any, *, base_dir: Any = None
+        ) -> Any:
             async def generate() -> AsyncIterator[StreamEvent]:
                 yield TextDelta("first ")
                 await asyncio.sleep(0.05)
@@ -392,7 +400,9 @@ async def test_the_restart_carries_the_partial_turn_into_context(tmp_path: Path)
     chat = make_chat(tmp_path / "a.chat.md")
 
     class Truncating(FakeClient):
-        def stream(self, messages: Any, system_prompt: Any, *, base_dir: Any = None) -> Any:
+        def stream(
+            self, messages: Any, system_prompt: Any, tools: Any, *, base_dir: Any = None
+        ) -> Any:
             self.calls.append([MessageParam(m.role, list(m.content)) for m in messages])
             attempt = len(self.calls)
 
@@ -433,7 +443,7 @@ async def test_a_transport_error_is_retried(tmp_path: Path) -> None:
 async def test_repeated_transport_errors_give_up(tmp_path: Path) -> None:
     chat = make_chat(tmp_path / "a.chat.md")
     client = FakeClient(*[RetryableError("503") for _ in range(6)])
-    engine = FileStreamer(chat, client, batch_interval=0.01)  # type: ignore[arg-type]
+    engine = streamer(chat, client)
     engine.cancel()  # a cancelled streamer gives up instead of sleeping out the backoff
 
     result = await engine.run(one_message(), "sys")
@@ -460,7 +470,9 @@ async def test_a_document_with_no_empty_assistant_block_writes_nothing(
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("split_at", ["same_batch", "after_first", "partial_marker", "after_marker"])
+@pytest.mark.parametrize(
+    "split_at", ["same_batch", "after_first", "partial_marker", "after_marker"]
+)
 async def test_buffered_tool_calls_escape_markers_once(tmp_path: Path, split_at: str) -> None:
     chat = make_chat(tmp_path / "a.chat.md")
     wanted = (

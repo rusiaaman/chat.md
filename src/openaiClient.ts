@@ -10,12 +10,23 @@ import {
   getModelName,
   getBaseUrl,
   generateToolCallingSystemPrompt,
+  getDefaultSystemPrompt,
 } from "./config";
 import {
   encodeThinkingPayloadToken,
   encodeThinkingToken,
 } from "./utils/thinkingBlocks";
 import { cleanMessagesForApi } from "./utils/messageCleanup";
+import {
+  NativeToolDefinition,
+  apiToolName,
+  canonicalToolName,
+  openaiChatToolSchemas,
+  renderToolArgumentsDelta,
+  renderToolCallEnd,
+  renderToolCallStart,
+  usesNativeTools,
+} from "./nativeTools";
 
 /**
  * Accumulates OpenRouter style reasoning_details deltas so the full array can be
@@ -124,6 +135,7 @@ export class OpenAIClient {
    */
   public async *streamCompletion(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -134,11 +146,6 @@ export class OpenAIClient {
     log(`Starting OpenAI API request with ${messages.length} messages`);
 
     try {
-      // First prepare messages with system prompt
-      const systemPromptToUse =
-        systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
-      const systemMessage = { role: "system", content: systemPromptToUse };
-
       // Resolve model name (allow per-file override)
       let modelName = modelNameOverride;
       if (!modelName) {
@@ -153,6 +160,13 @@ export class OpenAIClient {
 
       // Use fallback if needed
       modelName = modelName || "gpt-3.5-turbo";
+      const native = usesNativeTools(modelName);
+      const systemPromptToUse =
+        systemPrompt ||
+        (native
+          ? getDefaultSystemPrompt()
+          : generateToolCallingSystemPrompt(new Map(), new Map()));
+      const systemMessage = { role: "system", content: systemPromptToUse };
 
       // Get configuration values with proper precedence (file config > provider config > global config)
       const { getMaxTokens, getReasoningEffort } = require("./config");
@@ -169,7 +183,7 @@ export class OpenAIClient {
       // Add system message as the first message
       const allMessages = [
         systemMessage,
-        ...this.formatMessages(cleanedMessages, document),
+        ...this.formatMessages(cleanedMessages, nativeTools, native, document),
       ];
 
       // Initial request body
@@ -179,6 +193,9 @@ export class OpenAIClient {
         stream: true,
         stream_options: { include_usage: true },
       };
+      if (native && nativeTools.length > 0) {
+        requestBody.tools = openaiChatToolSchemas(nativeTools);
+      }
 
       // Add reasoning_effort parameter if configured
       if (reasoningEffort) {
@@ -270,7 +287,7 @@ export class OpenAIClient {
       }
 
       log("Processing streaming response from OpenAI");
-      yield* this.createStreamGenerator(response, modelName);
+      yield* this.createStreamGenerator(response, modelName, nativeTools);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
@@ -288,6 +305,7 @@ export class OpenAIClient {
   private async *createStreamGenerator(
     response: http.IncomingMessage,
     modelName: string,
+    nativeTools: readonly NativeToolDefinition[],
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
@@ -298,6 +316,42 @@ export class OpenAIClient {
     let reasoningField: "reasoning" | "reasoning_content" | "reasoning_summary" =
       "reasoning_content";
     let reasoningOpen = false;
+    const partialToolCalls = new Map<
+      number,
+      {
+        id: string;
+        name: string;
+        arguments: string;
+        emitted: number;
+        started: boolean;
+      }
+    >();
+    let activeToolCall: number | undefined;
+
+    const finishToolCalls = (): string[] => {
+      const tokens: string[] = [];
+      if (activeToolCall !== undefined) {
+        tokens.push(renderToolCallEnd());
+      }
+      for (const [index, call] of partialToolCalls) {
+        if (index === activeToolCall) {
+          continue;
+        }
+        tokens.push(
+          renderToolCallStart(
+            call.id || `chatmd_call_${index}`,
+            canonicalToolName(call.name, nativeTools),
+          ),
+        );
+        if (call.arguments) {
+          tokens.push(renderToolArgumentsDelta(call.arguments));
+        }
+        tokens.push(renderToolCallEnd());
+      }
+      partialToolCalls.clear();
+      activeToolCall = undefined;
+      return tokens;
+    };
 
     /**
      * Builds the payload token that closes the current reasoning run. Returns an
@@ -465,6 +519,59 @@ export class OpenAIClient {
                       yield reasoningTokens;
                     }
 
+                    if (Array.isArray(choice.delta?.tool_calls)) {
+                      if (reasoningOpen) {
+                        yield closeReasoning();
+                      }
+                      for (const delta of choice.delta.tool_calls) {
+                        const index = delta.index || 0;
+                        const call = partialToolCalls.get(index) || {
+                          id: "",
+                          name: "",
+                          arguments: "",
+                          emitted: 0,
+                          started: false,
+                        };
+                        if (delta.id) {
+                          call.id += delta.id;
+                        }
+                        if (delta.function?.name) {
+                          call.name += delta.function.name;
+                        }
+                        if (delta.function?.arguments) {
+                          call.arguments += delta.function.arguments;
+                        }
+                        partialToolCalls.set(index, call);
+                        if (
+                          activeToolCall === undefined &&
+                          call.name &&
+                          delta.function?.arguments
+                        ) {
+                          activeToolCall = index;
+                        }
+                        const tokens: string[] = [];
+                        if (activeToolCall === index && !call.started && call.name) {
+                          call.started = true;
+                          tokens.push(
+                            renderToolCallStart(
+                              call.id || `chatmd_call_${index}`,
+                              canonicalToolName(call.name, nativeTools),
+                            ),
+                          );
+                        }
+                        if (activeToolCall === index && call.started) {
+                          const pending = call.arguments.substring(call.emitted);
+                          if (pending) {
+                            call.emitted = call.arguments.length;
+                            tokens.push(renderToolArgumentsDelta(pending));
+                          }
+                        }
+                        if (tokens.length > 0) {
+                          yield tokens;
+                        }
+                      }
+                    }
+
                     // The first content delta closes the reasoning run
                     if (choice.delta && choice.delta.content && reasoningOpen) {
                       yield closeReasoning();
@@ -498,6 +605,9 @@ export class OpenAIClient {
                         `Received token event ${eventCount}: "${choice.delta.content}"`,
                       );
                       yield [choice.delta.content];
+                    }
+                    if (choice.finish_reason && partialToolCalls.size > 0) {
+                      yield finishToolCalls();
                     }
                   }
                 } catch (jsonParseError) {
@@ -576,6 +686,9 @@ export class OpenAIClient {
       if (reasoningOpen) {
         yield closeReasoning();
       }
+      if (partialToolCalls.size > 0) {
+        yield finishToolCalls();
+      }
 
       log(`Stream completed, processed ${eventCount} events`);
     } catch (error) {
@@ -606,11 +719,57 @@ export class OpenAIClient {
    */
   private formatMessages(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
+    native: boolean,
     document?: vscode.TextDocument,
   ): any[] {
-    return messages.map((msg) => {
+    const formattedMessages: any[] = [];
+    for (const msg of messages) {
+      const results = msg.content.filter((block) => block.type === "tool_result");
+      if (native && results.length > 0) {
+        for (const result of results) {
+          if (result.type !== "tool_result") {
+            continue;
+          }
+          formattedMessages.push({
+            role: "tool",
+            tool_call_id: result.toolUseId,
+            content: result.content
+              .map((part) =>
+                part.type === "text" ? part.value : "[Tool result image]",
+              )
+              .join("\n\n"),
+          });
+          const images = result.content.filter((part) => part.type === "image");
+          if (images.length > 0) {
+            formattedMessages.push({
+              role: "user",
+              content: this.formatContent(images, document),
+            });
+          }
+        }
+        continue;
+      }
+
       const thinking = msg.content.find((block) => block.type === "thinking");
-      const rest = msg.content.filter((block) => block.type !== "thinking");
+      const toolUses = msg.content.filter((block) => block.type === "tool_use");
+      let rest: Content[] = msg.content.filter((block) => block.type !== "thinking");
+      if (!native) {
+        rest = rest.map((block) =>
+          block.type === "tool_use"
+            ? { type: "text", value: block.rawXml }
+            : block.type === "tool_result"
+              ? { type: "text", value: block.rawText }
+              : block,
+        );
+        if (toolUses.length > 0) {
+          rest.push({ type: "text", value: "<cmd:wait-tool-result/>" });
+        }
+      } else {
+        rest = rest.filter(
+          (block) => block.type !== "tool_use" && block.type !== "tool_result",
+        );
+      }
       const formatted: any = {
         role: msg.role,
         content: this.formatContent(
@@ -631,8 +790,26 @@ export class OpenAIClient {
         }
       }
 
-      return formatted;
-    });
+      if (native && toolUses.length > 0) {
+        formatted.tool_calls = toolUses.flatMap((block) =>
+          block.type === "tool_use"
+            ? [
+                {
+                  id: block.id,
+                  type: "function",
+                  function: {
+                    name: apiToolName(block.name, nativeTools),
+                    arguments: JSON.stringify(block.input),
+                  },
+                },
+              ]
+            : [],
+        );
+      }
+
+      formattedMessages.push(formatted);
+    }
+    return formattedMessages;
   }
 
   /**

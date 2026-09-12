@@ -18,7 +18,7 @@ from chatmd.tools.call_parser import (
     CMD_TOOL_CALL_OPEN_TAG,
     CMD_WAIT_TOOL_RESULT_TAG,
 )
-from chatmd.types import TextContent, ThinkingContent, ThinkingPayload
+from chatmd.types import TextContent, ThinkingContent, ThinkingPayload, ToolUseContent
 
 
 def _tool_call(name: str) -> str:
@@ -129,12 +129,13 @@ def test_hash_lookup_is_skipped_entirely_without_a_base_dir() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_append_wait_marker_attaches_after_the_last_tool_call_in_text() -> None:
+def test_tool_call_is_parsed_as_structured_content() -> None:
     content = f"Before.\n{_tool_call('foo')}\n"
-    result = parse_assistant_content(content, append_wait_marker=True)
-    assert result == [
-        TextContent(value=f"Before.\n{_tool_call('foo')}\n{CMD_WAIT_TOOL_RESULT_TAG}")
-    ]
+    result = parse_assistant_content(content)
+    assert result[0] == TextContent(value="Before.")
+    assert isinstance(result[1], ToolUseContent)
+    assert result[1].name == "foo"
+    assert result[1].raw_xml == _tool_call("foo")
 
 
 def test_append_wait_marker_never_attaches_to_a_tool_call_written_inside_thinking() -> None:
@@ -146,14 +147,16 @@ def test_append_wait_marker_never_attaches_to_a_tool_call_written_inside_thinkin
         f"## %% thinking\n{thinking_body}\nmodelX::deadbeef\n"
         f"## %% text\nBefore.\n{_tool_call('real')}\n"
     )
-    result = parse_assistant_content(content, append_wait_marker=True)
+    result = parse_assistant_content(content)
 
-    assert len(result) == 2
-    thinking, text = result
+    assert len(result) == 3
+    thinking, text, tool_use = result
     assert isinstance(thinking, ThinkingContent)
     assert CMD_WAIT_TOOL_RESULT_TAG not in thinking.value
     assert isinstance(text, TextContent)
-    assert text.value == f"Before.\n{_tool_call('real')}\n{CMD_WAIT_TOOL_RESULT_TAG}"
+    assert text.value == "Before."
+    assert isinstance(tool_use, ToolUseContent)
+    assert tool_use.name == "real"
 
 
 def test_append_wait_marker_skips_a_trailing_text_block_with_no_tool_call() -> None:
@@ -164,26 +167,27 @@ def test_append_wait_marker_skips_a_trailing_text_block_with_no_tool_call() -> N
         f"## %% text\nBefore.\n{_tool_call('real')}\n"
         "## %% text\nJust a trailing remark with no call.\n"
     )
-    result = parse_assistant_content(content, append_wait_marker=True)
+    result = parse_assistant_content(content)
 
-    assert len(result) == 2
-    first, second = result
+    assert len(result) == 3
+    first, tool_use, second = result
     assert isinstance(first, TextContent)
     assert isinstance(second, TextContent)
-    assert first.value == f"Before.\n{_tool_call('real')}\n{CMD_WAIT_TOOL_RESULT_TAG}"
+    assert first.value == "Before."
+    assert isinstance(tool_use, ToolUseContent)
+    assert tool_use.name == "real"
     assert second.value == "Just a trailing remark with no call."
 
 
 def test_append_wait_marker_is_a_no_op_when_no_tool_call_exists_anywhere() -> None:
     content = "Just a normal reply with no tool calls at all."
-    result = parse_assistant_content(content, append_wait_marker=True)
+    result = parse_assistant_content(content)
     assert result == [TextContent(value=content)]
 
 
-def test_append_wait_marker_false_by_default_leaves_tool_call_bare() -> None:
+def test_tool_call_is_structured_without_an_execution_result() -> None:
     content = f"Before.\n{_tool_call('foo')}\n"
     result = parse_assistant_content(content)
-    assert result == [TextContent(value=f"Before.\n{_tool_call('foo')}")]
-    only = result[0]
-    assert isinstance(only, TextContent)
-    assert CMD_WAIT_TOOL_RESULT_TAG not in only.value
+    assert result[0] == TextContent(value="Before.")
+    assert isinstance(result[1], ToolUseContent)
+    assert result[1].name == "foo"

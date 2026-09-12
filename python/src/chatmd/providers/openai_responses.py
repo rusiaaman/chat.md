@@ -12,8 +12,10 @@ context across turns on OpenAI-hosted gpt-* and o-series models.
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -22,6 +24,7 @@ from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 from ..config.model import ResolvedConfig
 from ..fileio import get_mime_type, read_bytes, resolve_file_path
 from ..types import (
+    Content,
     ImageContent,
     MessageParam,
     ReasoningEffort,
@@ -32,11 +35,23 @@ from ..types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultContent,
+    ToolUseContent,
     Usage,
     UsageDelta,
 )
 from .base import MaxTokensError, RetryableError
 from .cleanup import clean_messages_for_api
+from .native_tools import (
+    NativeToolDefinition,
+    api_tool_name,
+    canonical_tool_name,
+    openai_responses_tool_schemas,
+    render_tool_arguments_delta,
+    render_tool_call_end,
+    render_tool_call_start,
+    uses_native_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +156,90 @@ def convert_to_responses_input(
     return input_items
 
 
+def convert_to_responses_input_with_tools(
+    messages: Sequence[MessageParam],
+    tools: Sequence[NativeToolDefinition],
+    native: bool,
+    base_dir: str | Path | None,
+) -> list[dict[str, Any]]:
+    if not native:
+        materialized: list[MessageParam] = []
+        for message in messages:
+            content: list[Content] = []
+            has_tool_use = False
+            for block in message.content:
+                if isinstance(block, ToolUseContent):
+                    content.append(TextContent(value=block.raw_xml))
+                    has_tool_use = True
+                elif isinstance(block, ToolResultContent):
+                    content.append(TextContent(value=block.raw_text))
+                else:
+                    content.append(block)
+            if has_tool_use:
+                content.append(TextContent(value="<cmd:wait-tool-result/>"))
+            materialized.append(MessageParam(role=message.role, content=content))
+        return convert_to_responses_input(materialized, base_dir=base_dir)
+
+    input_items: list[dict[str, Any]] = []
+    for message in messages:
+        normal: list[Content] = [
+            block
+            for block in message.content
+            if not isinstance(block, (ToolUseContent, ToolResultContent))
+        ]
+        input_items.extend(
+            convert_to_responses_input(
+                [MessageParam(role=message.role, content=normal)], base_dir=base_dir
+            )
+        )
+        for block in message.content:
+            if isinstance(block, ToolUseContent):
+                input_items.append(
+                    {
+                        "type": "function_call",
+                        "name": api_tool_name(block.name, tools),
+                        "arguments": json.dumps(block.input, separators=(",", ":")),
+                        "call_id": block.id,
+                    }
+                )
+            elif isinstance(block, ToolResultContent):
+                output: list[dict[str, Any]] = []
+                for part in block.content:
+                    if isinstance(part, TextContent):
+                        output.append({"type": "input_text", "text": part.value})
+                    else:
+                        image_url = _build_image_data_url(part.path, base_dir)
+                        if image_url:
+                            output.append({"type": "input_image", "image_url": image_url})
+                        else:
+                            output.append(
+                                {
+                                    "type": "input_text",
+                                    "text": f"[Failed to load image: {part.path}]",
+                                }
+                            )
+                input_items.append(
+                    {
+                        "type": "function_call_output",
+                        "call_id": block.tool_use_id,
+                        "output": output,
+                    }
+                )
+    return input_items
+
+
+@dataclass
+class _PartialFunctionCall:
+    output_index: int
+    call_id: str = ""
+    name: str = ""
+    arguments: str = ""
+    emitted: int = 0
+    started: bool = False
+    done: bool = False
+    closed: bool = False
+
+
 def _build_image_data_url(path: str, base_dir: str | Path | None) -> str | None:
     """Read a user-attached image off disk and encode it as a data URL."""
     try:
@@ -206,12 +305,14 @@ class OpenAIResponsesClient:
         self,
         messages: list[MessageParam],
         system_prompt: str,
+        tools: Sequence[NativeToolDefinition],
         *,
         base_dir: str | Path | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Yield events for one assistant turn."""
         self.last_usage = None
         model = self.config.model_name or DEFAULT_MODEL
+        native = uses_native_tools(model)
         thinking_enabled = self.config.thinking_enabled
 
         logger.info("Starting OpenAI Responses request with %d messages", len(messages))
@@ -222,7 +323,9 @@ class OpenAIResponsesClient:
             thinking_enabled=thinking_enabled,
             api_style="openai_responses",
         )
-        input_items = convert_to_responses_input(cleaned, base_dir=base_dir)
+        input_items = convert_to_responses_input_with_tools(
+            cleaned, tools, native, base_dir
+        )
         kwargs = build_request_kwargs(
             model=model,
             input_items=input_items,
@@ -231,10 +334,12 @@ class OpenAIResponsesClient:
             thinking_enabled=thinking_enabled,
             reasoning_effort=self.config.reasoning_effort,
         )
+        if native and tools:
+            kwargs["tools"] = openai_responses_tool_schemas(tools)
 
         try:
             response_stream = await self._client.responses.create(**kwargs)
-            async for event in self._translate_stream(response_stream, model):
+            async for event in self._translate_stream(response_stream, model, tools):
                 yield event
         except APIConnectionError as exc:
             # Covers APITimeoutError too, which subclasses APIConnectionError.
@@ -246,7 +351,10 @@ class OpenAIResponsesClient:
             raise
 
     async def _translate_stream(
-        self, events: AsyncIterable[Any], model: str
+        self,
+        events: AsyncIterable[Any],
+        model: str,
+        tools: Sequence[NativeToolDefinition],
     ) -> AsyncIterator[StreamEvent]:
         """Translate Responses SSE events into StreamEvents, tracking usage as it goes.
 
@@ -259,6 +367,8 @@ class OpenAIResponsesClient:
         ``response.reasoning_summary_text.delta``, and the encrypted payload only
         shows up once the reasoning item is done.
         """
+        calls: dict[int, _PartialFunctionCall] = {}
+        active_index: int | None = None
         async for event in events:
             usage_delta = _extract_usage(event)
             if usage_delta is not None:
@@ -271,6 +381,88 @@ class OpenAIResponsesClient:
                 yield UsageDelta(usage=merged)
 
             event_type = getattr(event, "type", None)
+
+            if event_type == "response.output_item.added":
+                item = getattr(event, "item", None)
+                if getattr(item, "type", None) == "function_call":
+                    index = getattr(event, "output_index", 0)
+                    state = calls.setdefault(
+                        index, _PartialFunctionCall(output_index=index)
+                    )
+                    state.call_id = getattr(item, "call_id", "") or state.call_id
+                    state.name = getattr(item, "name", "") or state.name
+                    initial = getattr(item, "arguments", "") or ""
+                    state.arguments += initial
+                    if active_index is None:
+                        active_index = index
+                        state.started = True
+                        yield TextDelta(
+                            render_tool_call_start(
+                                state.call_id or f"chatmd_call_{index}",
+                                canonical_tool_name(state.name, tools),
+                            )
+                        )
+                        if state.arguments:
+                            state.emitted = len(state.arguments)
+                            yield TextDelta(render_tool_arguments_delta(state.arguments))
+                continue
+
+            if event_type == "response.function_call_arguments.delta":
+                index = getattr(event, "output_index", 0)
+                state = calls.setdefault(index, _PartialFunctionCall(output_index=index))
+                delta = getattr(event, "delta", "") or ""
+                state.arguments += delta
+                if active_index == index and delta:
+                    state.emitted = len(state.arguments)
+                    yield TextDelta(render_tool_arguments_delta(delta))
+                continue
+
+            if event_type == "response.function_call_arguments.done":
+                index = getattr(event, "output_index", 0)
+                state = calls.setdefault(index, _PartialFunctionCall(output_index=index))
+                final_arguments = getattr(event, "arguments", None)
+                if isinstance(final_arguments, str) and final_arguments:
+                    state.arguments = final_arguments
+                state.done = True
+                if active_index == index:
+                    pending = state.arguments[state.emitted :]
+                    if pending:
+                        yield TextDelta(render_tool_arguments_delta(pending))
+                    yield TextDelta(render_tool_call_end())
+                    state.closed = True
+                    active_index = None
+                    while active_index is None:
+                        pending_candidate = next(
+                            (
+                                (candidate_index, candidate)
+                                for candidate_index, candidate in calls.items()
+                                if not candidate.started and not candidate.closed
+                            ),
+                            None,
+                        )
+                        if pending_candidate is None:
+                            break
+                        candidate_index, candidate = pending_candidate
+                        candidate.started = True
+                        active_index = candidate_index
+                        yield TextDelta(
+                            render_tool_call_start(
+                                candidate.call_id or f"chatmd_call_{candidate_index}",
+                                canonical_tool_name(candidate.name, tools),
+                            )
+                        )
+                        if candidate.arguments:
+                            candidate.emitted = len(candidate.arguments)
+                            yield TextDelta(
+                                render_tool_arguments_delta(candidate.arguments)
+                            )
+                        if candidate.done:
+                            yield TextDelta(render_tool_call_end())
+                            candidate.closed = True
+                            active_index = None
+                        else:
+                            break
+                continue
 
             if event_type == "response.output_text.delta":
                 delta = getattr(event, "delta", None)
@@ -297,6 +489,16 @@ class OpenAIResponsesClient:
                             encrypted_content=encrypted_content,
                         ),
                     )
+                elif getattr(item, "type", None) == "function_call":
+                    index = getattr(event, "output_index", 0)
+                    state = calls.setdefault(
+                        index, _PartialFunctionCall(output_index=index)
+                    )
+                    state.call_id = getattr(item, "call_id", "") or state.call_id
+                    state.name = getattr(item, "name", "") or state.name
+                    final_arguments = getattr(item, "arguments", None)
+                    if isinstance(final_arguments, str) and final_arguments:
+                        state.arguments = final_arguments
             elif event_type == "response.incomplete":
                 response_obj = getattr(event, "response", None)
                 incomplete_details = getattr(response_obj, "incomplete_details", None)
@@ -314,3 +516,18 @@ class OpenAIResponsesClient:
                 )
                 logger.error("Responses API error event: %s", message)
                 raise RuntimeError(f"Responses API error: {message}")
+
+        for index, state in calls.items():
+            if state.closed:
+                continue
+            if not state.started:
+                yield TextDelta(
+                    render_tool_call_start(
+                        state.call_id or f"chatmd_call_{index}",
+                        canonical_tool_name(state.name, tools),
+                    )
+                )
+            pending = state.arguments[state.emitted :]
+            if pending:
+                yield TextDelta(render_tool_arguments_delta(pending))
+            yield TextDelta(render_tool_call_end())

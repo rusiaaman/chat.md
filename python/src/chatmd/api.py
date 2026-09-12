@@ -18,7 +18,14 @@ from pathlib import Path
 from .config.model import ChatmdConfig, ResolvedConfig
 from .executable import find_chatmd_command
 from .mcp.manager import McpPool
+from .parser.assistant_content import parse_assistant_content
+from .parser.tool_result import parse_tool_result_content
 from .providers.client import create_client
+from .providers.native_tools import (
+    NativeToolDefinition,
+    build_native_tools,
+    uses_native_tools,
+)
 from .providers.prompt import build_system_prompt
 from .render import strip_thinking_sections
 from .tools.call_parser import (
@@ -39,6 +46,8 @@ from .types import (
     ThinkingDelta,
     ThinkingPayloadDelta,
     ToolCall,
+    ToolResultContent,
+    ToolUseContent,
     TurnResult,
     Usage,
     UsageDelta,
@@ -51,17 +60,21 @@ def stream_turn(
     config: ResolvedConfig,
     messages: Sequence[MessageParam],
     system_prompt: str,
+    tools: Sequence[NativeToolDefinition],
     *,
     base_dir: str | Path | None = None,
 ) -> AsyncIterator[StreamEvent]:
     """Raw event stream for one turn, for callers that want to render it themselves."""
-    return create_client(config).stream(list(messages), system_prompt, base_dir=base_dir)
+    return create_client(config).stream(
+        list(messages), system_prompt, tools, base_dir=base_dir
+    )
 
 
 async def complete_turn(
     config: ResolvedConfig,
     messages: Sequence[MessageParam],
     system_prompt: str,
+    tools: Sequence[NativeToolDefinition],
     *,
     base_dir: str | Path | None = None,
 ) -> TurnResult:
@@ -90,7 +103,9 @@ async def complete_turn(
             )
         )
 
-    async for event in client.stream(list(messages), system_prompt, base_dir=base_dir):
+    async for event in client.stream(
+        list(messages), system_prompt, tools, base_dir=base_dir
+    ):
         if isinstance(event, TextDelta):
             text_parts.append(event.text)
         elif isinstance(event, ThinkingDelta):
@@ -114,9 +129,21 @@ async def complete_turn(
         if call is not None
     ]
 
-    content: list[Content] = [*thinking_blocks]
-    if text.strip():
-        content.append(TextContent(value=text.strip()))
+    parsed_content = parse_assistant_content(text, None)
+    structured_uses = [
+        item for item in parsed_content if isinstance(item, ToolUseContent)
+    ]
+    calls = [
+        ToolCall(
+            name=call.name,
+            params=call.params,
+            id=call.id or structured_uses[index].id,
+            input=call.input or structured_uses[index].input,
+            raw_xml=call.raw_xml,
+        )
+        for index, call in enumerate(calls)
+    ]
+    content: list[Content] = [*thinking_blocks, *parsed_content]
 
     return TurnResult(
         text=text,
@@ -151,9 +178,24 @@ async def run_tool_calls(
             body = format_mcp_result(outcome, directory, assets_path)
         else:
             body = outcome
+        raw_text = format_tool_result(body.strip())
+        native_content, raw_text = parse_tool_result_content(raw_text, directory)
         results.append(
             MessageParam(
-                role="user", content=[TextContent(value=format_tool_result(body.strip()))]
+                role="user",
+                content=[
+                    ToolResultContent(
+                        tool_use_id=call.id or f"chatmd_call_{len(results)}",
+                        name=call.name,
+                        content=native_content,
+                        raw_text=raw_text,
+                        is_error=(
+                            outcome.is_error
+                            if isinstance(outcome, McpToolExecutionResult)
+                            else body.lstrip().startswith("Error:")
+                        ),
+                    )
+                ],
             )
         )
     return results
@@ -189,6 +231,7 @@ class ChatSession:
             self.pool.grouped_tools(),
             self.pool.grouped_resources(),
             cli_command=find_chatmd_command(),
+            native_tools=uses_native_tools(self.resolved.model_name or ""),
         )
 
     async def turn(
@@ -199,10 +242,12 @@ class ChatSession:
         doc_dir: str | Path | None = None,
     ) -> list[MessageParam]:
         """One assistant turn plus any tool results, as new history entries."""
+        native_tools = build_native_tools(self.pool.grouped_tools())
         result = await complete_turn(
             self.resolved,
             messages,
             self.system_prompt(custom_system_prompt),
+            native_tools,
             base_dir=doc_dir,
         )
 

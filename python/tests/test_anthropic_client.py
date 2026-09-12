@@ -171,7 +171,7 @@ def test_build_request_thinking_shape(case: ThinkingCase) -> None:
         )
     )
 
-    kwargs = client._build_request(SIMPLE_MESSAGES, "system prompt")
+    kwargs = client._build_request(SIMPLE_MESSAGES, "system prompt", [])
 
     assert kwargs.get("thinking") == case.expected_thinking
     assert kwargs.get("output_config") == case.expected_output_config
@@ -189,7 +189,7 @@ def test_build_request_thinking_shape(case: ThinkingCase) -> None:
 
 def test_build_request_falls_back_to_default_model() -> None:
     client = AnthropicClient(make_config(model_name=None, reasoning_effort="none"))
-    kwargs = client._build_request(SIMPLE_MESSAGES, "sys")
+    kwargs = client._build_request(SIMPLE_MESSAGES, "sys", [])
     assert kwargs["model"] == DEFAULT_MODEL
 
 
@@ -274,7 +274,10 @@ async def test_iter_stream_events_maps_text_and_thinking_deltas() -> None:
         _signature_delta_event("sig-abc"),
     )
 
-    result = [event async for event in client._iter_stream_events(events, "claude-opus-4-6")]
+    result = [
+        event
+        async for event in client._iter_stream_events(events, "claude-opus-4-6", [])
+    ]
 
     assert result == [
         TextDelta("Hello"),
@@ -290,7 +293,10 @@ async def test_iter_stream_events_redacted_thinking_pair() -> None:
     client = make_client()
     events = _async_events(_redacted_thinking_block_start_event("opaque-data"))
 
-    result = [event async for event in client._iter_stream_events(events, "claude-opus-4-6")]
+    result = [
+        event
+        async for event in client._iter_stream_events(events, "claude-opus-4-6", [])
+    ]
 
     assert result == [
         ThinkingDelta("[redacted thinking]"),
@@ -305,7 +311,10 @@ async def test_iter_stream_events_thinking_block_start_with_text() -> None:
     client = make_client()
     events = _async_events(_thinking_block_start_event("already here"))
 
-    result = [event async for event in client._iter_stream_events(events, "claude-opus-4-6")]
+    result = [
+        event
+        async for event in client._iter_stream_events(events, "claude-opus-4-6", [])
+    ]
 
     assert result == [ThinkingDelta("already here")]
 
@@ -328,7 +337,10 @@ async def test_iter_stream_events_merges_usage_across_deltas() -> None:
         ),
     )
 
-    result = [event async for event in client._iter_stream_events(events, "claude-opus-4-6")]
+    result = [
+        event
+        async for event in client._iter_stream_events(events, "claude-opus-4-6", [])
+    ]
 
     assert result == [
         UsageDelta(
@@ -349,7 +361,7 @@ async def test_iter_stream_events_max_tokens_stop_reason_raises() -> None:
 
     collected: list[Any] = []
     with pytest.raises(MaxTokensError):
-        async for event in client._iter_stream_events(events, "claude-opus-4-6"):
+        async for event in client._iter_stream_events(events, "claude-opus-4-6", []):
             collected.append(event)
 
     assert collected == [UsageDelta(Usage(output_tokens=5))]
@@ -363,7 +375,9 @@ async def test_iter_stream_events_max_tokens_stop_reason_raises() -> None:
 def test_format_content_image_load_failure_falls_back_to_placeholder(tmp_path: Path) -> None:
     client = make_client()
     missing = tmp_path / "missing.png"
-    blocks = client._format_content([ImageContent(path=str(missing))], base_dir=None)
+    blocks = client._format_content(
+        [ImageContent(path=str(missing))], [], True, base_dir=None
+    )
     assert blocks == [{"type": "text", "text": f"[Failed to load image: {missing}]"}]
 
 
@@ -371,6 +385,8 @@ def test_format_content_skips_raw_thinking_without_signature() -> None:
     client = make_client()
     blocks = client._format_content(
         [ThinkingContent(value="raw reasoning", payload=None), TextContent(value="hello")],
+        [],
+        True,
         base_dir=None,
     )
     assert blocks == [{"type": "text", "text": "hello"}]
@@ -379,7 +395,7 @@ def test_format_content_skips_raw_thinking_without_signature() -> None:
 def test_format_content_emptied_message_gets_continuing_placeholder() -> None:
     client = make_client()
     blocks = client._format_content(
-        [ThinkingContent(value="raw reasoning", payload=None)], base_dir=None
+        [ThinkingContent(value="raw reasoning", payload=None)], [], True, base_dir=None
     )
     assert blocks == [{"type": "text", "text": "[continuing]"}]
 
@@ -396,6 +412,8 @@ def test_format_content_redacted_and_signature_payloads() -> None:
                 payload=ThinkingPayload(kind="anthropic_signature", signature="s1"),
             ),
         ],
+        [],
+        True,
         base_dir=None,
     )
     assert blocks == [

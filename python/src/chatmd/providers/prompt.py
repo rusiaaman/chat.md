@@ -166,18 +166,22 @@ def build_system_prompt(
     grouped_tools: Mapping[str, Mapping[str, McpToolDefinition]],
     grouped_resources: Mapping[str, Mapping[str, McpResource]],
     *,
-    cli_command: str | None = None,
+    cli_command: str | None,
+    native_tools: bool,
 ) -> str:
     """Join default + file custom + tool prompt, dropping blank parts.
 
     Mirrors the ``[default, custom, tool].filter(p => p && p.trim() !== "").join("\n\n")``
     assembly in ``listener.ts``.
     """
-    parts = [
-        get_default_system_prompt(),
-        custom_system_prompt,
-        generate_tool_calling_system_prompt(
+    agent_context = chatmd_agent_section(cli_command)
+    tool_context = (
+        _build_advertised_resource_section(grouped_resources)
+        + (f"\n\n{agent_context}" if agent_context else "")
+        if native_tools
+        else generate_tool_calling_system_prompt(
             grouped_tools, grouped_resources, cli_command=cli_command
-        ),
-    ]
+        )
+    )
+    parts = [get_default_system_prompt(), custom_system_prompt, tool_context]
     return "\n\n".join(part for part in parts if part and part.strip() != "")

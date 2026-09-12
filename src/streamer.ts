@@ -25,6 +25,7 @@ import {
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
+import { buildNativeTools } from "./nativeTools";
 import {
   appendToChatHistory,
   updateChatHistoryUsage,
@@ -885,6 +886,7 @@ export class StreamingService {
           // Resolve model name (allow per-file override)
           const { getModelName, getModelNameForConfig } = require("./config");
           const modelNameOverride: string | undefined = this.configNameOverride ? getModelNameForConfig(this.configNameOverride) : undefined;
+          const nativeTools = buildNativeTools(mcpClientManager.getGroupedTools());
 
           // Use the provided system prompt
           log(`Using provided system prompt (${systemPrompt.length} chars)`);
@@ -894,6 +896,7 @@ export class StreamingService {
           if (this.provider === "anthropic" && this.anthropicClient) {
             stream = await this.anthropicClient.streamCompletion(
               messages,
+              nativeTools,
               this.document,
               systemPrompt,
               modelNameOverride,
@@ -929,6 +932,7 @@ export class StreamingService {
               }
               stream = await this.openaiResponsesClient.streamCompletion(
                 messages,
+                nativeTools,
                 this.document,
                 systemPrompt,
                 modelNameOverride,
@@ -938,6 +942,7 @@ export class StreamingService {
             } else {
               stream = await this.openaiClient.streamCompletion(
                 messages,
+                nativeTools,
                 this.document,
                 systemPrompt,
                 modelNameOverride,

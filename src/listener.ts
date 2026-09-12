@@ -17,6 +17,7 @@ import {
   // getAnthropicApiKey, // No longer directly used in startStreaming based on latest snippet
   getProvider, // Keep existing config functions
   generateToolCallingSystemPrompt, // Keep existing config functions
+  generateNativeToolSystemPrompt,
   getDefaultSystemPrompt, // Add function to get default system prompt
 } from "./config";
 import * as path from "path";
@@ -38,6 +39,7 @@ import {
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { acquireChatFileLock, ChatLockHandle } from "./utils/fileLock";
+import { usesNativeTools } from "./nativeTools";
 import {
   blockContentRegex,
   escapeMarkers,
@@ -815,19 +817,6 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     // API key will be resolved later based on per-file config
     // Don't get global API key here as it might fail when per-file config is valid
     
-    // Build final system prompt
-    const { getDefaultSystemPrompt, generateToolCallingSystemPrompt } = require("./config");
-    const defaultSystemPrompt = getDefaultSystemPrompt();
-    const mcpGroupedTools = mcpClientManager.getGroupedTools();
-    const mcpGroupedResources = mcpClientManager.getGroupedResources();
-    const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
-
-    const finalSystemPrompt = [
-      defaultSystemPrompt,
-      customSystemPrompt,
-      toolSystemPrompt
-    ].filter(p => p && p.trim() !== '').join('\n\n');
-    
     // Create StreamingService with per-file overrides if available
     const StreamingService = require("./streamer").StreamingService;
 
@@ -858,6 +847,21 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       vscode.window.showErrorMessage(errorMsg);
       return;
     }
+
+    const { getDefaultSystemPrompt, getModelName, getModelNameForConfig } = require("./config");
+    const modelName = perFileConfigName
+      ? getModelNameForConfig(perFileConfigName)
+      : getModelName();
+    const mcpGroupedTools = mcpClientManager.getGroupedTools();
+    const mcpGroupedResources = mcpClientManager.getGroupedResources();
+    const toolSystemPrompt = usesNativeTools(modelName || "")
+      ? generateNativeToolSystemPrompt(mcpGroupedResources)
+      : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
+    const finalSystemPrompt = [
+      getDefaultSystemPrompt(),
+      customSystemPrompt,
+      toolSystemPrompt,
+    ].filter((part) => part && part.trim() !== "").join("\n\n");
 
     const streamingService = new StreamingService(
       apiKeyToUse as string,
@@ -984,7 +988,12 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       // Tool prompt generation (as per current structure)
       const mcpGroupedTools = mcpClientManager.getGroupedTools();
       const mcpGroupedResources = mcpClientManager.getGroupedResources();
-      const toolSystemPrompt = generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
+      const modelName = perFileConfigName
+        ? require("./config").getModelNameForConfig(perFileConfigName)
+        : require("./config").getModelName();
+      const toolSystemPrompt = usesNativeTools(modelName || "")
+        ? generateNativeToolSystemPrompt(mcpGroupedResources)
+        : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
       // Combine
       const finalSystemPrompt = [
           defaultSystemPrompt,

@@ -5,7 +5,7 @@
 /**
  * Represents the type of content in a message
  */
-export type ContentType = "text" | "image" | "thinking";
+export type ContentType = "text" | "image" | "thinking" | "tool_use" | "tool_result";
 
 /**
  * Text content in a message
@@ -85,10 +85,32 @@ export interface ThinkingContent {
   payload?: ThinkingPayload;
 }
 
+export interface ToolUseContent {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+  rawXml: string;
+}
+
+export interface ToolResultContent {
+  type: "tool_result";
+  toolUseId: string;
+  name: string;
+  content: Array<TextContent | ImageContent>;
+  rawText: string;
+  isError: boolean;
+}
+
 /**
  * Union type for different types of content
  */
-export type Content = TextContent | ImageContent | ThinkingContent;
+export type Content =
+  | TextContent
+  | ImageContent
+  | ThinkingContent
+  | ToolUseContent
+  | ToolResultContent;
 
 /**
  * Discriminated union for raw/rich MCP content types returned by tools or prompts

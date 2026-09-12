@@ -5,12 +5,22 @@ import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
-import { generateToolCallingSystemPrompt } from "./config";
+import { generateToolCallingSystemPrompt, getDefaultSystemPrompt } from "./config";
 import {
   encodeThinkingPayloadToken,
   encodeThinkingToken,
 } from "./utils/thinkingBlocks";
 import { cleanMessagesForApi } from "./utils/messageCleanup";
+import {
+  NativeToolDefinition,
+  apiToolName,
+  canonicalToolName,
+  openaiResponsesToolSchemas,
+  renderToolArgumentsDelta,
+  renderToolCallEnd,
+  renderToolCallStart,
+  usesNativeTools,
+} from "./nativeTools";
 
 /**
  * Client for the OpenAI Responses API.
@@ -47,6 +57,7 @@ export class OpenAIResponsesClient {
 
   public async *streamCompletion(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -68,9 +79,13 @@ export class OpenAIResponsesClient {
         }
       }
       modelName = modelName || "gpt-4.1-mini";
+      const native = usesNativeTools(modelName);
 
       const systemPromptToUse =
-        systemPrompt || generateToolCallingSystemPrompt(new Map(), new Map());
+        systemPrompt ||
+        (native
+          ? getDefaultSystemPrompt()
+          : generateToolCallingSystemPrompt(new Map(), new Map()));
 
       const { getMaxTokens, getReasoningEffort } = require("./config");
       const maxTokens = getMaxTokens(configName, fileConfig);
@@ -85,13 +100,21 @@ export class OpenAIResponsesClient {
 
       const requestBody: any = {
         model: modelName,
-        input: this.convertToResponsesInput(cleanedMessages, document),
+        input: this.convertToResponsesInput(
+          cleanedMessages,
+          nativeTools,
+          native,
+          document,
+        ),
         instructions: systemPromptToUse,
         max_output_tokens: maxTokens,
         stream: true,
         // Stateless: chat.md keeps the whole conversation in the document
         store: false,
       };
+      if (native && nativeTools.length > 0) {
+        requestBody.tools = openaiResponsesToolSchemas(nativeTools);
+      }
 
       if (thinkingEnabled) {
         const reasoning: any = { summary: "auto" };
@@ -168,7 +191,7 @@ export class OpenAIResponsesClient {
         throw new Error(errorMessage);
       }
 
-      yield* this.createStreamGenerator(response, modelName);
+      yield* this.createStreamGenerator(response, modelName, nativeTools);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in Responses streamCompletion: ${message}`);
@@ -191,9 +214,23 @@ export class OpenAIResponsesClient {
   private async *createStreamGenerator(
     response: http.IncomingMessage,
     modelName: string,
+    nativeTools: readonly NativeToolDefinition[],
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
+    const calls = new Map<
+      number,
+      {
+        callId: string;
+        name: string;
+        arguments: string;
+        emitted: number;
+        started: boolean;
+        done: boolean;
+        closed: boolean;
+      }
+    >();
+    let activeIndex: number | undefined;
 
     try {
       for await (const chunk of response) {
@@ -239,6 +276,98 @@ export class OpenAIResponsesClient {
           }
 
           switch (data.type) {
+            case "response.output_item.added": {
+              if (data.item?.type === "function_call") {
+                const index = data.output_index || 0;
+                const state = calls.get(index) || {
+                  callId: "",
+                  name: "",
+                  arguments: "",
+                  emitted: 0,
+                  started: false,
+                  done: false,
+                  closed: false,
+                };
+                state.callId = data.item.call_id || state.callId;
+                state.name = data.item.name || state.name;
+                state.arguments += data.item.arguments || "";
+                calls.set(index, state);
+                if (activeIndex === undefined) {
+                  activeIndex = index;
+                  state.started = true;
+                  const tokens = [
+                    renderToolCallStart(
+                      state.callId || `chatmd_call_${index}`,
+                      canonicalToolName(state.name, nativeTools),
+                    ),
+                  ];
+                  if (state.arguments) {
+                    state.emitted = state.arguments.length;
+                    tokens.push(renderToolArgumentsDelta(state.arguments));
+                  }
+                  yield tokens;
+                }
+              }
+              break;
+            }
+            case "response.function_call_arguments.delta": {
+              const index = data.output_index || 0;
+              const state = calls.get(index);
+              if (state && typeof data.delta === "string") {
+                state.arguments += data.delta;
+                if (activeIndex === index) {
+                  state.emitted = state.arguments.length;
+                  yield [renderToolArgumentsDelta(data.delta)];
+                }
+              }
+              break;
+            }
+            case "response.function_call_arguments.done": {
+              const index = data.output_index || 0;
+              const state = calls.get(index);
+              if (state) {
+                if (typeof data.arguments === "string" && data.arguments) {
+                  state.arguments = data.arguments;
+                }
+                state.done = true;
+                if (activeIndex === index) {
+                  const pending = state.arguments.substring(state.emitted);
+                  yield [
+                    ...(pending ? [renderToolArgumentsDelta(pending)] : []),
+                    renderToolCallEnd(),
+                  ];
+                  state.closed = true;
+                  activeIndex = undefined;
+                  while (activeIndex === undefined) {
+                    const next = Array.from(calls.entries()).find(
+                      ([, candidate]) => !candidate.started && !candidate.closed,
+                    );
+                    if (!next) {
+                      break;
+                    }
+                    const [nextIndex, candidate] = next;
+                    candidate.started = true;
+                    activeIndex = nextIndex;
+                    candidate.emitted = candidate.arguments.length;
+                    yield [
+                      renderToolCallStart(
+                        candidate.callId || `chatmd_call_${nextIndex}`,
+                        canonicalToolName(candidate.name, nativeTools),
+                      ),
+                      ...(candidate.arguments
+                        ? [renderToolArgumentsDelta(candidate.arguments)]
+                        : []),
+                    ];
+                    if (candidate.done) {
+                      yield [renderToolCallEnd()];
+                      candidate.closed = true;
+                      activeIndex = undefined;
+                    }
+                  }
+                }
+              }
+              break;
+            }
             case "response.output_text.delta": {
               if (typeof data.delta === "string" && data.delta) {
                 yield [data.delta];
@@ -263,6 +392,14 @@ export class OpenAIResponsesClient {
                 };
                 log(`Received encrypted reasoning item ${item.id}`);
                 yield [encodeThinkingPayloadToken(payload)];
+              } else if (item?.type === "function_call") {
+                const index = data.output_index || 0;
+                const state = calls.get(index);
+                if (state) {
+                  state.callId = item.call_id || state.callId;
+                  state.name = item.name || state.name;
+                  state.arguments = item.arguments || state.arguments;
+                }
               }
               break;
             }
@@ -289,6 +426,26 @@ export class OpenAIResponsesClient {
         }
       }
 
+      for (const [index, state] of calls) {
+        if (state.closed) {
+          continue;
+        }
+        yield [
+          ...(!state.started
+            ? [
+                renderToolCallStart(
+                  state.callId || `chatmd_call_${index}`,
+                  canonicalToolName(state.name, nativeTools),
+                ),
+              ]
+            : []),
+          ...(state.arguments.substring(state.emitted)
+            ? [renderToolArgumentsDelta(state.arguments.substring(state.emitted))]
+            : []),
+          renderToolCallEnd(),
+        ];
+      }
+
       log(`Responses stream completed, processed ${eventCount} events`);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -310,13 +467,41 @@ export class OpenAIResponsesClient {
    */
   private convertToResponsesInput(
     messages: readonly MessageParam[],
+    nativeTools: readonly NativeToolDefinition[],
+    native: boolean,
     document?: vscode.TextDocument,
   ): any[] {
     const input: any[] = [];
 
     for (const message of messages) {
+      if (!native) {
+        const hasToolUse = message.content.some((block) => block.type === "tool_use");
+        const materialized = message.content.flatMap((block): Content[] => {
+          if (block.type === "tool_use") {
+            return [{ type: "text", value: block.rawXml }];
+          }
+          if (block.type === "tool_result") {
+            return [{ type: "text", value: block.rawText }];
+          }
+          return [block];
+        });
+        if (hasToolUse) {
+          materialized.push({ type: "text", value: "<cmd:wait-tool-result/>" });
+        }
+        input.push(
+          ...this.convertToResponsesInput(
+            [{ role: message.role, content: materialized }],
+            nativeTools,
+            true,
+            document,
+          ),
+        );
+        continue;
+      }
+
       if (message.role === "assistant") {
         const textParts: any[] = [];
+        const functionCalls: any[] = [];
 
         for (const block of message.content) {
           if (block.type === "thinking") {
@@ -349,6 +534,13 @@ export class OpenAIResponsesClient {
               text: "[Assistant Image]",
               annotations: [],
             });
+          } else if (block.type === "tool_use") {
+            functionCalls.push({
+              type: "function_call",
+              name: apiToolName(block.name, nativeTools),
+              arguments: JSON.stringify(block.input),
+              call_id: block.id,
+            });
           }
         }
 
@@ -358,6 +550,7 @@ export class OpenAIResponsesClient {
             content: textParts,
           });
         }
+        input.push(...functionCalls);
         continue;
       }
 
@@ -377,6 +570,24 @@ export class OpenAIResponsesClient {
               text: `[Failed to load image: ${block.path}]`,
             });
           }
+        } else if (block.type === "tool_result") {
+          const output = block.content.map((part) => {
+            if (part.type === "text") {
+              return { type: "input_text", text: part.value };
+            }
+            const imageUrl = this.buildImageDataUrl(part, document);
+            return imageUrl
+              ? { type: "input_image", image_url: imageUrl }
+              : {
+                  type: "input_text",
+                  text: `[Failed to load image: ${part.path}]`,
+                };
+          });
+          input.push({
+            type: "function_call_output",
+            call_id: block.toolUseId,
+            output,
+          });
         }
       }
 

@@ -7,12 +7,13 @@ SDK produced them.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from ..config.model import ResolvedConfig
 from ..types import MessageParam, StreamEvent, Usage
+from .native_tools import NativeToolDefinition
 
 
 @runtime_checkable
@@ -27,6 +28,7 @@ class LlmClient(Protocol):
         self,
         messages: list[MessageParam],
         system_prompt: str,
+        tools: Sequence[NativeToolDefinition],
         *,
         base_dir: str | Path | None = None,
     ) -> AsyncIterator[StreamEvent]:

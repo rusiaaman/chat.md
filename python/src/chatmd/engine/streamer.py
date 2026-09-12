@@ -24,6 +24,7 @@ from ..markers import could_become_marker_line, escape_markers, unescape_markers
 from ..parser.assistant_content import parse_assistant_content
 from ..parser.blocks import find_all_assistant_blocks
 from ..providers.base import LlmClient, MaxTokensError, RetryableError
+from ..providers.native_tools import NativeToolDefinition
 from ..render import (
     SectionState,
     block_marker_prefix,
@@ -139,7 +140,12 @@ class FileStreamer:
         """Stop at the next batch boundary, leaving what is already written."""
         self.state.active = False
 
-    async def run(self, messages: list[MessageParam], system_prompt: str) -> StreamResult:
+    async def run(
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: list[NativeToolDefinition],
+    ) -> StreamResult:
         """Stream a turn, retrying transport failures and output-limit truncation."""
         current = list(messages)
         server_attempt = 0
@@ -147,7 +153,7 @@ class FileStreamer:
 
         while True:
             try:
-                return await self._stream_once(current, system_prompt)
+                return await self._stream_once(current, system_prompt, tools)
             except MaxTokensError as error:
                 token_attempt += 1
                 if token_attempt >= MAX_TOKEN_RETRIES or not self.state.active:
@@ -179,7 +185,10 @@ class FileStreamer:
     # -- the turn ---------------------------------------------------------- #
 
     async def _stream_once(
-        self, messages: list[MessageParam], system_prompt: str
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: list[NativeToolDefinition],
     ) -> StreamResult:
         buffering = False
         buffer_text = ""
@@ -188,7 +197,9 @@ class FileStreamer:
         stray_wait_marker = False
         tool_calls_written = 0
 
-        stream = self.client.stream(messages, system_prompt, base_dir=self.path.parent)
+        stream = self.client.stream(
+            messages, system_prompt, tools, base_dir=self.path.parent
+        )
 
         async for events in batched_events(stream, self.batch_interval):
             if not self.state.active:

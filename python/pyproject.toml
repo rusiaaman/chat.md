@@ -1,6 +1,6 @@
 [project]
 name = "chatmd"
-version = "0.1.0"
+version = "0.7.0"
 description = "Engine and CLI for .chat.md files — a plain-text chat interface to any LLM"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -173,6 +173,14 @@ Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses
   return prompt + chatmdAgentSection(findChatmdCommand());
 }
 
+export function generateNativeToolSystemPrompt(
+  mcpGroupedResources: Map<string, Map<string, McpResource>>,
+): string {
+  const resources = buildAdvertisedResourceSection(mcpGroupedResources);
+  const agent = chatmdAgentSection(findChatmdCommand());
+  return [resources, agent].filter((part) => part.trim() !== "").join("\n\n");
+}
+
 function buildAdvertisedResourceSection(
   mcpGroupedResources: Map<string, Map<string, McpResource>>,
 ): string {
@@ -626,4 +634,3 @@ export function getAutoSaveAfterStreaming(): boolean {
   const config = vscode.workspace.getConfiguration("chatmd");
   return config.get("autoSaveAfterStreaming") ?? true; // Default to true
 }
-

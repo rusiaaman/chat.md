@@ -50,6 +50,7 @@ from .parser import (
     parse_document,
     parse_user_content,
 )
+from .providers.native_tools import NativeToolDefinition, build_native_tools
 from .providers.prompt import build_system_prompt, generate_tool_calling_system_prompt
 from .types import (
     Content,
@@ -64,12 +65,14 @@ from .types import (
     ThinkingPayload,
     ThinkingPayloadDelta,
     ToolCall,
+    ToolResultContent,
+    ToolUseContent,
     TurnResult,
     Usage,
     UsageDelta,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "ApiConfig",
@@ -87,6 +90,7 @@ __all__ = [
     "McpPool",
     "McpServerConfig",
     "MessageParam",
+    "NativeToolDefinition",
     "ParsedDocument",
     "ResolvedConfig",
     "StepAction",
@@ -101,12 +105,15 @@ __all__ = [
     "ThinkingPayload",
     "ThinkingPayloadDelta",
     "ToolCall",
+    "ToolResultContent",
+    "ToolUseContent",
     "TurnResult",
     "Usage",
     "UsageDelta",
     "__version__",
     "assistant_text",
     "build_system_prompt",
+    "build_native_tools",
     "chat_file_lock",
     "complete_turn",
     "config_exists",

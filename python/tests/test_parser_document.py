@@ -17,7 +17,7 @@ from chatmd.tools.call_parser import (
     CMD_TOOL_CALL_OPEN_TAG,
     CMD_WAIT_TOOL_RESULT_TAG,
 )
-from chatmd.types import ImageContent, TextContent
+from chatmd.types import ImageContent, TextContent, ToolResultContent, ToolUseContent
 
 
 def _tool_call(name: str) -> str:
@@ -181,7 +181,7 @@ def test_non_triggering_empty_assistant_block_in_the_middle_is_skipped() -> None
 # --------------------------------------------------------------------------- #
 
 
-def test_assistant_followed_by_tool_execute_gets_the_wait_marker() -> None:
+def test_assistant_and_result_are_parsed_as_native_tool_history() -> None:
     text = (
         "# %% user\nDo something\n\n"
         f"# %% assistant\nLet me help.\n{_tool_call('foo')}\n\n"
@@ -190,9 +190,13 @@ def test_assistant_followed_by_tool_execute_gets_the_wait_marker() -> None:
     doc = parse_document(text, None)
     assistant_message = doc.messages[1]
     assert assistant_message.role == "assistant"
-    assert assistant_message.content == [
-        TextContent(value=f"Let me help.\n{_tool_call('foo')}\n{CMD_WAIT_TOOL_RESULT_TAG}")
-    ]
+    assert assistant_message.content[0] == TextContent(value="Let me help.")
+    tool_use = assistant_message.content[1]
+    assert isinstance(tool_use, ToolUseContent)
+    result = doc.messages[2].content[0]
+    assert isinstance(result, ToolResultContent)
+    assert result.tool_use_id == tool_use.id
+    assert result.content == [TextContent(value="ok")]
 
 
 def test_assistant_followed_by_user_does_not_get_the_wait_marker() -> None:
@@ -206,12 +210,8 @@ def test_assistant_followed_by_user_does_not_get_the_wait_marker() -> None:
     )
     doc = parse_document(text, None)
     assistant_message = doc.messages[1]
-    assert assistant_message.content == [
-        TextContent(value=f"Let me help.\n{_tool_call('foo')}")
-    ]
-    content = assistant_message.content[0]
-    assert isinstance(content, TextContent)
-    assert CMD_WAIT_TOOL_RESULT_TAG not in content.value
+    assert assistant_message.content[0] == TextContent(value="Let me help.")
+    assert isinstance(assistant_message.content[1], ToolUseContent)
 
 
 def test_trailing_assistant_block_with_no_next_block_does_not_get_the_wait_marker() -> None:

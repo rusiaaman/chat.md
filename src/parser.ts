@@ -1,4 +1,13 @@
-import { MessageParam, Content, Role, ThinkingContent } from "./types";
+import {
+  MessageParam,
+  Content,
+  Role,
+  ThinkingContent,
+  ToolResultContent,
+  ToolUseContent,
+  TextContent,
+  ImageContent,
+} from "./types";
 import { log, logVerbose } from "./extension";
 import * as vscode from "vscode"; // Ensure vscode is imported
 import * as path from "path";
@@ -16,8 +25,10 @@ import {
   parseThinkingSection,
 } from "./utils/thinkingBlocks";
 import { getThinkingEntry } from "./utils/thinkingMap";
-import { appendWaitMarkerAfterLastToolCall } from "./tools/toolCallParser";
+import { findAllToolCalls, parseToolCall } from "./tools/toolCallParser";
 import { unescapeMarkers } from "./utils/markerEscape";
+import { createHash } from "crypto";
+import { inputFromParams } from "./nativeTools";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -270,6 +281,8 @@ export function parseDocument(
   let systemPromptParts: string[] = [];
   let hasImageInSystemBlock = false;
   let settingsBlock: string | null = null;
+  let pendingToolUses: ToolUseContent[] = [];
+  let pendingResultIndex = 0;
 
   // Regex to split document on # %% markers, now including 'system' and 'settings'
   const regex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
@@ -349,16 +362,38 @@ export function parseDocument(
       if (content) {
         // Process tool_execute blocks to potentially inline file content from links
         // and extract images as proper image content objects
-        const processedContent = processToolResultContent(content, document);
-        messages.push({
-          role: "user", // Represent tool result as user message for context
-          content: processedContent,
-        });
+        if (pendingResultIndex < pendingToolUses.length) {
+          const toolUse = pendingToolUses[pendingResultIndex];
+          const processed = parseToolResultContent(content, document);
+          messages.push({
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                toolUseId: toolUse.id,
+                name: toolUse.name,
+                content: processed.content,
+                rawText: processed.rawText,
+                isError: processed.content.some(
+                  (item) =>
+                    item.type === "text" &&
+                    item.value.trimStart().startsWith("Error:"),
+                ),
+              },
+            ],
+          });
+          pendingResultIndex++;
+        } else {
+          const processedContent = processToolResultContent(content, document);
+          messages.push({ role: "user", content: processedContent });
+        }
       }
       // Empty tool_execute blocks are ignored here (handled by endIdx check)
     }
     // Detect user block
     else if (role === "user") {
+      pendingToolUses = [];
+      pendingResultIndex = 0;
       const parsedContent = parseUserContent(content, document);
       // Only add user message if it results in non-empty content after parsing
       // Check if there's any non-whitespace text or an image
@@ -375,23 +410,19 @@ export function parseDocument(
     else if (role === "assistant") {
        // Only add assistant message if it has actual content
        if (content) {
-         // A tool_execute block after this one means the batch finished and ran, so
-         // the end-of-batch marker belongs back in the replayed turn. Without one
-         // the batch is still in flight (a resumed or partial assistant block) and
-         // claiming it ended would be a lie.
-         const nextRole =
-           i + 2 < endIdx ? blocks[i + 2].toLowerCase().trim() : null;
-         const batchExecuted = nextRole === "tool_execute";
          const assistantContent = parseAssistantContent(
            content,
            document,
-           batchExecuted,
          );
          if (assistantContent.length > 0) {
            messages.push({
              role: "assistant",
              content: assistantContent,
            });
+           pendingToolUses = assistantContent.filter(
+             (item): item is ToolUseContent => item.type === "tool_use",
+           );
+           pendingResultIndex = 0;
          } else {
            logVerbose(() => "Skipping assistant block that parsed to empty content.");
          }
@@ -431,7 +462,6 @@ export function parseDocument(
 export function parseAssistantContent(
   content: string,
   document?: vscode.TextDocument,
-  appendWaitMarker: boolean = false,
 ): Content[] {
   const sections = splitAssistantSections(content);
   const docDir = document ? path.dirname(document.uri.fsPath) : undefined;
@@ -446,7 +476,7 @@ export function parseAssistantContent(
     if (section.type === "text") {
       const text = body.trim();
       if (text) {
-        result.push({ type: "text", value: text });
+        result.push(...parseTextAndTools(text));
       }
       continue;
     }
@@ -480,36 +510,41 @@ export function parseAssistantContent(
     result.push(thinking);
   }
 
-  if (appendWaitMarker) {
-    appendWaitMarkerToLastToolCall(result);
-  }
-
   return result;
 }
 
-/**
- * Puts the end-of-batch marker back after the last tool call of a finished
- * assistant turn, in place.
- *
- * The marker is a stream-control signal, so it is stripped while streaming and
- * never stored in the document. The model is asked to always end a batch with
- * one, so replaying history without it would show the model its own turns in a
- * shape it was told not to produce. Only text sections are considered: a tool
- * call written inside thinking was never a call.
- */
-function appendWaitMarkerToLastToolCall(content: Content[]): void {
-  for (let i = content.length - 1; i >= 0; i--) {
-    const item = content[i];
-    if (item.type !== "text") {
-      continue;
+function parseTextAndTools(text: string): Content[] {
+  const content: Content[] = [];
+  let cursor = 0;
+  for (const [ordinal, rawXml] of findAllToolCalls(text).entries()) {
+    const start = text.indexOf(rawXml, cursor);
+    const before = text.substring(cursor, start).trim();
+    if (before) {
+      content.push({ type: "text", value: before });
     }
-
-    const withMarker = appendWaitMarkerAfterLastToolCall(item.value);
-    if (withMarker !== item.value) {
-      content[i] = { ...item, value: withMarker };
-      return;
+    const parsed = parseToolCall(rawXml);
+    if (parsed) {
+      const digest = createHash("sha256")
+        .update(`${ordinal}:${rawXml}`)
+        .digest("hex")
+        .substring(0, 24);
+      content.push({
+        type: "tool_use",
+        id: parsed.id || `chatmd_${digest}`,
+        name: parsed.name,
+        input: parsed.input || inputFromParams(parsed.params),
+        rawXml,
+      });
+    } else {
+      content.push({ type: "text", value: rawXml });
     }
+    cursor = start + rawXml.length;
   }
+  const after = text.substring(cursor).trim();
+  if (after) {
+    content.push({ type: "text", value: after });
+  }
+  return content;
 }
 
 /**
@@ -824,7 +859,7 @@ export function hasEmptyToolExecuteBlock(text: string): boolean {
 function processToolResultContent(
   content: string,
   document?: vscode.TextDocument,
-): Content[] {
+): Array<TextContent | ImageContent> {
   if (!document) {
     return [{ type: "text", value: content }];
   }
@@ -845,7 +880,7 @@ function processToolResultContent(
 
   // If we have images, process them as separate content objects
   if (imageMatches.length > 0) {
-    const contentArray: Content[] = [];
+    const contentArray: Array<TextContent | ImageContent> = [];
     let lastIndex = 0;
 
     for (const match of imageMatches) {
@@ -934,6 +969,30 @@ function processToolResultContent(
   );
   
   return [{ type: "text", value: replacedContent }];
+}
+
+function parseToolResultContent(
+  content: string,
+  document?: vscode.TextDocument,
+): { content: Array<TextContent | ImageContent>; rawText: string } {
+  const processed = processToolResultContent(content, document);
+  const rawText =
+    processed.length === 1 && processed[0].type === "text"
+      ? processed[0].value
+      : content;
+  return {
+    content: processed.map((item) => {
+      if (item.type === "image") {
+        return item;
+      }
+      const match = item.value.match(/<tool_result>([\s\S]*?)<\/tool_result>/);
+      return {
+        type: "text",
+        value: match ? match[1].trim() : item.value,
+      };
+    }),
+    rawText,
+  };
 }
 
 /**

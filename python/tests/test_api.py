@@ -47,7 +47,12 @@ class FakeClient:
         self.calls: list[list[MessageParam]] = []
 
     def stream(
-        self, messages: list[MessageParam], system_prompt: str, *, base_dir: Any = None
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: Sequence[Any],
+        *,
+        base_dir: Any = None,
     ) -> AsyncIterator[StreamEvent]:
         self.calls.append(list(messages))
         script = self.scripts.pop(0) if self.scripts else []
@@ -118,7 +123,7 @@ async def test_text_and_usage_are_collected(
         monkeypatch,
         FakeClient([TextDelta("Hello "), TextDelta("world"), UsageDelta(Usage(output_tokens=5))]),
     )
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
 
     assert turn.text == "Hello world"
     assert turn.usage is not None and turn.usage.output_tokens == 5
@@ -136,7 +141,7 @@ async def test_usage_deltas_are_merged(monkeypatch: pytest.MonkeyPatch, resolved
             ]
         ),
     )
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
     assert turn.usage is not None
     assert (turn.usage.input_tokens, turn.usage.output_tokens) == (100, 7)
 
@@ -155,7 +160,7 @@ async def test_thinking_is_captured_with_its_payload(
             ]
         ),
     )
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
 
     assert len(turn.thinking) == 1
     assert turn.thinking[0].value == "weighing"
@@ -168,7 +173,7 @@ async def test_reasoning_with_no_payload_survives_as_raw_text(
     monkeypatch: pytest.MonkeyPatch, resolved: Any
 ) -> None:
     install(monkeypatch, FakeClient([ThinkingDelta("just words"), TextDelta("done")]))
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
     assert [block.value for block in turn.thinking] == ["just words"]
     assert turn.thinking[0].payload is None
 
@@ -181,7 +186,7 @@ async def test_the_end_of_batch_marker_is_stripped(
         monkeypatch,
         FakeClient([TextDelta(tool_call("read") + "\n" + CMD_WAIT_TOOL_RESULT_TAG + "\n")]),
     )
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
 
     assert CMD_WAIT_TOOL_RESULT_TAG not in turn.text
     assert turn.ended_on_wait_marker is True
@@ -193,7 +198,7 @@ async def test_tool_calls_are_parsed_in_order(
 ) -> None:
     batch = tool_call("read", "a") + "\n" + tool_call("write", "b")
     install(monkeypatch, FakeClient([TextDelta(batch)]))
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
 
     assert [call.name for call in turn.tool_calls] == ["read", "write"]
     assert turn.tool_calls[0].params == {"p": "a"}
@@ -203,7 +208,7 @@ async def test_a_turn_with_no_tool_calls_reports_none(
     monkeypatch: pytest.MonkeyPatch, resolved: Any
 ) -> None:
     install(monkeypatch, FakeClient([TextDelta("just prose")]))
-    turn = await complete_turn(resolved, [user("hi")], "sys")
+    turn = await complete_turn(resolved, [user("hi")], "sys", [])
     assert turn.tool_calls == []
     assert turn.ended_on_wait_marker is False
 
@@ -223,7 +228,7 @@ async def test_each_call_becomes_its_own_user_message(tmp_path: Any) -> None:
     messages = await run_tool_calls(calls, pool, doc_dir=tmp_path)  # type: ignore[arg-type]
 
     assert [message.role for message in messages] == ["user", "user"]
-    bodies = [message.content[0].value for message in messages]  # type: ignore[union-attr]
+    bodies = [message.content[0].raw_text for message in messages]  # type: ignore[union-attr]
     assert "<tool_result>" in bodies[0] and "A" in bodies[0]
     assert "B" in bodies[1]
     assert [name for name, _ in pool.called] == ["s.read", "s.read"]
@@ -235,7 +240,7 @@ async def test_a_failing_tool_becomes_a_message_not_an_exception(tmp_path: Any) 
     messages = await run_tool_calls(
         [ToolCall(name="nope", params={})], pool, doc_dir=tmp_path  # type: ignore[arg-type]
     )
-    body = messages[0].content[0].value  # type: ignore[union-attr]
+    body = messages[0].content[0].raw_text  # type: ignore[union-attr]
     assert "not found" in body
 
 
@@ -308,12 +313,12 @@ async def test_run_does_not_mutate_the_caller_list(
     assert len(messages) == 1
 
 
-def test_the_system_prompt_includes_the_built_in_tool(
+def test_native_system_prompt_omits_the_custom_tool_protocol(
     config: ChatmdConfig,
 ) -> None:
     session = ChatSession(config, FakePool())  # type: ignore[arg-type]
     prompt = session.system_prompt("Be brief.")
-    assert "system.fetch_mcp_resource" in prompt
+    assert "<cmd:tool_call>" not in prompt
     assert "Be brief." in prompt
 
 

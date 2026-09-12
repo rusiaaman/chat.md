@@ -10,6 +10,7 @@ is required, how a max_tokens/budget conflict is resolved) are carried over as-i
 from __future__ import annotations
 
 import base64
+import json
 import logging
 from collections.abc import AsyncIterable, AsyncIterator, Sequence
 from pathlib import Path
@@ -30,6 +31,8 @@ from ..types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultContent,
+    ToolUseContent,
     Usage,
     UsageDelta,
 )
@@ -43,6 +46,16 @@ from .capabilities import (
     to_adaptive_effort,
 )
 from .cleanup import clean_messages_for_api
+from .native_tools import (
+    NativeToolDefinition,
+    anthropic_tool_schemas,
+    api_tool_name,
+    canonical_tool_name,
+    render_tool_arguments_delta,
+    render_tool_call_end,
+    render_tool_call_start,
+    uses_native_tools,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,18 +81,19 @@ class AnthropicClient:
         self,
         messages: list[MessageParam],
         system_prompt: str,
+        tools: Sequence[NativeToolDefinition],
         *,
         base_dir: str | Path | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Yield events for one assistant turn, raising on transport failure."""
         self.last_usage = None
         model_name = self.config.model_name or DEFAULT_MODEL
-        kwargs = self._build_request(messages, system_prompt, base_dir=base_dir)
+        kwargs = self._build_request(messages, system_prompt, tools, base_dir=base_dir)
 
         logger.info("Starting Anthropic request with %d messages", len(messages))
         try:
             raw_stream = await self._client.messages.create(**kwargs)
-            async for event in self._iter_stream_events(raw_stream, model_name):
+            async for event in self._iter_stream_events(raw_stream, model_name, tools):
                 yield event
         except MaxTokensError:
             raise
@@ -100,12 +114,14 @@ class AnthropicClient:
         self,
         messages: Sequence[MessageParam],
         system_prompt: str,
+        tools: Sequence[NativeToolDefinition],
         *,
         base_dir: str | Path | None = None,
     ) -> dict[str, Any]:
         """Build the ``messages.create`` kwargs, mirroring the TS request body."""
         config = self.config
         model_name = config.model_name or DEFAULT_MODEL
+        native = uses_native_tools(model_name)
         max_tokens = config.max_tokens
         # Thinking is on unless it was explicitly turned off.
         thinking_enabled = config.reasoning_effort != "none"
@@ -162,8 +178,12 @@ class AnthropicClient:
             "system": system_prompt,
             "stream": True,
             "max_tokens": max_tokens,
-            "messages": self._format_messages(cleaned_messages, base_dir=base_dir),
+            "messages": self._format_messages(
+                cleaned_messages, tools, native, base_dir=base_dir
+            ),
         }
+        if native and tools:
+            kwargs["tools"] = anthropic_tool_schemas(tools)
         if thinking_config is not None:
             kwargs["thinking"] = thinking_config
         if output_config is not None:
@@ -176,18 +196,30 @@ class AnthropicClient:
     # -- content formatting -------------------------------------------------- #
 
     def _format_messages(
-        self, messages: Sequence[MessageParam], *, base_dir: str | Path | None
+        self,
+        messages: Sequence[MessageParam],
+        tools: Sequence[NativeToolDefinition],
+        native: bool,
+        *,
+        base_dir: str | Path | None,
     ) -> list[dict[str, Any]]:
         return [
             {
                 "role": message.role,
-                "content": self._format_content(message.content, base_dir=base_dir),
+                "content": self._format_content(
+                    message.content, tools, native, base_dir=base_dir
+                ),
             }
             for message in messages
         ]
 
     def _format_content(
-        self, content_items: Sequence[Content], *, base_dir: str | Path | None
+        self,
+        content_items: Sequence[Content],
+        tools: Sequence[NativeToolDefinition],
+        native: bool,
+        *,
+        base_dir: str | Path | None,
     ) -> list[dict[str, Any]]:
         blocks: list[dict[str, Any]] = []
         for content in content_items:
@@ -211,6 +243,41 @@ class AnthropicClient:
                     logger.debug("Skipping thinking block without an Anthropic signature")
             elif isinstance(content, ImageContent):
                 blocks.append(self._format_image(content, base_dir=base_dir))
+            elif isinstance(content, ToolUseContent):
+                if native:
+                    blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": content.id,
+                            "name": api_tool_name(content.name, tools),
+                            "input": content.input,
+                        }
+                    )
+                else:
+                    blocks.append({"type": "text", "text": content.raw_xml})
+            elif isinstance(content, ToolResultContent):
+                if native:
+                    result_parts = [
+                        (
+                            {"type": "text", "text": part.value}
+                            if isinstance(part, TextContent)
+                            else self._format_image(part, base_dir=base_dir)
+                        )
+                        for part in content.content
+                    ]
+                    blocks.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": content.tool_use_id,
+                            "content": result_parts,
+                            "is_error": content.is_error,
+                        }
+                    )
+                else:
+                    blocks.append({"type": "text", "text": content.raw_text})
+
+        if not native and any(isinstance(item, ToolUseContent) for item in content_items):
+            blocks.append({"type": "text", "text": "<cmd:wait-tool-result/>"})
 
         if not blocks:
             blocks.append({"type": "text", "text": _CONTINUING_PLACEHOLDER})
@@ -236,13 +303,17 @@ class AnthropicClient:
     # -- stream translation --------------------------------------------------- #
 
     async def _iter_stream_events(
-        self, raw_events: AsyncIterable[Any], model_name: str
+        self,
+        raw_events: AsyncIterable[Any],
+        model_name: str,
+        tools: Sequence[NativeToolDefinition],
     ) -> AsyncIterator[StreamEvent]:
         """Map raw Anthropic SSE events onto StreamEvents.
 
         Duck-typed on ``.type``/attribute access rather than the SDK's event
         classes, so this is unit-testable with plain stub objects.
         """
+        active_tool_blocks: set[int] = set()
         async for event in raw_events:
             event_type = getattr(event, "type", None)
 
@@ -267,6 +338,10 @@ class AnthropicClient:
                                 kind="anthropic_signature", signature=signature
                             ),
                         )
+                elif delta_type == "input_json_delta":
+                    partial_json = getattr(delta, "partial_json", "")
+                    if partial_json:
+                        yield TextDelta(render_tool_arguments_delta(partial_json))
 
             elif event_type == "content_block_start":
                 block = event.content_block
@@ -283,6 +358,29 @@ class AnthropicClient:
                     thinking_text = getattr(block, "thinking", "")
                     if thinking_text:
                         yield ThinkingDelta(thinking_text)
+                elif block_type == "tool_use":
+                    index = getattr(event, "index", 0)
+                    active_tool_blocks.add(index)
+                    api_name = getattr(block, "name", "")
+                    call_id = getattr(block, "id", "")
+                    yield TextDelta(
+                        render_tool_call_start(
+                            call_id, canonical_tool_name(api_name, tools)
+                        )
+                    )
+                    initial_input = getattr(block, "input", None)
+                    if initial_input:
+                        yield TextDelta(
+                            render_tool_arguments_delta(
+                                json.dumps(initial_input, separators=(",", ":"))
+                            )
+                        )
+
+            elif event_type == "content_block_stop":
+                index = getattr(event, "index", 0)
+                if index in active_tool_blocks:
+                    active_tool_blocks.remove(index)
+                    yield TextDelta(render_tool_call_end())
 
             elif event_type == "message_start":
                 usage = getattr(event.message, "usage", None)

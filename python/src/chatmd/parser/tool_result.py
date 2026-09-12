@@ -16,10 +16,10 @@ from pathlib import Path
 from chatmd.fileio import (
     file_exists,
     is_image_file,
-    read_text_cached as read_text,
     resolve_file_path,
 )
-from chatmd.types import Content, ImageContent, TextContent
+from chatmd.fileio import read_text_cached as read_text
+from chatmd.types import ImageContent, TextContent
 
 _TOOL_RESULT_RE = re.compile(r"<tool_result>(.*?)</tool_result>", re.DOTALL)
 
@@ -45,9 +45,9 @@ def _strip_whole_code_fence(text: str) -> str:
     return _WHOLE_FENCE_RE.sub(replace, text)
 
 
-def _split_out_images(body: str) -> list[Content]:
+def _split_out_images(body: str) -> list[TextContent | ImageContent]:
     """Interleave the text and image links a tool result contains."""
-    content: list[Content] = []
+    content: list[TextContent | ImageContent] = []
     last_index = 0
 
     for match in _IMAGE_MARKDOWN_RE.finditer(body):
@@ -66,7 +66,9 @@ def _split_out_images(body: str) -> list[Content]:
     return content
 
 
-def process_tool_result_content(content: str, base_dir: Path | None = None) -> list[Content]:
+def process_tool_result_content(
+    content: str, base_dir: Path | None = None
+) -> list[TextContent | ImageContent]:
     """Parse a tool_execute block, inlining linked results and extracting images."""
     if base_dir is None:
         return [TextContent(value=content)]
@@ -105,3 +107,24 @@ def process_tool_result_content(content: str, base_dir: Path | None = None) -> l
         lambda _m: f"<tool_result>\n{file_content}\n</tool_result>", content, count=1
     )
     return [TextContent(value=replaced)]
+
+
+def parse_tool_result_content(
+    content: str, base_dir: Path | None
+) -> tuple[list[TextContent | ImageContent], str]:
+    """Return native result parts and the equivalent custom-protocol text."""
+    processed = process_tool_result_content(content, base_dir)
+    raw_text = content
+    if len(processed) == 1 and isinstance(processed[0], TextContent):
+        raw_text = processed[0].value
+
+    native: list[TextContent | ImageContent] = []
+    for item in processed:
+        if isinstance(item, ImageContent):
+            native.append(item)
+            continue
+        match = _TOOL_RESULT_RE.search(item.value)
+        native.append(
+            TextContent(value=match.group(1).strip() if match is not None else item.value)
+        )
+    return native, raw_text

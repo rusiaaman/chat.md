@@ -1,4 +1,9 @@
 import { log } from "../extension";
+import {
+  paramsFromInput,
+  parseNativeArguments,
+  unescapeXml,
+} from "../nativeTools";
 
 /**
  * Represents the structure of a parsed tool call
@@ -6,6 +11,8 @@ import { log } from "../extension";
 export interface ParsedToolCall {
   name: string;
   params: Record<string, string>;
+  id?: string;
+  input?: Record<string, unknown>;
 }
 
 /**
@@ -348,8 +355,18 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
       return null;
     }
 
-    const toolName = nameMatch[1].trim();
-    const params: Record<string, string> = {};
+    const toolName = unescapeXml(nameMatch[1].trim());
+    const idMatch = /<cmd:tool_id>\s*(.*?)\s*<\/cmd:tool_id>/s.exec(
+      originalToolCallContent,
+    );
+    const argumentsMatch = /<cmd:arguments>([\s\S]*?)<\/cmd:arguments>/s.exec(
+      originalToolCallContent,
+    );
+    const id = idMatch ? unescapeXml(idMatch[1].trim()) : undefined;
+    const input = argumentsMatch
+      ? parseNativeArguments(argumentsMatch[1])
+      : undefined;
+    let params: Record<string, string> = {};
 
     // Extract parameters with more precise formatting
     // Updated regex to require quotes around parameter names and be flexible with whitespace
@@ -380,10 +397,14 @@ export function parseToolCall(toolCallXml: string): ParsedToolCall | null {
       }
     }
 
+    if (input) {
+      params = paramsFromInput(input);
+    }
+
     log(
       `Parsed tool call with parameters: ${JSON.stringify(Object.keys(params))}`,
     );
-    return { name: toolName, params };
+    return { name: toolName, params, id, input };
   } catch (error) {
     log(`Error parsing tool call: ${error}`);
     return null;

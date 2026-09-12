@@ -242,7 +242,7 @@ async def test_translate_stream_reasoning_then_content_ordering() -> None:
         _chunk(content=None, reasoning_content="thinking..."),
         _chunk(content="Hello"),
     ]
-    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o")]
+    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o", [])]
     assert events == [
         ThinkingDelta(text="thinking..."),
         ThinkingPayloadDelta(
@@ -263,7 +263,7 @@ async def test_translate_stream_duplicate_reasoning_text_emitted_once() -> None:
         ),
         _chunk(content="done"),
     ]
-    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o")]
+    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o", [])]
     thinking_events = [e for e in events if isinstance(e, ThinkingDelta)]
     assert thinking_events == [ThinkingDelta(text="dup text")]
 
@@ -277,7 +277,7 @@ async def test_translate_stream_duplicate_reasoning_text_emitted_once() -> None:
 
 async def test_translate_stream_reasoning_run_closed_by_end_of_stream() -> None:
     chunks = [_chunk(content=None, reasoning_content="never followed by content")]
-    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o")]
+    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o", [])]
     assert events[-1] == ThinkingPayloadDelta(
         model="gpt-4o",
         payload=ThinkingPayload(kind="raw", reasoning_field="reasoning_content"),
@@ -292,7 +292,7 @@ async def test_translate_stream_usage_merges_across_chunks() -> None:
         _chunk(content="hi", usage=usage1),
         _chunk(content=None, finish_reason="stop", usage=usage2),
     ]
-    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o")]
+    events = [event async for event in _translate_stream(_aiter(chunks), "gpt-4o", [])]
     usage_events = [e for e in events if isinstance(e, UsageDelta)]
     assert len(usage_events) == 2
     final = usage_events[-1].usage
@@ -304,7 +304,7 @@ async def test_translate_stream_length_finish_reason_raises_after_final_token() 
 
     events: list[Any] = []
     with pytest.raises(MaxTokensError):
-        async for event in _translate_stream(_aiter(chunks), "gpt-4o"):
+        async for event in _translate_stream(_aiter(chunks), "gpt-4o", []):
             events.append(event)
 
     assert events == [TextDelta(text="last bit")]

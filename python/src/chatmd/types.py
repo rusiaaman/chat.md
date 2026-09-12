@@ -116,7 +116,30 @@ class ThinkingContent:
     type: Literal["thinking"] = "thinking"
 
 
-Content = TextContent | ImageContent | ThinkingContent
+@dataclass(frozen=True)
+class ToolUseContent:
+    """A tool call parsed from the on-disk ``cmd:tool_call`` representation."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+    raw_xml: str
+    type: Literal["tool_use"] = "tool_use"
+
+
+@dataclass(frozen=True)
+class ToolResultContent:
+    """A tool result associated with the tool call immediately before it."""
+
+    tool_use_id: str
+    name: str
+    content: list[TextContent | ImageContent]
+    raw_text: str
+    is_error: bool
+    type: Literal["tool_result"] = "tool_result"
+
+
+Content = TextContent | ImageContent | ThinkingContent | ToolUseContent | ToolResultContent
 
 
 @dataclass
@@ -148,6 +171,8 @@ class ParsedDocument:
 class ToolCall:
     name: str
     params: dict[str, str] = field(default_factory=dict)
+    id: str | None = None
+    input: dict[str, Any] | None = None
     #: The raw ``<cmd:tool_call>`` text this was parsed from.
     raw_xml: str = ""
 

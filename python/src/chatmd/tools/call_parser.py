@@ -19,7 +19,9 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from xml.sax.saxutils import unescape
 
+from chatmd.providers.native_tools import decode_tool_arguments, params_from_input
 from chatmd.types import ToolCall
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,8 @@ _TOOL_CALL_CONTENT_RE = re.compile(
 _STRIP_CALL_TAGS_RE = re.compile(CMD_TOOL_CALL_OPEN_TAG + r"\s*|\n\s*" + CMD_TOOL_CALL_CLOSE_TAG)
 
 _TOOL_NAME_RE = re.compile(r"<cmd:tool_name>\s*(.*?)\s*</cmd:tool_name>", re.DOTALL)
+_TOOL_ID_RE = re.compile(r"<cmd:tool_id>\s*(.*?)\s*</cmd:tool_id>", re.DOTALL)
+_ARGUMENTS_RE = re.compile(r"<cmd:arguments>(.*?)</cmd:arguments>", re.DOTALL)
 
 # Used by parse_tool_call: value is trimmed by the surrounding `\s*`s before
 # CDATA extraction happens on what remains.
@@ -322,7 +326,13 @@ def parse_tool_call(tool_call_xml: str) -> ToolCall | None:
             logger.debug("Could not find tool_name tag")
             return None
 
-        tool_name = name_match.group(1).strip()
+        tool_name = unescape(name_match.group(1).strip())
+        id_match = _TOOL_ID_RE.search(original_tool_call_content)
+        tool_id = unescape(id_match.group(1).strip()) if id_match else None
+        arguments_match = _ARGUMENTS_RE.search(original_tool_call_content)
+        native_input = (
+            decode_tool_arguments(arguments_match.group(1)) if arguments_match else None
+        )
         params: dict[str, str] = {}
 
         for param_match in _PARAM_VALUE_RE.finditer(original_tool_call_content):
@@ -344,8 +354,17 @@ def parse_tool_call(tool_call_xml: str) -> ToolCall | None:
                     "..." if len(param_value) > 50 else "",
                 )
 
+        if native_input is not None:
+            params = params_from_input(native_input)
+
         logger.debug("Parsed tool call with parameters: %s", list(params.keys()))
-        return ToolCall(name=tool_name, params=params, raw_xml=tool_call_xml)
+        return ToolCall(
+            name=tool_name,
+            params=params,
+            id=tool_id,
+            input=native_input,
+            raw_xml=tool_call_xml,
+        )
     except Exception as error:  # noqa: BLE001 - mirrors the TS catch-and-log-null
         logger.debug("Error parsing tool call: %s", error)
         return None
