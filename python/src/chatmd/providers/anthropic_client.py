@@ -69,6 +69,8 @@ _MIN_THINKING_BUDGET_TOKENS = 1024
 class AnthropicClient:
     """Streams assistant turns from the Anthropic Messages API."""
 
+    manages_tools = False
+
     def __init__(self, config: ResolvedConfig) -> None:
         self.config = config
         self.last_usage: Usage | None = None
@@ -76,6 +78,9 @@ class AnthropicClient:
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
         self._client = anthropic.AsyncAnthropic(**client_kwargs)
+
+    def cancel(self) -> None:
+        return
 
     async def stream(
         self,

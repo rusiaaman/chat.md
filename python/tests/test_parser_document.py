@@ -12,6 +12,7 @@ import pytest
 
 from chatmd.errors import ForbiddenInlineConfigKey, InvalidStartContent
 from chatmd.parser.document import parse_document
+from chatmd.providers.native_tools import render_server_tool_result, render_tool_call
 from chatmd.tools.call_parser import (
     CMD_TOOL_CALL_CLOSE_TAG,
     CMD_TOOL_CALL_OPEN_TAG,
@@ -148,6 +149,39 @@ def test_empty_tool_execute_block_in_the_middle_of_history_is_dropped() -> None:
     )
     doc = parse_document(text, None)
     assert [m.role for m in doc.messages] == ["user", "assistant"]
+
+
+def test_tool_results_use_ids_when_parallel_sdk_calls_finish_out_of_order() -> None:
+    text = "\n".join(
+        [
+            "# %% user",
+            "Run both",
+            "# %% assistant",
+            render_tool_call("call-1", "files.first", {}),
+            render_tool_call("call-2", "files.second", {}),
+            "# %% tool_execute",
+            render_server_tool_result(
+                "call-2", "<tool_result>\nsecond result\n</tool_result>"
+            ),
+            "# %% tool_execute",
+            render_server_tool_result(
+                "call-1", "<tool_result>\nfirst result\n</tool_result>"
+            ),
+        ]
+    )
+
+    parsed = parse_document(text)
+    results = [
+        item
+        for message in parsed.messages
+        for item in message.content
+        if isinstance(item, ToolResultContent)
+    ]
+
+    assert [(item.tool_use_id, item.name) for item in results] == [
+        ("call-2", "files.second"),
+        ("call-1", "files.first"),
+    ]
 
 
 # --------------------------------------------------------------------------- #

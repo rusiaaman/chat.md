@@ -28,7 +28,7 @@ import { getThinkingEntry } from "./utils/thinkingMap";
 import { findAllToolCalls, parseToolCall } from "./tools/toolCallParser";
 import { unescapeMarkers } from "./utils/markerEscape";
 import { createHash } from "crypto";
-import { inputFromParams } from "./nativeTools";
+import { inputFromParams, parseServerToolResult } from "./nativeTools";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -283,6 +283,7 @@ export function parseDocument(
   let settingsBlock: string | null = null;
   let pendingToolUses: ToolUseContent[] = [];
   let pendingResultIndex = 0;
+  let completedToolUseIds = new Set<string>();
 
   // Regex to split document on # %% markers, now including 'system' and 'settings'
   const regex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
@@ -360,11 +361,23 @@ export function parseDocument(
     else if (role === "tool_execute") {
       // Tool execute blocks (results) are treated as user messages for history context
       if (content) {
+        const referencedResult = parseServerToolResult(content);
         // Process tool_execute blocks to potentially inline file content from links
         // and extract images as proper image content objects
-        if (pendingResultIndex < pendingToolUses.length) {
-          const toolUse = pendingToolUses[pendingResultIndex];
-          const processed = parseToolResultContent(content, document);
+        while (
+          pendingResultIndex < pendingToolUses.length
+          && completedToolUseIds.has(pendingToolUses[pendingResultIndex].id)
+        ) {
+          pendingResultIndex++;
+        }
+        const toolUse = referencedResult.id
+          ? pendingToolUses.find(
+              (item) =>
+                item.id === referencedResult.id && !completedToolUseIds.has(item.id),
+            )
+          : pendingToolUses[pendingResultIndex];
+        if (toolUse) {
+          const processed = parseToolResultContent(referencedResult.result, document);
           messages.push({
             role: "user",
             content: [
@@ -382,9 +395,13 @@ export function parseDocument(
               },
             ],
           });
-          pendingResultIndex++;
+          completedToolUseIds.add(toolUse.id);
+          if (!referencedResult.id) pendingResultIndex++;
         } else {
-          const processedContent = processToolResultContent(content, document);
+          const processedContent = processToolResultContent(
+            referencedResult.result,
+            document,
+          );
           messages.push({ role: "user", content: processedContent });
         }
       }
@@ -394,6 +411,7 @@ export function parseDocument(
     else if (role === "user") {
       pendingToolUses = [];
       pendingResultIndex = 0;
+      completedToolUseIds = new Set<string>();
       const parsedContent = parseUserContent(content, document);
       // Only add user message if it results in non-empty content after parsing
       // Check if there's any non-whitespace text or an image
@@ -415,14 +433,30 @@ export function parseDocument(
            document,
          );
          if (assistantContent.length > 0) {
-           messages.push({
-             role: "assistant",
-             content: assistantContent,
-           });
-           pendingToolUses = assistantContent.filter(
-             (item): item is ToolUseContent => item.type === "tool_use",
+           let assistantItems: Content[] = [];
+           for (const item of assistantContent) {
+             if (item.type === "tool_result") {
+               if (assistantItems.length > 0) {
+                 messages.push({ role: "assistant", content: assistantItems });
+                 assistantItems = [];
+               }
+               messages.push({ role: "user", content: [item] });
+             } else {
+               assistantItems.push(item);
+             }
+           }
+           if (assistantItems.length > 0) {
+             messages.push({ role: "assistant", content: assistantItems });
+           }
+           const newToolUses = assistantContent.filter(
+             (item): item is ToolUseContent =>
+               item.type === "tool_use" && item.serverTool !== true,
            );
-           pendingResultIndex = 0;
+           if (newToolUses.length > 0) {
+             pendingToolUses = newToolUses;
+             pendingResultIndex = 0;
+             completedToolUseIds = new Set<string>();
+           }
          } else {
            logVerbose(() => "Skipping assistant block that parsed to empty content.");
          }
@@ -466,6 +500,8 @@ export function parseAssistantContent(
   const sections = splitAssistantSections(content);
   const docDir = document ? path.dirname(document.uri.fsPath) : undefined;
   const result: Content[] = [];
+  const serverToolUses: ToolUseContent[] = [];
+  let serverResultIndex = 0;
 
   for (const section of sections) {
     // After the split, never before: an escaped "## %%% text" line inside the
@@ -476,8 +512,45 @@ export function parseAssistantContent(
     if (section.type === "text") {
       const text = body.trim();
       if (text) {
-        result.push(...parseTextAndTools(text));
+        result.push(...parseTextAndTools(text, false));
       }
+      continue;
+    }
+
+    if (section.type === "server_tool") {
+      const parsedTools = parseTextAndTools(body.trim(), true);
+      result.push(...parsedTools);
+      serverToolUses.push(
+        ...parsedTools.filter(
+          (item): item is ToolUseContent => item.type === "tool_use",
+        ),
+      );
+      continue;
+    }
+
+    if (section.type === "server_tool_results") {
+      const serverResult = parseServerToolResult(body.trim());
+      if (!serverResult.result.trim()) {
+        continue;
+      }
+      const toolUse = serverResult.id
+        ? serverToolUses.find((item) => item.id === serverResult.id)
+        : serverToolUses[serverResultIndex];
+      if (!toolUse) continue;
+      const processed = parseToolResultContent(serverResult.result.trim(), document);
+      result.push({
+        type: "tool_result",
+        toolUseId: toolUse.id,
+        name: toolUse.name,
+        content: processed.content,
+        rawText: processed.rawText,
+        isError: processed.content.some(
+          (item) =>
+            item.type === "text" && item.value.trimStart().startsWith("Error:"),
+        ),
+        serverTool: true,
+      });
+      if (!serverResult.id) serverResultIndex++;
       continue;
     }
 
@@ -513,7 +586,7 @@ export function parseAssistantContent(
   return result;
 }
 
-function parseTextAndTools(text: string): Content[] {
+function parseTextAndTools(text: string, serverTool: boolean): Content[] {
   const content: Content[] = [];
   let cursor = 0;
   for (const [ordinal, rawXml] of findAllToolCalls(text).entries()) {
@@ -534,6 +607,7 @@ function parseTextAndTools(text: string): Content[] {
         name: parsed.name,
         input: parsed.input || inputFromParams(parsed.params),
         rawXml,
+        serverTool,
       });
     } else {
       content.push({ type: "text", value: rawXml });

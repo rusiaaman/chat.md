@@ -14,7 +14,8 @@ import pytest
 from typer.testing import CliRunner
 
 from chatmd.cli.main import app
-from chatmd.cli.setup import parse_selection
+from chatmd.cli.setup import add_subscription_defaults, parse_selection
+from chatmd.config.model import ApiConfig, ChatmdConfig
 from chatmd.daemon.state import (
     CommandName,
     DaemonInfo,
@@ -334,3 +335,30 @@ def test_a_bad_selection_is_rejected_rather_than_guessed(raw: str) -> None:
     """Importing the wrong editor's keys silently would be worse than an error."""
     with pytest.raises(ValueError):
         parse_selection(raw, 3)
+
+
+def test_subscription_defaults_prefer_claude_and_preserve_a_selection() -> None:
+    defaults = add_subscription_defaults(ChatmdConfig(), True, True)
+
+    assert defaults.selected_config == "claude-code-opus"
+    assert defaults.api_configs["claude-code-opus"].model_name == "claude-opus-5"
+    assert defaults.api_configs["claude-code-opus"].reasoning_effort == "high"
+    assert defaults.api_configs["claude-code-opus"].claude_code == {
+        "permissionMode": "bypassPermissions"
+    }
+    assert defaults.api_configs["codex-sol"].model_name == "gpt-5.6-sol"
+    assert defaults.api_configs["codex-sol"].reasoning_effort == "high"
+    assert defaults.api_configs["codex-sol"].codex == {
+        "thread": {
+            "sandboxMode": "danger-full-access",
+            "approvalPolicy": "never",
+        }
+    }
+
+    existing = ChatmdConfig(
+        api_configs={"api": ApiConfig(type="openai", api_key="placeholder")},
+        selected_config="api",
+    )
+    preserved = add_subscription_defaults(existing, True, False)
+    assert preserved.selected_config == "api"
+    assert "claude-code-opus" not in existing.api_configs

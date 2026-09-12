@@ -15,9 +15,11 @@ from typing import Any
 
 import pytest
 
+from chatmd.assets import TOOL_RESULT_LINE_THRESHOLD
 from chatmd.engine.streamer import FileStreamer, StreamOutcome, StreamResult
 from chatmd.markers import unescape_markers
 from chatmd.parser.blocks import split_blocks
+from chatmd.parser.document import parse_document
 from chatmd.providers.base import MaxTokensError, RetryableError
 from chatmd.render import strip_thinking_sections
 from chatmd.tools.call_parser import (
@@ -35,6 +37,10 @@ from chatmd.types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultContent,
+    ToolResultDelta,
+    ToolUseContent,
+    ToolUseDelta,
     Usage,
     UsageDelta,
 )
@@ -52,6 +58,8 @@ Script = Sequence[StreamEvent | Pause] | Exception
 
 class FakeClient:
     """Replays scripted events, one script per attempt so retries are testable."""
+
+    manages_tools = False
 
     def __init__(self, *scripts: Script) -> None:
         self.scripts = list(scripts)
@@ -81,6 +89,20 @@ class FakeClient:
                 yield item
 
         return generate()
+
+    def cancel(self) -> None:
+        pass
+
+
+class ManagedClient(FakeClient):
+    manages_tools = True
+
+    def __init__(self, *scripts: Script) -> None:
+        super().__init__(*scripts)
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
 
 
 def make_chat(path: Path, body: str = "# %% user\nHi\n\n# %% assistant\n") -> Path:
@@ -148,6 +170,133 @@ async def test_usage_is_reported(tmp_path: Path) -> None:
 
     assert result.usage is not None
     assert result.usage.input_tokens == 10
+
+
+async def test_managed_tool_activity_stays_in_one_stream_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = ManagedClient(
+        [
+            TextDelta("Checking."),
+            ToolUseDelta("built-in", "command_execution", {"command": "pwd"}, True),
+            ToolResultDelta("built-in", "command_execution", "ok", False, True),
+            ToolUseDelta("mcp-1", "files.read", {"path": "a.txt"}, False),
+            ToolResultDelta("mcp-1", "files.read", "contents", False, False),
+            TextDelta("Done."),
+        ]
+    )
+
+    result = await streamer(chat, client).run(one_message(), "")
+
+    text = chat.read_text()
+    assert result.outcome is StreamOutcome.COMPLETED
+    assert result.tool_calls_written == 2
+    assert "## %% server_tool\n" in text
+    assert "## %% server_tool_results\n" in text
+    assert (
+        "# %% tool_execute\n<cmd:tool_id>mcp-1</cmd:tool_id>\n"
+        "<tool_result>\ncontents"
+    ) in text
+    assert "# %% assistant\nDone." in text
+    assert text.rstrip().endswith("# %% user")
+
+    parsed = parse_document(text, tmp_path)
+    tool_uses = [
+        item
+        for message in parsed.messages
+        for item in message.content
+        if isinstance(item, ToolUseContent)
+    ]
+    tool_results = [
+        item
+        for message in parsed.messages
+        for item in message.content
+        if isinstance(item, ToolResultContent)
+    ]
+    assert [(item.name, item.server_tool) for item in tool_uses] == [
+        ("command_execution", True),
+        ("files.read", False),
+    ]
+    assert [(item.name, item.server_tool) for item in tool_results] == [
+        ("command_execution", True),
+        ("files.read", False),
+    ]
+
+
+async def test_managed_large_tool_results_use_attachments_and_round_trip(
+    tmp_path: Path,
+) -> None:
+    chat = make_chat(tmp_path / "a.chat.md")
+    server_result = "\n".join(
+        f"server line {number}" for number in range(TOOL_RESULT_LINE_THRESHOLD + 1)
+    )
+    mcp_result = json.dumps(
+        {
+            "text": "\n".join(
+                f"mcp line {number}"
+                for number in range(TOOL_RESULT_LINE_THRESHOLD + 1)
+            )
+        }
+    )
+    client = ManagedClient(
+        [
+            ToolUseDelta("built-in", "command_execution", {"command": "pwd"}, True),
+            ToolResultDelta(
+                "built-in", "command_execution", server_result, False, True
+            ),
+            ToolUseDelta("mcp-1", "files.read", {"path": "a.txt"}, False),
+            ToolResultDelta("mcp-1", "files.read", mcp_result, False, False),
+        ]
+    )
+
+    result = await streamer(chat, client).run(one_message(), "")
+
+    assert result.outcome is StreamOutcome.COMPLETED
+    text = chat.read_text(encoding="utf-8")
+    assert text.count("[Tool Result](cmdassets/tool-result-") == 2
+    assert "server line 30" not in text
+    assert "mcp line 30" not in text
+    attachments = list((tmp_path / "cmdassets").glob("tool-result-*.txt"))
+    assert len(attachments) == 2
+
+    parsed = parse_document(text, tmp_path)
+    tool_results = [
+        item
+        for message in parsed.messages
+        for item in message.content
+        if isinstance(item, ToolResultContent)
+    ]
+    assert [item.server_tool for item in tool_results] == [True, False]
+    assert isinstance(tool_results[0].content[0], TextContent)
+    assert "server line 30" in tool_results[0].content[0].value
+    assert isinstance(tool_results[1].content[0], TextContent)
+    assert "mcp line 30" in tool_results[1].content[0].value
+
+
+async def test_interrupted_managed_mcp_call_is_left_for_manual_execution(
+    tmp_path: Path,
+) -> None:
+    chat = make_chat(tmp_path / "a.chat.md")
+    client = ManagedClient(
+        [
+            ToolUseDelta("mcp-1", "files.read", {"path": "a.txt"}, False),
+            Pause(0.2),
+            ToolResultDelta("mcp-1", "files.read", "late", False, False),
+        ]
+    )
+    engine = streamer(chat, client)
+    running = asyncio.create_task(engine.run(one_message(), ""))
+    await asyncio.sleep(0.04)
+    engine.cancel()
+
+    result = await running
+
+    text = chat.read_text()
+    assert result.outcome is StreamOutcome.ABORTED
+    assert client.cancelled is True
+    assert "<cmd:tool_name>files.read</cmd:tool_name>" in text
+    assert "# %% tool_execute" not in text
 
 
 async def test_a_turn_with_no_text_appends_nothing(tmp_path: Path) -> None:

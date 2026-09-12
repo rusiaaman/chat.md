@@ -8,7 +8,9 @@ import is a straight copy.
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Sequence
+from typing import Literal
 
 from rich.console import Console
 from rich.prompt import Confirm, Prompt
@@ -16,7 +18,7 @@ from rich.table import Table
 
 from ..config.discovery import EditorCandidate, discover_editor_settings
 from ..config.loader import config_from_editor_candidates, load_config, save_config
-from ..config.model import ChatmdConfig
+from ..config.model import ApiConfig, ChatmdConfig
 from ..paths import config_path
 
 
@@ -62,6 +64,77 @@ def parse_selection(raw: str, count: int) -> list[int]:
     return indices
 
 
+def _available_name(config: ChatmdConfig, preferred: str) -> str:
+    if preferred not in config.api_configs:
+        return preferred
+    suffix = 2
+    while f"{preferred}-{suffix}" in config.api_configs:
+        suffix += 1
+    return f"{preferred}-{suffix}"
+
+
+def add_subscription_defaults(
+    config: ChatmdConfig, claude_available: bool, codex_available: bool
+) -> ChatmdConfig:
+    """Add detected subscription providers without mutating imported settings."""
+    updated = ChatmdConfig.from_dict(config.to_dict())
+    claude_name = next(
+        (name for name, entry in updated.api_configs.items() if entry.type == "claude-code"),
+        None,
+    )
+    if claude_available and claude_name is None:
+        claude_name = _available_name(updated, "claude-code-opus")
+        updated.api_configs[claude_name] = ApiConfig(
+            type="claude-code",
+            api_key=None,
+            model_name="claude-opus-5",
+            reasoning_effort="high",
+            claude_code={"permissionMode": "bypassPermissions"},
+        )
+
+    codex_name = next(
+        (name for name, entry in updated.api_configs.items() if entry.type == "codex"),
+        None,
+    )
+    if codex_available and codex_name is None:
+        codex_name = _available_name(updated, "codex-sol")
+        updated.api_configs[codex_name] = ApiConfig(
+            type="codex",
+            api_key=None,
+            model_name="gpt-5.6-sol",
+            reasoning_effort="high",
+            codex={
+                "thread": {
+                    "sandboxMode": "danger-full-access",
+                    "approvalPolicy": "never",
+                }
+            },
+        )
+
+    if updated.selected_config not in updated.api_configs:
+        updated.selected_config = (
+            claude_name if claude_available else codex_name if codex_available else None
+        )
+    return updated
+
+
+def _prompt_api_config(console: Console) -> ChatmdConfig:
+    selected_provider = Prompt.ask(
+        "API provider", choices=["anthropic", "openai"], default="anthropic", console=console
+    )
+    provider: Literal["anthropic", "openai"] = (
+        "openai" if selected_provider == "openai" else "anthropic"
+    )
+    name = Prompt.ask("Configuration name", default=provider, console=console)
+    api_key = Prompt.ask(f"{provider} API key", password=True, console=console)
+    default_model = "claude-sonnet-4-6" if provider == "anthropic" else "gpt-5.4"
+    model = Prompt.ask("Model", default=default_model, console=console)
+    return ChatmdConfig(
+        api_configs={name: ApiConfig(type=provider, api_key=api_key, model_name=model)},
+        selected_config=name,
+    )
+
+
 def summarise(config: ChatmdConfig, console: Console) -> None:
     """Show what the config now holds, so a mistake is visible immediately."""
     if config.api_configs:
@@ -69,9 +142,12 @@ def summarise(config: ChatmdConfig, console: Console) -> None:
         table.add_column("Name")
         table.add_column("Provider")
         table.add_column("Model", overflow="fold")
-        table.add_column("Key")
+        table.add_column("Authentication")
         for name, entry in sorted(config.api_configs.items()):
-            marker = "set" if entry.api_key else "[red]missing[/red]"
+            if entry.type in ("claude-code", "codex"):
+                marker = "CLI subscription"
+            else:
+                marker = "API key set" if entry.api_key else "[red]API key missing[/red]"
             selected = " [green](selected)[/green]" if name == config.selected_config else ""
             table.add_row(f"{name}{selected}", entry.type, entry.model_name or "-", marker)
         console.print(table)
@@ -108,10 +184,7 @@ def run_setup(console: Console, *, force: bool = False) -> ChatmdConfig:
 
     config = ChatmdConfig()
     if not candidates:
-        console.print(
-            "[yellow]No editor settings with chat.md configuration found.[/yellow]\n"
-            f"Writing an empty config to {target}; add your API keys there."
-        )
+        console.print("[yellow]No editor settings with chat.md configuration found.[/yellow]")
     else:
         console.print(candidates_table(candidates))
         console.print(
@@ -129,6 +202,15 @@ def run_setup(console: Console, *, force: bool = False) -> ChatmdConfig:
         # Later picks win per key, and apiConfigs/mcpServers merge per entry, so
         # importing several editors combines their providers rather than replacing.
         config = config_from_editor_candidates([candidates[index] for index in chosen])
+
+    config = add_subscription_defaults(
+        config,
+        shutil.which("claude") is not None,
+        shutil.which("codex") is not None,
+    )
+    if not config.api_configs:
+        console.print("No Claude Code or Codex subscription login was detected.")
+        config = _prompt_api_config(console)
 
     if len(config.api_configs) > 1 and not config.selected_config:
         names = sorted(config.api_configs)

@@ -13,6 +13,9 @@ dependencies = [
     "watchfiles>=0.24",
     "typer>=0.12",
     "rich>=13.7",
+    "claude-agent-sdk>=0.2.152",
+    "openai-codex>=0.154.0",
+    "uvicorn>=0.30",
 ]
 
 [project.optional-dependencies]

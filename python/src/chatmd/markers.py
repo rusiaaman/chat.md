@@ -29,7 +29,7 @@ import re
 #: Roles that open a top-level block.
 BLOCK_ROLES = ("user", "assistant", "system", "tool_execute", "settings")
 #: Roles that open a section inside an assistant block.
-SECTION_ROLES = ("thinking", "text")
+SECTION_ROLES = ("thinking", "text", "server_tool", "server_tool_results")
 
 # Trailing whitespace is limited to spaces, tabs and a carriage return so these
 # match exactly the *lines* the parser treats as markers. The parser's own regex

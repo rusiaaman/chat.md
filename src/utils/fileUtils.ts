@@ -3,6 +3,8 @@ import * as fs from "fs";
 import * as vscode from "vscode";
 import { ChatHistoryFile, ChatHistoryUsage, MessageParam } from "../types";
 
+export const TOOL_RESULT_LINE_THRESHOLD = 30;
+
 /**
  * Resolves file paths that may be relative to the current document.
  */
@@ -155,6 +157,25 @@ export function getAssetsRelativePath(docDir: string, fileName: string): string 
   return path
     .relative(docDir, path.join(getAssetsDirectory(docDir), fileName))
     .replace(/\\/g, "/");
+}
+
+export function writeToolResultAttachment(
+  docDir: string,
+  content: string,
+  extension: ".md" | ".txt",
+): string {
+  const assetsDir = getAssetsDirectory(docDir);
+  ensureDirectoryExists(assetsDir);
+  const timestamp = new Date()
+    .toISOString()
+    .replace(/:/g, "")
+    .replace(/-/g, "")
+    .replace("T", "-")
+    .replace(/\..+Z/, "");
+  const randomString = Math.random().toString(36).substring(2, 8);
+  const filename = `tool-result-${timestamp}-${randomString}${extension}`;
+  writeFile(path.join(assetsDir, filename), content);
+  return getAssetsRelativePath(docDir, filename);
 }
 
 function getChatMdCacheDirectory(): string {

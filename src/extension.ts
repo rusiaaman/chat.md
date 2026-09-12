@@ -18,7 +18,11 @@ import {
   ApiConfig,
   getDefaultSystemPrompt,
 } from "./config";
-import { getBlockInfoAtPosition, parseFileConfig, blockMarkerPrefix } from "./parser";
+import {
+  getBlockInfoAtPosition,
+  parseFileConfig,
+  blockMarkerPrefix,
+} from "./parser";
 import { flushChatHistoryWrites } from "./utils/fileUtils";
 import { McpClientManager, McpServerConfig } from "./mcpClient";
 import { StatusManager } from "./utils/statusManager";
@@ -32,6 +36,8 @@ import {
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { releaseAllChatFileLocks } from "./utils/fileLock";
 import { resetChatmdCommandCache } from "./utils/chatmdCli";
+import { executableOnPath } from "./utils/executable";
+import { subscriptionDefaults } from "./subscriptionDefaults";
 
 // Map to keep track of active document listeners
 const documentListeners = new Map<string, vscode.Disposable>();
@@ -190,23 +196,38 @@ async function selectApiConfigByIndex(index: number): Promise<void> {
  * Invariant 2: The process only updates status TEXT/COLOR if current open tab matches the "filepath" key
  * But the global count (n) is ALWAYS updated and displayed
  */
-export function requestStatusBarUpdate(requestingFilePath: string, reason: string): void {
+export function requestStatusBarUpdate(
+  requestingFilePath: string,
+  reason: string,
+): void {
   const activeEditor = vscode.window.activeTextEditor;
   const currentActiveFilePath = activeEditor?.document.uri.fsPath;
-  
-  log(`Status update requested by ${path.basename(requestingFilePath)}: ${reason}`);
-  
+
+  log(
+    `Status update requested by ${path.basename(
+      requestingFilePath,
+    )}: ${reason}`,
+  );
+
   // Always update the total count regardless of which file is requesting
   updateTotalStreamerCount();
-  
+
   if (!currentActiveFilePath || currentActiveFilePath !== requestingFilePath) {
-    log(`Status update from non-active file (${path.basename(requestingFilePath)}) - only updating count, refreshing display for active file`);
+    log(
+      `Status update from non-active file (${path.basename(
+        requestingFilePath,
+      )}) - only updating count, refreshing display for active file`,
+    );
     // Non-active file requested update - refresh display with updated count but based on active file's state
     updateStreamingStatusBarForActiveFile();
     return;
   }
-  
-  log(`Status update accepted for active file: ${path.basename(requestingFilePath)}`);
+
+  log(
+    `Status update accepted for active file: ${path.basename(
+      requestingFilePath,
+    )}`,
+  );
   updateStreamingStatusBarForActiveFile();
 }
 
@@ -217,7 +238,7 @@ export function requestStatusBarUpdate(requestingFilePath: string, reason: strin
 export function onActiveFileChanged(): void {
   const activeEditor = vscode.window.activeTextEditor;
   const currentActiveFilePath = activeEditor?.document.uri.fsPath;
-  
+
   if (currentActiveFilePath) {
     log(`Active file changed to: ${path.basename(currentActiveFilePath)}`);
     requestStatusBarUpdate(currentActiveFilePath, "active file changed");
@@ -267,7 +288,8 @@ function updateStreamingStatusBarForActiveFile(): void {
       // the second of the two full parses every document change used to pay for.
       const text = activeEditor.document.getText();
       const parsed = parseFileConfig(text);
-      const perFileConfigName: string | undefined = parsed.fileConfig?.selectedConfig;
+      const perFileConfigName: string | undefined =
+        parsed.fileConfig?.selectedConfig;
 
       // Update config name in status bar to reflect per-file override or global
       const globalSelected = getSelectedConfigName();
@@ -277,7 +299,8 @@ function updateStreamingStatusBarForActiveFile(): void {
       // Resolve provider using per-file override if present
       try {
         if (perFileConfigName) {
-          providerForFile = require("./config").getProviderForConfig(perFileConfigName);
+          providerForFile =
+            require("./config").getProviderForConfig(perFileConfigName);
         } else {
           providerForFile = require("./config").getProvider();
         }
@@ -295,9 +318,14 @@ function updateStreamingStatusBarForActiveFile(): void {
     }
   } catch (error) {
     // Log specific errors for debugging, but don't show user errors for status bar updates
-    if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+    if (
+      error instanceof Error &&
+      error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")
+    ) {
       const forbiddenKey = error.message.split(": ")[1];
-      log(`Status bar update: Forbidden config key '${forbiddenKey}' detected in .chat.md file`);
+      log(
+        `Status bar update: Forbidden config key '${forbiddenKey}' detected in .chat.md file`,
+      );
     } else if (error instanceof Error) {
       log(`Status bar update: Parse error - ${error.message}`);
     }
@@ -317,11 +345,19 @@ function updateStreamingStatusBarForActiveFile(): void {
     currentDocHasStreaming = !!(streamer && streamer.isActive);
 
     const listener = getDocumentListenerForDocument(activeEditor.document);
-    currentDocIsExecuting = !!(listener && listener.getIsExecuting && listener.getIsExecuting());
-    
-    log(`Status check for ${currentDocFileName}: streaming=${currentDocHasStreaming}, executing=${currentDocIsExecuting}, totalAlive=${totalAlive}`);
+    currentDocIsExecuting = !!(
+      listener &&
+      listener.getIsExecuting &&
+      listener.getIsExecuting()
+    );
+
+    log(
+      `Status check for ${currentDocFileName}: streaming=${currentDocHasStreaming}, executing=${currentDocIsExecuting}, totalAlive=${totalAlive}`,
+    );
   } else {
-    log(`Status check: not a chat file or no active editor. totalAlive=${totalAlive}`);
+    log(
+      `Status check: not a chat file or no active editor. totalAlive=${totalAlive}`,
+    );
   }
 
   if (currentDocIsExecuting) {
@@ -330,11 +366,15 @@ function updateStreamingStatusBarForActiveFile(): void {
     statusManager.showToolExecutionStatus();
   } else if (currentDocHasStreaming) {
     // Streaming for this chat only (yellow)
-    log(`Showing streaming status for ${currentDocFileName} (${totalAlive} total)`);
+    log(
+      `Showing streaming status for ${currentDocFileName} (${totalAlive} total)`,
+    );
     statusManager.showStreamingStatus(totalAlive);
   } else if (totalAlive > 0) {
     // Other chats streaming elsewhere: show purple idle with (n)
-    log(`Showing idle-with-alive for ${currentDocFileName} (${totalAlive} streaming elsewhere)`);
+    log(
+      `Showing idle-with-alive for ${currentDocFileName} (${totalAlive} streaming elsewhere)`,
+    );
     statusManager.showIdleWithAlive(totalAlive);
   } else {
     // Pure idle
@@ -350,7 +390,10 @@ function updateStreamingStatusBarForActiveFile(): void {
 export function updateStreamingStatusBar(): void {
   const activeEditor = vscode.window.activeTextEditor;
   if (activeEditor) {
-    requestStatusBarUpdate(activeEditor.document.uri.fsPath, "legacy updateStreamingStatusBar call");
+    requestStatusBarUpdate(
+      activeEditor.document.uri.fsPath,
+      "legacy updateStreamingStatusBar call",
+    );
   } else {
     updateStreamingStatusBarForActiveFile();
   }
@@ -385,12 +428,12 @@ async function initializeMcpClients(): Promise<void> {
 
     await mcpClientManager.initializeClients(mcpServers);
     log("MCP clients initialized successfully");
-    
+
     // Update the prompt count and setup hover handler
     const promptCount = mcpClientManager.getAllPrompts().length;
     statusManager.setupPromptHover(promptCount);
     log(`Found ${promptCount} prompts available for hover display`);
-    
+
     // Register the hover handler without immediately registering commands
     // Pass the context so PromptHoverHandler can register commands properly
     try {
@@ -435,7 +478,9 @@ async function handleMcpConfigChange(
 /**
  * Helper function to get the document listener instance for a document
  */
-function getDocumentListenerForDocument(document: vscode.TextDocument): DocumentListener | undefined {
+function getDocumentListenerForDocument(
+  document: vscode.TextDocument,
+): DocumentListener | undefined {
   return documentListenerInstances.get(document.uri.toString());
 }
 
@@ -456,6 +501,43 @@ function checkForToolCallInText(text: string): boolean {
 // Declare context at module level to make it available in initializeMcpClients
 let context: vscode.ExtensionContext;
 
+const SUBSCRIPTION_DEFAULTS_STATE = "chatmd.subscriptionDefaultsInitialized";
+
+async function initializeSubscriptionDefaults(
+  extensionContext: vscode.ExtensionContext,
+): Promise<void> {
+  if (extensionContext.globalState.get<boolean>(SUBSCRIPTION_DEFAULTS_STATE)) {
+    return;
+  }
+  const configs = getApiConfigs();
+  const selectedConfig = getSelectedConfigName();
+  const defaults = subscriptionDefaults(
+    configs,
+    selectedConfig,
+    executableOnPath("claude") !== undefined,
+    executableOnPath("codex") !== undefined,
+  );
+  if (defaults.configsChanged) {
+    await vscode.workspace
+      .getConfiguration()
+      .update(
+        "chatmd.apiConfigs",
+        defaults.configs,
+        vscode.ConfigurationTarget.Global,
+      );
+  }
+  if (defaults.selectedConfig !== selectedConfig) {
+    await vscode.workspace
+      .getConfiguration()
+      .update(
+        "chatmd.selectedConfig",
+        defaults.selectedConfig,
+        vscode.ConfigurationTarget.Global,
+      );
+  }
+  await extensionContext.globalState.update(SUBSCRIPTION_DEFAULTS_STATE, true);
+}
+
 export function activate(contextParam: vscode.ExtensionContext) {
   context = contextParam; // Store context globally
   log("chat.md extension is now active");
@@ -473,21 +555,21 @@ export function activate(contextParam: vscode.ExtensionContext) {
     vscode.workspace.registerTextDocumentContentProvider(
       McpResourceDocumentProvider.scheme,
       resourceProvider,
-    )
+    ),
   );
   mcpClientManager.setResourceUpdatedHandler((serverId, uri) => {
-    resourceProvider.update(McpResourceDocumentProvider.encodeUri(serverId, uri));
+    resourceProvider.update(
+      McpResourceDocumentProvider.encodeUri(serverId, uri),
+    );
   });
 
-  // Check if an API configuration is selected, prompt to configure if not
-  checkApiConfiguration();
-
-  // Set initial config name in StatusManager
-  const initialConfigName = getSelectedConfigName();
-  statusManager.updateConfigName(initialConfigName);
-
-  // Call the function that updates the status bar display
-  updateStreamingStatusBar(); // Ensure this runs after setting the name
+  void initializeSubscriptionDefaults(context)
+    .then(async () => {
+      await checkApiConfiguration();
+      statusManager.updateConfigName(getSelectedConfigName());
+      updateStreamingStatusBar();
+    })
+    .catch((error) => log(`Could not initialize provider defaults: ${error}`));
 
   // Register for .chat.md files
   const selector: vscode.DocumentSelector = { pattern: "**/*.chat.md" };
@@ -501,7 +583,11 @@ export function activate(contextParam: vscode.ExtensionContext) {
   // Invariant 3: On switching the filepath the status bar refresh is triggered
   context.subscriptions.push(
     vscode.window.onDidChangeActiveTextEditor((editor) => {
-      log(`Active editor changed to: ${editor ? path.basename(editor.document.fileName) : 'none'}`);
+      log(
+        `Active editor changed to: ${
+          editor ? path.basename(editor.document.fileName) : "none"
+        }`,
+      );
       // Add a small delay to ensure the editor change is fully processed
       setTimeout(() => {
         onActiveFileChanged();
@@ -594,15 +680,17 @@ export function activate(contextParam: vscode.ExtensionContext) {
       if (event.affectsConfiguration("chatmd.mcpServers")) {
         log("Configuration Change: MCP server config changed.");
         // Using void to explicitly ignore the promise here if not needed
-        void handleMcpConfigChange(event).catch((error) => {
-          // Assuming this function exists
-          log(`Error handling MCP configuration change: ${error}`);
-        }).then(() => {
-          // After updating servers, refresh the status bar to show new server list
-          const promptCount = mcpClientManager.getAllPrompts().length;
-          statusManager.setupPromptHover(promptCount);
-          log("Refreshed status bar after MCP server configuration change");
-        });
+        void handleMcpConfigChange(event)
+          .catch((error) => {
+            // Assuming this function exists
+            log(`Error handling MCP configuration change: ${error}`);
+          })
+          .then(() => {
+            // After updating servers, refresh the status bar to show new server list
+            const promptCount = mcpClientManager.getAllPrompts().length;
+            statusManager.setupPromptHover(promptCount);
+            log("Refreshed status bar after MCP server configuration change");
+          });
       }
     }),
   );
@@ -622,19 +710,25 @@ export function activate(contextParam: vscode.ExtensionContext) {
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand("filechat.insertPrompt", async (args) => {
-      log(`COMMAND TRIGGERED: filechat.insertPrompt with args: ${JSON.stringify(args)}`);
+      log(
+        `COMMAND TRIGGERED: filechat.insertPrompt with args: ${JSON.stringify(
+          args,
+        )}`,
+      );
       if (args && args.promptId) {
         const promptId = args.promptId;
-        const [serverId, promptName] = promptId.split('.');
+        const [serverId, promptName] = promptId.split(".");
         const groupedPrompts = mcpClientManager.getGroupedPrompts();
         const serverPrompts = groupedPrompts.get(serverId);
-        
+
         if (serverPrompts) {
           const prompt = serverPrompts.get(promptName);
           if (prompt) {
             await insertPrompt(promptId, prompt);
           } else {
-            vscode.window.showErrorMessage(`Prompt ${promptName} not found on server ${serverId}`);
+            vscode.window.showErrorMessage(
+              `Prompt ${promptName} not found on server ${serverId}`,
+            );
           }
         } else {
           vscode.window.showErrorMessage(`Server ${serverId} not found`);
@@ -643,7 +737,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         vscode.window.showErrorMessage("No prompt specified");
       }
     }),
-    
+
     vscode.commands.registerCommand("filechat.cancelStreaming", () => {
       log("COMMAND TRIGGERED: filechat.cancelStreaming"); // <-- ADD THIS
 
@@ -678,32 +772,42 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand("filechat.resumeStreaming", async () => {
       log("COMMAND TRIGGERED: filechat.resumeStreaming");
-      
+
       const activeEditor = vscode.window.activeTextEditor;
       if (!activeEditor) {
         vscode.window.showWarningMessage("No active editor found");
         return;
       }
-      
+
       if (!activeEditor.document.fileName.endsWith(".chat.md")) {
-        vscode.window.showWarningMessage("Resume streaming is only available for .chat.md files");
+        vscode.window.showWarningMessage(
+          "Resume streaming is only available for .chat.md files",
+        );
         return;
       }
-      
+
       // Check if streaming is already active
-      const activeStreamer = getActiveStreamerForDocument(activeEditor.document);
+      const activeStreamer = getActiveStreamerForDocument(
+        activeEditor.document,
+      );
       if (activeStreamer && activeStreamer.isActive) {
-        vscode.window.showWarningMessage("Streaming is already active for this document");
+        vscode.window.showWarningMessage(
+          "Streaming is already active for this document",
+        );
         return;
       }
-      
+
       // Get the document listener and call resumeStreaming
-      const documentListener = getDocumentListenerForDocument(activeEditor.document);
+      const documentListener = getDocumentListenerForDocument(
+        activeEditor.document,
+      );
       if (!documentListener) {
-        vscode.window.showErrorMessage("Document listener not found - try reopening the file");
+        vscode.window.showErrorMessage(
+          "Document listener not found - try reopening the file",
+        );
         return;
       }
-      
+
       try {
         await documentListener.resumeStreaming();
       } catch (error) {
@@ -721,7 +825,9 @@ export function activate(contextParam: vscode.ExtensionContext) {
       log("COMMAND TRIGGERED: filechat.showMcpResources");
       const serverIds = mcpClientManager.getConfiguredServerIds();
       if (serverIds.length === 0) {
-        vscode.window.showWarningMessage("No MCP servers are currently configured.");
+        vscode.window.showWarningMessage(
+          "No MCP servers are currently configured.",
+        );
         return;
       }
 
@@ -741,12 +847,16 @@ export function activate(contextParam: vscode.ExtensionContext) {
       try {
         resources = await mcpClientManager.getResourcesForServer(serverId);
       } catch (error) {
-        vscode.window.showErrorMessage(`Failed to load resources for '${serverId}': ${error}`);
+        vscode.window.showErrorMessage(
+          `Failed to load resources for '${serverId}': ${error}`,
+        );
         return;
       }
 
       if (resources.length === 0) {
-        vscode.window.showInformationMessage(`No resources advertised by server '${serverId}'`);
+        vscode.window.showInformationMessage(
+          `No resources advertised by server '${serverId}'`,
+        );
         return;
       }
 
@@ -757,13 +867,19 @@ export function activate(contextParam: vscode.ExtensionContext) {
         resource: res,
       }));
 
-      const selectedResource = await vscode.window.showQuickPick(resourceItems, {
-        placeHolder: `Select a resource from ${serverId} to open`,
-      });
+      const selectedResource = await vscode.window.showQuickPick(
+        resourceItems,
+        {
+          placeHolder: `Select a resource from ${serverId} to open`,
+        },
+      );
 
       if (!selectedResource) return;
 
-      const uri = McpResourceDocumentProvider.encodeUri(serverId, selectedResource.resource.uri);
+      const uri = McpResourceDocumentProvider.encodeUri(
+        serverId,
+        selectedResource.resource.uri,
+      );
       try {
         const doc = await vscode.workspace.openTextDocument(uri);
         await vscode.window.showTextDocument(doc, { preview: false });
@@ -772,43 +888,55 @@ export function activate(contextParam: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand("filechat.openMcpResource", async (args) => {
-      log(`COMMAND TRIGGERED: filechat.openMcpResource with args: ${JSON.stringify(args)}`);
-      if (args && args.serverId && args.uri) {
-        const uri = McpResourceDocumentProvider.encodeUri(args.serverId, args.uri);
-        try {
-          const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc, { preview: false });
-        } catch (err) {
-          vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
-        }
-      } else {
-        const uriInput = await vscode.window.showInputBox({
-          prompt: "Enter resource URI to open",
-          placeHolder: "e.g., file:///project/src/main.rs"
-        });
-        if (!uriInput) return;
-        
-        const serverIds = mcpClientManager.getConfiguredServerIds();
-        if (serverIds.length === 0) {
-          vscode.window.showErrorMessage("No configured MCP servers are available");
-          return;
-        }
+    vscode.commands.registerCommand(
+      "filechat.openMcpResource",
+      async (args) => {
+        log(
+          `COMMAND TRIGGERED: filechat.openMcpResource with args: ${JSON.stringify(
+            args,
+          )}`,
+        );
+        if (args && args.serverId && args.uri) {
+          const uri = McpResourceDocumentProvider.encodeUri(
+            args.serverId,
+            args.uri,
+          );
+          try {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: false });
+          } catch (err) {
+            vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+          }
+        } else {
+          const uriInput = await vscode.window.showInputBox({
+            prompt: "Enter resource URI to open",
+            placeHolder: "e.g., file:///project/src/main.rs",
+          });
+          if (!uriInput) return;
 
-        const serverId = await vscode.window.showQuickPick(serverIds, {
-          placeHolder: "Select the server that handles this URI"
-        });
-        if (!serverId) return;
+          const serverIds = mcpClientManager.getConfiguredServerIds();
+          if (serverIds.length === 0) {
+            vscode.window.showErrorMessage(
+              "No configured MCP servers are available",
+            );
+            return;
+          }
 
-        const uri = McpResourceDocumentProvider.encodeUri(serverId, uriInput);
-        try {
-          const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc, { preview: false });
-        } catch (err) {
-          vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+          const serverId = await vscode.window.showQuickPick(serverIds, {
+            placeHolder: "Select the server that handles this URI",
+          });
+          if (!serverId) return;
+
+          const uri = McpResourceDocumentProvider.encodeUri(serverId, uriInput);
+          try {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: false });
+          } catch (err) {
+            vscode.window.showErrorMessage(`Failed to open resource: ${err}`);
+          }
         }
-      }
-    }),
+      },
+    ),
 
     vscode.commands.registerCommand("filechat.mcpDiagnostics", async () => {
       // Create diagnostics report
@@ -886,7 +1014,11 @@ export function activate(contextParam: vscode.ExtensionContext) {
             `HTTP connection successful: ${response.status} ${response.statusText}`,
           );
         } catch (error) {
-          outputChannel.appendLine(`HTTP connection failed: ${error instanceof Error ? error.message : String(error)}`);
+          outputChannel.appendLine(
+            `HTTP connection failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
           outputChannel.appendLine(
             "This indicates the server might not be running or not accessible.",
           );
@@ -898,7 +1030,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
         outputChannel.appendLine(`Testing SSE endpoint specifically...`);
 
         // Use the EventSource directly for testing (bypassing the MCP protocol)
-        const EventSourceModule = (await import("eventsource"));
+        const EventSourceModule = await import("eventsource");
         const EventSource = EventSourceModule.default || EventSourceModule;
         const eventSource = new (EventSource as any)(url.href);
 
@@ -946,7 +1078,9 @@ export function activate(contextParam: vscode.ExtensionContext) {
         } catch (error) {
           outputChannel.appendLine("");
           outputChannel.appendLine(
-            `SSE connection test failed: ${error instanceof Error ? error.message : String(error)}`,
+            `SSE connection test failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
           );
           outputChannel.appendLine("Troubleshooting tips:");
           outputChannel.appendLine(
@@ -967,7 +1101,9 @@ export function activate(contextParam: vscode.ExtensionContext) {
         }
       } catch (error) {
         outputChannel.appendLine(
-          `Error during connection test: ${error instanceof Error ? error.message : String(error)}`,
+          `Error during connection test: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
         );
       }
 
@@ -1111,38 +1247,38 @@ export function activate(contextParam: vscode.ExtensionContext) {
     }),
     vscode.commands.registerCommand("filechat.newContextChat", async () => {
       log("newContextChat: Creating new context chat.");
-        try {
-          // Get current context (workspace, file, selection)
-          const context = getCurrentContext();
+      try {
+        // Get current context (workspace, file, selection)
+        const context = getCurrentContext();
 
-          // Generate chat template with context
-          const template = generateChatTemplate(
-            context.workspacePath,
-            context.filePath,
-            context.selectedText,
-          );
+        // Generate chat template with context
+        const template = generateChatTemplate(
+          context.workspacePath,
+          context.filePath,
+          context.selectedText,
+        );
 
-          // Get paths for new chat (including workspace-specific and chat-specific folders)
-          const chatPaths = getNewChatPaths(context.workspacePath);
+        // Get paths for new chat (including workspace-specific and chat-specific folders)
+        const chatPaths = getNewChatPaths(context.workspacePath);
 
-          // Create the file in its dedicated folder
-          fs.writeFileSync(chatPaths.chatFilePath, template, "utf8");
+        // Create the file in its dedicated folder
+        fs.writeFileSync(chatPaths.chatFilePath, template, "utf8");
 
-          // Open the file in editor
-          const uri = vscode.Uri.file(chatPaths.chatFilePath);
-          const doc = await vscode.workspace.openTextDocument(uri);
-          await vscode.window.showTextDocument(doc);
+        // Open the file in editor
+        const uri = vscode.Uri.file(chatPaths.chatFilePath);
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc);
 
-          log(`Created new context chat at: ${chatPaths.chatFilePath}`);
-          log(`Chat folder: ${chatPaths.chatFolderPath}`);
-          log(`Workspace folder: ${chatPaths.chatDir}`);
-          vscode.window.setStatusBarMessage("Created new context chat", 3000);
-        } catch (error) {
-          log(`Error creating context chat: ${error}`);
-          vscode.window.showErrorMessage(
-            `Failed to create context chat: ${error}`,
-          );
-        }
+        log(`Created new context chat at: ${chatPaths.chatFilePath}`);
+        log(`Chat folder: ${chatPaths.chatFolderPath}`);
+        log(`Workspace folder: ${chatPaths.chatDir}`);
+        vscode.window.setStatusBarMessage("Created new context chat", 3000);
+      } catch (error) {
+        log(`Error creating context chat: ${error}`);
+        vscode.window.showErrorMessage(
+          `Failed to create context chat: ${error}`,
+        );
+      }
     }),
 
     vscode.commands.registerCommand("filechat.newChat", async () => {
@@ -1196,7 +1332,7 @@ export function activate(contextParam: vscode.ExtensionContext) {
       const existingConfig = configs[configName];
 
       // Get provider type
-      const providerOptions = ["anthropic", "openai"];
+      const providerOptions = ["anthropic", "openai", "claude-code", "codex"];
       const selectedProvider = await vscode.window.showQuickPick(
         providerOptions,
         {
@@ -1211,19 +1347,22 @@ export function activate(contextParam: vscode.ExtensionContext) {
       }
 
       // Get API key
-      const apiKey = await vscode.window.showInputBox({
-        prompt: `Enter your ${selectedProvider} API key:`,
-        password: true,
-        value: existingConfig?.apiKey || "",
-        validateInput: (value) => {
-          return value && value.trim() !== ""
-            ? null
-            : "API key cannot be empty";
-        },
-      });
+      let apiKey: string | undefined;
+      if (selectedProvider === "anthropic" || selectedProvider === "openai") {
+        apiKey = await vscode.window.showInputBox({
+          prompt: `Enter your ${selectedProvider} API key:`,
+          password: true,
+          value: existingConfig?.apiKey || "",
+          validateInput: (value) => {
+            return value && value.trim() !== ""
+              ? null
+              : "API key cannot be empty";
+          },
+        });
 
-      if (!apiKey) {
-        return; // User cancelled
+        if (!apiKey) {
+          return; // User cancelled
+        }
       }
 
       // Get model name (optional)
@@ -1244,6 +1383,21 @@ export function activate(contextParam: vscode.ExtensionContext) {
           "gpt-4",
           "gpt-3.5-turbo",
           "gemini-2.5-pro-exp-03-25",
+        ];
+      } else if (selectedProvider === "claude-code") {
+        modelSuggestions = [
+          "claude-opus-5",
+          "claude-sonnet-4-6",
+          "claude-opus-4-6",
+          "sonnet",
+          "opus",
+        ];
+      } else if (selectedProvider === "codex") {
+        modelSuggestions = [
+          "gpt-5.6-sol",
+          "gpt-5.6-codex",
+          "gpt-5.6-terra",
+          "gpt-5.6-luna",
         ];
       }
 
@@ -1320,12 +1474,23 @@ export function activate(contextParam: vscode.ExtensionContext) {
       }
 
       // Ask if user wants to configure advanced parameters
-      const configureAdvanced = await vscode.window.showQuickPick(["Yes", "No"], {
-        placeHolder: "Configure advanced parameters (reasoning effort, token limits)?",
-        title: "Advanced Configuration",
-      });
+      const configureAdvanced = await vscode.window.showQuickPick(
+        ["Yes", "No"],
+        {
+          placeHolder:
+            "Configure advanced parameters (reasoning effort, token limits)?",
+          title: "Advanced Configuration",
+        },
+      );
 
-      let reasoningEffort: "none" | "minimal" | "low" | "medium" | "high" | "max" | undefined;
+      let reasoningEffort:
+        | "none"
+        | "minimal"
+        | "low"
+        | "medium"
+        | "high"
+        | "max"
+        | undefined;
       let maxTokens: number | undefined;
       let maxThinkingTokens: number | undefined;
 
@@ -1341,10 +1506,13 @@ export function activate(contextParam: vscode.ExtensionContext) {
           { label: "Max", value: "max" as const },
         ];
 
-        const selectedEffort = await vscode.window.showQuickPick(effortOptions, {
-          placeHolder: "Select reasoning effort level",
-          title: "Configure Reasoning Effort",
-        });
+        const selectedEffort = await vscode.window.showQuickPick(
+          effortOptions,
+          {
+            placeHolder: "Select reasoning effort level",
+            title: "Configure Reasoning Effort",
+          },
+        );
 
         if (selectedEffort) {
           reasoningEffort = selectedEffort.value;
@@ -1352,7 +1520,8 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
         // Configure max tokens
         const maxTokensInput = await vscode.window.showInputBox({
-          prompt: "Enter maximum tokens to generate (leave empty for global setting)",
+          prompt:
+            "Enter maximum tokens to generate (leave empty for global setting)",
           value: existingConfig?.maxTokens?.toString() || "",
           validateInput: (value) => {
             if (!value || value.trim() === "") return null; // Empty is ok (use global)
@@ -1367,7 +1536,8 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
         // Configure max thinking tokens
         const maxThinkingTokensInput = await vscode.window.showInputBox({
-          prompt: "Enter maximum thinking tokens (leave empty for global setting)",
+          prompt:
+            "Enter maximum thinking tokens (leave empty for global setting)",
           value: existingConfig?.maxThinkingTokens?.toString() || "",
           validateInput: (value) => {
             if (!value || value.trim() === "") return null; // Empty is ok (use global)
@@ -1383,13 +1553,18 @@ export function activate(contextParam: vscode.ExtensionContext) {
 
       // Create and save the configuration
       const config: ApiConfig = {
-        type: selectedProvider as "anthropic" | "openai",
+        type: selectedProvider as ApiConfig["type"],
         apiKey,
         model_name: modelName || undefined,
         base_url: baseUrl || undefined,
         reasoningEffort,
         maxTokens,
         maxThinkingTokens,
+        claudeCode:
+          selectedProvider === "claude-code"
+            ? existingConfig?.claudeCode
+            : undefined,
+        codex: selectedProvider === "codex" ? existingConfig?.codex : undefined,
       };
 
       await setApiConfig(configName, config);
@@ -1436,14 +1611,18 @@ export function activate(contextParam: vscode.ExtensionContext) {
         const config = configs[name];
         const details = [];
         if (config.base_url) details.push(`Base URL: ${config.base_url}`);
-        if (config.reasoningEffort) details.push(`Reasoning: ${config.reasoningEffort}`);
+        if (config.reasoningEffort)
+          details.push(`Reasoning: ${config.reasoningEffort}`);
         if (config.maxTokens) details.push(`Max tokens: ${config.maxTokens}`);
-        if (config.maxThinkingTokens) details.push(`Thinking tokens: ${config.maxThinkingTokens}`);
-        
+        if (config.maxThinkingTokens)
+          details.push(`Thinking tokens: ${config.maxThinkingTokens}`);
+
         return {
           label: name,
-          description: `${config.type} - ${config.model_name || "default model"}`,
-          detail: details.length > 0 ? details.join(' | ') : undefined,
+          description: `${config.type} - ${
+            config.model_name || "default model"
+          }`,
+          detail: details.length > 0 ? details.join(" | ") : undefined,
         };
       });
 
@@ -1464,12 +1643,16 @@ export function activate(contextParam: vscode.ExtensionContext) {
       // Also update the currently open .chat.md file's configuration preamble
       try {
         const activeEditor = vscode.window.activeTextEditor;
-        if (activeEditor && activeEditor.document.fileName.endsWith(".chat.md")) {
+        if (
+          activeEditor &&
+          activeEditor.document.fileName.endsWith(".chat.md")
+        ) {
           const doc = activeEditor.document;
           const text = doc.getText();
 
           // Find start of first block marker
-          const firstMarkerRegex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
+          const firstMarkerRegex =
+            /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
           const markerMatch = firstMarkerRegex.exec(text);
           const preambleEnd = markerMatch ? markerMatch.index : 0;
 
@@ -1484,14 +1667,16 @@ export function activate(contextParam: vscode.ExtensionContext) {
             if (/^selectedConfig\s*=.*$/m.test(preamble)) {
               newPreamble = preamble.replace(
                 /^selectedConfig\s*=.*$/m,
-                `selectedConfig="${selectedItem.label}"`
+                `selectedConfig="${selectedItem.label}"`,
               );
               // Ensure a trailing blank line between preamble and first block
               if (!newPreamble.endsWith("\n\n")) {
-                newPreamble = newPreamble.replace(/\n*$/,"") + "\n\n";
+                newPreamble = newPreamble.replace(/\n*$/, "") + "\n\n";
               }
             } else {
-              newPreamble = `selectedConfig="${selectedItem.label}"\n` + (preamble.endsWith("\n") ? "" : "\n");
+              newPreamble =
+                `selectedConfig="${selectedItem.label}"\n` +
+                (preamble.endsWith("\n") ? "" : "\n");
             }
           }
 
@@ -1499,13 +1684,19 @@ export function activate(contextParam: vscode.ExtensionContext) {
           const edit = new vscode.WorkspaceEdit();
           const startPos = new vscode.Position(0, 0);
           const endPos = doc.positionAt(preambleEnd);
-          edit.replace(doc.uri, new vscode.Range(startPos, endPos), newPreamble);
+          edit.replace(
+            doc.uri,
+            new vscode.Range(startPos, endPos),
+            newPreamble,
+          );
 
           const applied = await vscode.workspace.applyEdit(edit);
           if (!applied) {
             log("Failed to update chat file preamble with selectedConfig");
           } else {
-            log(`Updated chat file preamble with selectedConfig="${selectedItem.label}"`);
+            log(
+              `Updated chat file preamble with selectedConfig="${selectedItem.label}"`,
+            );
           }
         }
       } catch (e) {
@@ -1594,89 +1785,89 @@ export function activate(contextParam: vscode.ExtensionContext) {
     vscode.commands.registerTextEditorCommand(
       "filechat.insertNextBlock",
       async (textEditor, edit) => {
-          const document = textEditor.document;
+        const document = textEditor.document;
 
-          // Handle multiple selections, though primary focus is the active cursor
-          for (const selection of textEditor.selections) {
-            const position = selection.active;
-            log(
-              `Shift+Enter pressed at Line: ${position.line}, Character: ${position.character}`,
-            );
+        // Handle multiple selections, though primary focus is the active cursor
+        for (const selection of textEditor.selections) {
+          const position = selection.active;
+          log(
+            `Shift+Enter pressed at Line: ${position.line}, Character: ${position.character}`,
+          );
 
-            const blockInfo = getBlockInfoAtPosition(document, position);
-            log(`Current block type: ${blockInfo.type || "none"}`);
+          const blockInfo = getBlockInfoAtPosition(document, position);
+          log(`Current block type: ${blockInfo.type || "none"}`);
 
-            // Every block marker goes in with a blank line above it, the same way
-            // the streamer and the tool result writer place theirs
-            const markerPrefix = blockMarkerPrefix(
-              document.getText(
-                new vscode.Range(new vscode.Position(0, 0), position),
+          // Every block marker goes in with a blank line above it, the same way
+          // the streamer and the tool result writer place theirs
+          const markerPrefix = blockMarkerPrefix(
+            document.getText(
+              new vscode.Range(new vscode.Position(0, 0), position),
+            ),
+          );
+
+          // Special case: If we're in an assistant block and it contains a tool call, add tool_execute
+          if (blockInfo.type === "assistant") {
+            // Check if the current assistant block contains a tool call
+            const text = document.getText();
+
+            // Find the full content of the current assistant block
+            const blockStart = blockInfo.blockStartPosition?.line ?? 0;
+            let blockEndLine = position.line; // Default to current position
+
+            // Look ahead for the next block marker or end of file
+            for (let i = blockStart + 1; i < document.lineCount; i++) {
+              const line = document.lineAt(i).text;
+              if (
+                line.match(/^# %% (user|assistant|system|tool_execute)\s*$/i)
+              ) {
+                blockEndLine = i - 1; // End of block is line before next marker
+                break;
+              }
+            }
+
+            // Get the content of the assistant block
+            const blockContent = document.getText(
+              new vscode.Range(
+                new vscode.Position(blockStart + 1, 0), // Start after the marker line
+                new vscode.Position(blockEndLine + 1, 0), // Include the full last line
               ),
             );
 
-            // Special case: If we're in an assistant block and it contains a tool call, add tool_execute
-            if (blockInfo.type === "assistant") {
-              // Check if the current assistant block contains a tool call
-              const text = document.getText();
+            // Check for tool call patterns
+            const hasToolCall = checkForToolCallInText(blockContent);
 
-              // Find the full content of the current assistant block
-              const blockStart = blockInfo.blockStartPosition?.line ?? 0;
-              let blockEndLine = position.line; // Default to current position
-
-              // Look ahead for the next block marker or end of file
-              for (let i = blockStart + 1; i < document.lineCount; i++) {
-                const line = document.lineAt(i).text;
-                if (
-                  line.match(/^# %% (user|assistant|system|tool_execute)\s*$/i)
-                ) {
-                  blockEndLine = i - 1; // End of block is line before next marker
-                  break;
-                }
-              }
-
-              // Get the content of the assistant block
-              const blockContent = document.getText(
-                new vscode.Range(
-                  new vscode.Position(blockStart + 1, 0), // Start after the marker line
-                  new vscode.Position(blockEndLine + 1, 0), // Include the full last line
-                ),
+            if (hasToolCall) {
+              log(
+                `Detected tool call in current assistant block, inserting tool_execute block`,
               );
-
-              // Check for tool call patterns
-              const hasToolCall = checkForToolCallInText(blockContent);
-
-              if (hasToolCall) {
-                log(
-                  `Detected tool call in current assistant block, inserting tool_execute block`,
-                );
-                edit.insert(position, `${markerPrefix}# %% tool_execute\n`);
-                continue; // Skip to next selection
-              }
+              edit.insert(position, `${markerPrefix}# %% tool_execute\n`);
+              continue; // Skip to next selection
             }
-
-            // Default behavior (no tool call detected)
-            let textToInsert = "";
-
-            switch (blockInfo.type) {
-              case "user":
-                textToInsert = `${markerPrefix}# %% assistant\n`;
-                break;
-              case "assistant":
-                textToInsert = `${markerPrefix}# %% user\n`;
-                break;
-              case "tool_execute":
-                textToInsert = `${markerPrefix}# %% assistant\n`; // As per requirement
-                break;
-              default: // No block found before cursor, or error
-                textToInsert = `${markerPrefix}# %% user\n`; // As per requirement
-                break;
-            }
-
-            log(`Inserting text: "${textToInsert.replace(/\n/g, "\\n")}"`);
-            // Insert the text at the current cursor position
-            edit.insert(position, textToInsert);
           }
-        },
+
+          // Default behavior (no tool call detected)
+          let textToInsert = "";
+
+          switch (blockInfo.type) {
+            case "user":
+              textToInsert = `${markerPrefix}# %% assistant\n`;
+              break;
+            case "assistant":
+              textToInsert = `${markerPrefix}# %% user\n`;
+              break;
+            case "tool_execute":
+              textToInsert = `${markerPrefix}# %% assistant\n`; // As per requirement
+              break;
+            default: // No block found before cursor, or error
+              textToInsert = `${markerPrefix}# %% user\n`; // As per requirement
+              break;
+          }
+
+          log(`Inserting text: "${textToInsert.replace(/\n/g, "\\n")}"`);
+          // Insert the text at the current cursor position
+          edit.insert(position, textToInsert);
+        }
+      },
     ),
   );
 }
@@ -1762,7 +1953,7 @@ async function checkApiConfiguration(): Promise<void> {
 /**
  * Deactivate the extension
  */
-export function deactivate(): Promise<void> {
+export async function deactivate(): Promise<void> {
   // Chat file locks live on disk, so anything still held would look like a live
   // holder to the CLI until its heartbeat went stale.
   try {
@@ -1778,8 +1969,11 @@ export function deactivate(): Promise<void> {
   documentListeners.clear();
   documentListenerInstances.clear();
 
-  // Clean up MCP client connections
-  mcpClientManager.cleanup().catch((error) => {
+  const { sdkMcpBridge } = await import("./sdkMcpBridge");
+  await sdkMcpBridge.close().catch((error) => {
+    log(`Error during SDK MCP bridge cleanup: ${error}`);
+  });
+  await mcpClientManager.cleanup().catch((error) => {
     log(`Error during MCP client cleanup: ${error}`);
   });
 
@@ -1787,7 +1981,7 @@ export function deactivate(): Promise<void> {
   statusManager.dispose();
 
   // History is written in the background; give queued writes a chance to land.
-  return flushChatHistoryWrites().catch((error) => {
+  await flushChatHistoryWrites().catch((error) => {
     log(`Error flushing chat history writes: ${error}`);
   });
 }

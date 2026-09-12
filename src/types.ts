@@ -91,6 +91,7 @@ export interface ToolUseContent {
   name: string;
   input: Record<string, unknown>;
   rawXml: string;
+  serverTool?: boolean;
 }
 
 export interface ToolResultContent {
@@ -100,6 +101,7 @@ export interface ToolResultContent {
   content: Array<TextContent | ImageContent>;
   rawText: string;
   isError: boolean;
+  serverTool?: boolean;
 }
 
 /**
@@ -256,6 +258,9 @@ export interface StreamerState {
   messageIndex: number;
   tokens: string[];
   isActive: boolean;
+
+  /** Absolute document offset where this turn started writing. */
+  streamAnchor?: number;
 
   /**
    * Path to the history file where chat context is saved

@@ -15,6 +15,9 @@ from ..types import McpToolDefinition, ToolCall
 
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _INVALID_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
+_SERVER_RESULT_ID_RE = re.compile(
+    r"^\s*<cmd:tool_id>([^<]*)</cmd:tool_id>[ \t]*(?:\r?\n)?"
+)
 
 
 @dataclass(frozen=True)
@@ -120,6 +123,28 @@ def render_tool_arguments_delta(delta: str) -> str:
 
 def render_tool_call_end() -> str:
     return "</cmd:arguments>\n</cmd:tool_call>"
+
+
+def render_tool_call(call_id: str, name: str, input_: Mapping[str, Any]) -> str:
+    arguments = json.dumps(input_, separators=(",", ":"), ensure_ascii=False)
+    return (
+        render_tool_call_start(call_id, name)
+        + render_tool_arguments_delta(arguments)
+        + render_tool_call_end()
+    )
+
+
+def render_server_tool_result(call_id: str, result: str) -> str:
+    """Carry an SDK result's exact call association in its inert section."""
+    return f"<cmd:tool_id>{escape(call_id)}</cmd:tool_id>\n{result}"
+
+
+def parse_server_tool_result(value: str) -> tuple[str | None, str]:
+    """Read an ID-bearing result, accepting the older ordinal-only form too."""
+    matched = _SERVER_RESULT_ID_RE.match(value)
+    if matched is None:
+        return None, value
+    return unescape(matched.group(1)), value[matched.end() :]
 
 
 def decode_tool_arguments(value: str) -> dict[str, Any] | None:

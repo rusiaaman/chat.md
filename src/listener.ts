@@ -854,14 +854,17 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       : getModelName();
     const mcpGroupedTools = mcpClientManager.getGroupedTools();
     const mcpGroupedResources = mcpClientManager.getGroupedResources();
+    const sdkProvider = providerOverride === "claude-code" || providerOverride === "codex";
     const toolSystemPrompt = usesNativeTools(modelName || "")
       ? generateNativeToolSystemPrompt(mcpGroupedResources)
       : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
-    const finalSystemPrompt = [
-      getDefaultSystemPrompt(),
-      customSystemPrompt,
-      toolSystemPrompt,
-    ].filter((part) => part && part.trim() !== "").join("\n\n");
+    const finalSystemPrompt = sdkProvider
+      ? customSystemPrompt
+      : [
+          getDefaultSystemPrompt(),
+          customSystemPrompt,
+          toolSystemPrompt,
+        ].filter((part) => part && part.trim() !== "").join("\n\n");
 
     const streamingService = new StreamingService(
       apiKeyToUse as string,
@@ -959,13 +962,23 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
       // Resolve API key using per-file config if present, else global
       let apiKeyToUse: string | undefined;
+      let selectedProvider: string;
       try {
-        const { getApiKeyForConfig, getApiKey } = require("./config");
+        const {
+          getApiKeyForConfig,
+          getApiKey,
+          getProviderForConfig,
+          getProvider,
+        } = require("./config");
         apiKeyToUse = perFileConfigName ? getApiKeyForConfig(perFileConfigName) : getApiKey();
+        selectedProvider = perFileConfigName
+          ? getProviderForConfig(perFileConfigName)
+          : getProvider();
       } catch (e) {
         apiKeyToUse = undefined;
+        selectedProvider = "";
       }
-      if (!apiKeyToUse) {
+      if (!apiKeyToUse && (selectedProvider === "anthropic" || selectedProvider === "openai")) {
         const which = perFileConfigName ? `for config "${perFileConfigName}"` : "in settings";
         const message = `Configuration error: API key missing ${which}.`;
         log(message);
@@ -995,11 +1008,14 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         ? generateNativeToolSystemPrompt(mcpGroupedResources)
         : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
       // Combine
-      const finalSystemPrompt = [
-          defaultSystemPrompt,
-          customSystemPrompt, // Add the custom prompt from the file
-          toolSystemPrompt
-      ].filter(p => p && p.trim() !== '').join('\n\n'); // Join non-empty parts
+      const sdkProvider = selectedProvider === "claude-code" || selectedProvider === "codex";
+      const finalSystemPrompt = sdkProvider
+        ? customSystemPrompt
+        : [
+            defaultSystemPrompt,
+            customSystemPrompt,
+            toolSystemPrompt,
+          ].filter(p => p && p.trim() !== '').join('\n\n');
 
       log(`Final System Prompt Length: ${finalSystemPrompt.length}`);
       // log(`Final System Prompt:\n---\n${finalSystemPrompt}\n---`); // Debug if needed

@@ -9,6 +9,41 @@ export interface NativeToolDefinition {
   inputSchema: Record<string, unknown>;
 }
 
+export type AgentToolEvent =
+  | {
+      type: "tool_use";
+      id: string;
+      name: string;
+      input: Record<string, unknown>;
+      serverTool: boolean;
+    }
+  | {
+      type: "tool_result";
+      toolUseId: string;
+      name: string;
+      content: string;
+      isError: boolean;
+      serverTool: boolean;
+    };
+
+const AGENT_TOOL_EVENT_PREFIX = "\u0000agent_tool:";
+
+export function encodeAgentToolEvent(event: AgentToolEvent): string {
+  return AGENT_TOOL_EVENT_PREFIX + JSON.stringify(event);
+}
+
+export function isAgentToolEvent(token: string): boolean {
+  return token.startsWith(AGENT_TOOL_EVENT_PREFIX);
+}
+
+export function decodeAgentToolEvent(token: string): AgentToolEvent | undefined {
+  try {
+    return JSON.parse(token.substring(AGENT_TOOL_EVENT_PREFIX.length)) as AgentToolEvent;
+  } catch {
+    return undefined;
+  }
+}
+
 const VALID_NAME = /^[A-Za-z0-9_-]{1,64}$/;
 
 export function usesNativeTools(modelName: string): boolean {
@@ -121,6 +156,31 @@ export function renderToolArgumentsDelta(delta: string): string {
 
 export function renderToolCallEnd(): string {
   return "</cmd:arguments>\n</cmd:tool_call>";
+}
+
+export function renderToolCall(
+  id: string,
+  name: string,
+  input: Record<string, unknown>,
+): string {
+  return renderToolCallStart(id, name)
+    + renderToolArgumentsDelta(JSON.stringify(input))
+    + renderToolCallEnd();
+}
+
+export function renderServerToolResult(id: string, result: string): string {
+  return `<cmd:tool_id>${escapeXml(id)}</cmd:tool_id>\n${result}`;
+}
+
+export function parseServerToolResult(
+  value: string,
+): { id?: string; result: string } {
+  const matched = /^\s*<cmd:tool_id>([^<]*)<\/cmd:tool_id>[ \t]*(?:\r?\n)?/.exec(value);
+  if (!matched) return { result: value };
+  return {
+    id: unescapeXml(matched[1]),
+    result: value.substring(matched[0].length),
+  };
 }
 
 export function parseNativeArguments(

@@ -65,6 +65,7 @@ from ..types import (
     McpToolDefinition,
     McpToolExecutionResult,
 )
+from .sdk_bridge import SdkMcpBridge
 from .transport import connect_session
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,12 @@ class _ServerRuntime:
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
+@dataclass(frozen=True)
+class _PoolRequest:
+    operation: Callable[[], Awaitable[Any]] | None
+    result: asyncio.Future[Any]
+
+
 class McpPool:
     """One shared pool of MCP server connections for the whole process."""
 
@@ -151,6 +158,9 @@ class McpPool:
                 config, connect_timeout=connect_timeout, server_id=server_id
             )
         )
+        self.sdk_bridge = SdkMcpBridge(self)
+        self._requests: asyncio.Queue[_PoolRequest] = asyncio.Queue()
+        self._worker: asyncio.Task[None] | None = None
 
     # -- lifecycle ----------------------------------------------------------- #
 
@@ -165,8 +175,40 @@ class McpPool:
 
     async def aclose(self) -> None:
         """Disconnect every server currently kept alive. Idempotent."""
-        for runtime in self._runtime.values():
-            await self._close_runtime_session(runtime, next_state="not-started")
+        await self.sdk_bridge.aclose()
+        worker = self._worker
+        if worker is None:
+            return
+        result: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        await self._requests.put(_PoolRequest(operation=None, result=result))
+        await result
+        await worker
+        self._worker = None
+
+    async def _run_requests(self) -> None:
+        while True:
+            request = await self._requests.get()
+            if request.operation is None:
+                for runtime in self._runtime.values():
+                    await self._close_runtime_session(runtime, next_state="not-started")
+                if not request.result.done():
+                    request.result.set_result(None)
+                return
+            try:
+                value = await request.operation()
+            except Exception as error:  # noqa: BLE001 - forwarded to the requesting task
+                if not request.result.done():
+                    request.result.set_exception(error)
+            else:
+                if not request.result.done():
+                    request.result.set_result(value)
+
+    async def _dispatch(self, operation: Callable[[], Awaitable[Any]]) -> Any:
+        if self._worker is None or self._worker.done():
+            self._worker = asyncio.create_task(self._run_requests())
+        result: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+        await self._requests.put(_PoolRequest(operation=operation, result=result))
+        return await result
 
     async def _discover(self, server_id: str) -> None:
         runtime = self._runtime[server_id]
@@ -329,9 +371,7 @@ class McpPool:
 
     # -- tool execution -------------------------------------------------------- #
 
-    async def call(
-        self, full_name: str, params: Mapping[str, str]
-    ) -> McpToolExecutionResult | str:
+    async def call(self, full_name: str, params: Mapping[str, str]) -> McpToolExecutionResult | str:
         """Execute one tool call, splitting `full_name` on the FIRST dot.
 
         Errors are returned as strings for the cases the TS returns strings for
@@ -339,8 +379,13 @@ class McpPool:
         comes back as an `McpToolExecutionResult` with `is_error=True`. Nothing
         here raises, so a failure can never crash the caller's agentic loop.
         """
+        return await self._dispatch(lambda: self._call(full_name, params))
+
+    async def _call(
+        self, full_name: str, params: Mapping[str, str]
+    ) -> McpToolExecutionResult | str:
         if is_system_tool(full_name):
-            return await execute_system_tool(full_name, dict(params), self.read_resource)
+            return await execute_system_tool(full_name, dict(params), self._read_resource)
 
         dot = full_name.find(".")
         if dot <= 0 or dot >= len(full_name) - 1:
@@ -416,6 +461,9 @@ class McpPool:
     async def read_resource(self, server_id: str, uri: str) -> McpReadResourceResult:
         """Read one MCP resource. Raises on failure; callers that must never
         raise (e.g. `system.fetch_mcp_resource`) catch around this themselves."""
+        return await self._dispatch(lambda: self._read_resource(server_id, uri))
+
+    async def _read_resource(self, server_id: str, uri: str) -> McpReadResourceResult:
         runtime = self._runtime.get(server_id)
         if runtime is None:
             raise RuntimeError(f'MCP server "{server_id}" is not configured.')
@@ -427,6 +475,11 @@ class McpPool:
         self, server_id: str, name: str, args: Mapping[str, str] | None = None
     ) -> McpPromptResult:
         """Fetch one MCP prompt, rendered onto our renderable content dataclasses."""
+        return await self._dispatch(lambda: self._get_prompt(server_id, name, args))
+
+    async def _get_prompt(
+        self, server_id: str, name: str, args: Mapping[str, str] | None
+    ) -> McpPromptResult:
         runtime = self._runtime.get(server_id)
         if runtime is None:
             raise RuntimeError(f'MCP server "{server_id}" is not configured.')

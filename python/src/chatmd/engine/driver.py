@@ -30,7 +30,7 @@ from ..parser.blocks import (
     has_empty_tool_execute_block,
 )
 from ..parser.document import parse_document
-from ..providers.client import create_client
+from ..providers.client import attach_mcp_bridge, create_client
 from ..providers.native_tools import build_native_tools, uses_native_tools
 from ..providers.prompt import build_system_prompt
 from ..render import strip_thinking_sections
@@ -175,15 +175,24 @@ class ChatDriver:
         ensure_chat_md_gitignore(base_dir)
 
         native_tools = build_native_tools(self.pool.grouped_tools())
-        system_prompt = build_system_prompt(
-            parsed.system_prompt,
-            self.pool.grouped_tools(),
-            self.pool.grouped_resources(),
-            cli_command=find_chatmd_command(),
-            native_tools=uses_native_tools(resolved.model_name or ""),
+        system_prompt = (
+            parsed.system_prompt
+            if resolved.provider in ("claude-code", "codex")
+            else build_system_prompt(
+                parsed.system_prompt,
+                self.pool.grouped_tools(),
+                self.pool.grouped_resources(),
+                cli_command=find_chatmd_command(),
+                native_tools=uses_native_tools(resolved.model_name or ""),
+            )
         )
         streamer = FileStreamer(
-            path, create_client(resolved), assets_path=resolved.assets_path
+            path,
+            attach_mcp_bridge(
+                create_client(resolved, path),
+                self.pool.sdk_bridge if isinstance(self.pool, McpPool) else None,
+            ),
+            assets_path=resolved.assets_path,
         )
         started = time.monotonic()
         result = await streamer.run(list(parsed.messages), system_prompt, native_tools)

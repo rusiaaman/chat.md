@@ -294,12 +294,17 @@ def _extract_usage(event: Any) -> Usage | None:
 class OpenAIResponsesClient:
     """Streaming client for the OpenAI Responses API."""
 
+    manages_tools = False
+
     def __init__(self, config: ResolvedConfig) -> None:
         self.config = config
         self.last_usage: Usage | None = None
         self._client = AsyncOpenAI(
             api_key=config.api_key, base_url=_normalize_base_url(config.base_url)
         )
+
+    def cancel(self) -> None:
+        return
 
     async def stream(
         self,

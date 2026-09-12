@@ -205,8 +205,13 @@ def format_message(message: MessageParam, base_dir: str | Path | None = None) ->
         has_details = payload is not None and payload.kind == "reasoning_details"
         if has_details and payload is not None and payload.reasoning_details:
             formatted["reasoning_details"] = payload.reasoning_details
-        elif thinking.value.strip() != "":
-            field = (payload.reasoning_field if payload else None) or "reasoning_content"
+        elif (
+            payload is not None
+            and payload.kind == "raw"
+            and payload.reasoning_field is not None
+            and thinking.value.strip() != ""
+        ):
+            field = payload.reasoning_field
             formatted[field] = thinking.value
 
     return formatted
@@ -468,10 +473,15 @@ async def _translate_stream(
 class OpenAIChatClient:
     """Streams assistant turns from an OpenAI-compatible ``/chat/completions`` API."""
 
+    manages_tools = False
+
     def __init__(self, config: ResolvedConfig) -> None:
         self.config = config
         self.last_usage: Usage | None = None
         self._client = AsyncOpenAI(api_key=config.api_key, base_url=config.base_url)
+
+    def cancel(self) -> None:
+        return
 
     async def stream(
         self,

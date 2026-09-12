@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from mcp import ClientSession
+from mcp.client.streamable_http import streamable_http_client
 
 from chatmd.config.model import McpServerConfig
 from chatmd.mcp import manager as manager_module
@@ -327,12 +329,15 @@ class FakeConnector:
         self.concurrent_opens: dict[str, int] = {}
         self.max_concurrent_opens: dict[str, int] = {}
         self.fail_next: dict[str, list[Exception]] = {}
+        self.entered_tasks: list[asyncio.Task[Any] | None] = []
+        self.exited_tasks: list[asyncio.Task[Any] | None] = []
 
     def __call__(self, server_id: str, config: McpServerConfig) -> Any:
         return self._connect(server_id)
 
     @asynccontextmanager
     async def _connect(self, server_id: str) -> AsyncIterator[FakeSession]:
+        self.entered_tasks.append(asyncio.current_task())
         self.connect_counts[server_id] = self.connect_counts.get(server_id, 0) + 1
         # A real suspension point, so two concurrent callers can actually
         # interleave here instead of one running the whole connect to
@@ -349,6 +354,7 @@ class FakeConnector:
         try:
             yield self.sessions[server_id]
         finally:
+            self.exited_tasks.append(asyncio.current_task())
             self.concurrent_opens[server_id] -= 1
 
 
@@ -424,6 +430,66 @@ async def test_grouped_tools_excludes_system_tools() -> None:
     grouped = pool.grouped_tools()
     assert set(grouped) == {"srv"}
     assert "system" not in grouped
+
+
+async def test_sdk_bridge_reuses_the_pool_connection_across_leases() -> None:
+    session = FakeSession(tools=[_tool("echo", {"type": "object"})])
+    session.call_tool_results.extend(
+        [_call_result([_content("text", text="one", annotations=None)])] * 2
+    )
+    pool, connector = make_pool({"srv": session})
+    await pool.start()
+
+    try:
+        for expected in ("one", "one"):
+            lease = await pool.sdk_bridge.acquire()
+            try:
+                async with streamable_http_client(lease.urls["srv"]) as streams:
+                    async with ClientSession(*streams) as sdk_session:
+                        await sdk_session.initialize()
+                        listed = await sdk_session.list_tools()
+                        assert [tool.name for tool in listed.tools] == ["echo"]
+                        result = await sdk_session.call_tool("echo", {"value": 1})
+                        assert result.content[0].text == expected
+            finally:
+                lease.release()
+
+        assert connector.connect_counts["srv"] == 2
+        assert connector.concurrent_opens["srv"] == 1
+        assert session.call_tool_calls == [
+            ("echo", {"value": 1}),
+            ("echo", {"value": 1}),
+        ]
+    finally:
+        await pool.aclose()
+
+    assert connector.concurrent_opens["srv"] == 0
+
+
+async def test_sdk_bridge_can_close_from_a_different_task_than_startup() -> None:
+    pool, _ = make_pool({"srv": FakeSession(tools=[_tool("echo")])})
+    await pool.start()
+
+    lease = await asyncio.create_task(pool.sdk_bridge.acquire())
+    lease.release()
+    await pool.aclose()
+
+
+async def test_kept_alive_session_opens_and_closes_in_its_owner_task() -> None:
+    session = FakeSession(tools=[_tool("echo")])
+    session.call_tool_results.append(
+        _call_result([_content("text", text="done", annotations=None)])
+    )
+    pool, connector = make_pool({"srv": session})
+    await pool.start()
+
+    await asyncio.create_task(pool.call("srv.echo", {"value": "one"}))
+    await pool.aclose()
+
+    assert len(connector.entered_tasks) == 2
+    assert len(connector.exited_tasks) == 2
+    assert connector.entered_tasks[1] is connector.exited_tasks[1]
+    assert connector.entered_tasks[1] is not asyncio.current_task()
 
 
 async def test_grouped_resources_and_templates() -> None:
@@ -537,7 +603,9 @@ async def test_system_tool_calls_route_to_execute_system_tool() -> None:
     pool, _ = make_pool({"docs": session})
     await pool.start()
 
-    result = await pool.call("system.fetch_mcp_resource", {"serverId": "docs", "uri": "file:///a.md"})
+    result = await pool.call(
+        "system.fetch_mcp_resource", {"serverId": "docs", "uri": "file:///a.md"}
+    )
 
     assert isinstance(result, McpToolExecutionResult)
     assert result.server_id == "system"

@@ -19,7 +19,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from chatmd.markers import escape_markers
 from chatmd.types import (
@@ -41,7 +41,10 @@ TEXT_SECTION_MARKER = "## %% text"
 # the presence test) because JS regex objects with the `g` flag carry mutable
 # `lastIndex` state; neither of these has that flag, so a single compiled pattern
 # is safe to reuse for both purposes here.
-_SECTION_MARKER_RE = re.compile(r"^## %% (thinking|text)[ \t]*$", re.MULTILINE | re.IGNORECASE)
+_SECTION_MARKER_RE = re.compile(
+    r"^## %% (thinking|text|server_tool|server_tool_results)[ \t]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
 
 # Greedy model part so the split happens on the last "::" of the line.
 _SIGNATURE_LINE_RE = re.compile(r"^(.+)::([0-9a-f]{8})$")
@@ -49,7 +52,7 @@ _SIGNATURE_LINE_RE = re.compile(r"^(.+)::([0-9a-f]{8})$")
 
 @dataclass(frozen=True)
 class AssistantSection:
-    type: Literal["thinking", "text"]
+    type: Literal["thinking", "text", "server_tool", "server_tool_results"]
     content: str
 
 
@@ -108,7 +111,10 @@ def split_assistant_sections(text: str) -> list[AssistantSection]:
         sections.append(AssistantSection(type="text", content=parts[0]))
 
     for i in range(1, len(parts), 2):
-        kind: Literal["thinking", "text"] = "thinking" if parts[i].lower() == "thinking" else "text"
+        kind = cast(
+            Literal["thinking", "text", "server_tool", "server_tool_results"],
+            parts[i].lower(),
+        )
         content = parts[i + 1] if i + 1 < len(parts) else ""
         sections.append(AssistantSection(type=kind, content=content))
 

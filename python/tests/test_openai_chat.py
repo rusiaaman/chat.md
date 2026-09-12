@@ -159,13 +159,13 @@ def test_format_message_raw_thinking_goes_to_recorded_field_name() -> None:
     assert "reasoning_details" not in formatted
 
 
-def test_format_message_default_reasoning_field_is_reasoning_content() -> None:
+def test_format_message_does_not_replay_reasoning_without_provider_payload() -> None:
     message = MessageParam(
         role="assistant",
         content=[ThinkingContent(value="thinking text, no payload"), TextContent(value="hi")],
     )
     formatted = format_message(message)
-    assert formatted["reasoning_content"] == "thinking text, no payload"
+    assert "reasoning_content" not in formatted
 
 
 # -- ReasoningDetailsAccumulator ------------------------------------------------------- #

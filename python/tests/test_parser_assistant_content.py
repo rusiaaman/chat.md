@@ -12,13 +12,21 @@ from pathlib import Path
 
 from chatmd.assets import assets_dir
 from chatmd.parser.assistant_content import parse_assistant_content
+from chatmd.providers.native_tools import render_server_tool_result, render_tool_call
 from chatmd.thinking_map import put_thinking_entry, thinking_map_path
 from chatmd.tools.call_parser import (
     CMD_TOOL_CALL_CLOSE_TAG,
     CMD_TOOL_CALL_OPEN_TAG,
     CMD_WAIT_TOOL_RESULT_TAG,
 )
-from chatmd.types import TextContent, ThinkingContent, ThinkingPayload, ToolUseContent
+from chatmd.tools.result_format import format_tool_result
+from chatmd.types import (
+    TextContent,
+    ThinkingContent,
+    ThinkingPayload,
+    ToolResultContent,
+    ToolUseContent,
+)
 
 
 def _tool_call(name: str) -> str:
@@ -191,3 +199,26 @@ def test_tool_call_is_structured_without_an_execution_result() -> None:
     assert result[0] == TextContent(value="Before.")
     assert isinstance(result[1], ToolUseContent)
     assert result[1].name == "foo"
+
+
+def test_server_results_use_ids_when_parallel_calls_finish_out_of_order() -> None:
+    content = "\n".join(
+        [
+            "## %% server_tool",
+            render_tool_call("call-1", "first", {}),
+            "## %% server_tool",
+            render_tool_call("call-2", "second", {}),
+            "## %% server_tool_results",
+            render_server_tool_result("call-2", format_tool_result("second result")),
+            "## %% server_tool_results",
+            render_server_tool_result("call-1", format_tool_result("first result")),
+        ]
+    )
+
+    parsed = parse_assistant_content(content)
+    results = [item for item in parsed if isinstance(item, ToolResultContent)]
+
+    assert [(item.tool_use_id, item.name) for item in results] == [
+        ("call-2", "second"),
+        ("call-1", "first"),
+    ]

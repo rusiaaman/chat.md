@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from chatmd.markers import unescape_markers
+from chatmd.providers.native_tools import parse_server_tool_result
 from chatmd.types import (
     Content,
     ImageContent,
@@ -62,6 +63,7 @@ def parse_document(
     settings: dict[str, Any] | None = None
     pending_tool_uses: list[ToolUseContent] = []
     pending_result_index = 0
+    completed_tool_use_ids: set[str] = set()
 
     for block in blocks:
         # Unescaped here, once the document has already been split: content that
@@ -89,9 +91,33 @@ def parse_document(
             # Results are replayed as user turns, which is how a model without
             # native tool support sees what its call produced.
             if content:
-                if pending_result_index < len(pending_tool_uses):
-                    tool_use = pending_tool_uses[pending_result_index]
-                    native_content, raw_text = parse_tool_result_content(content, base)
+                tool_use_id, result_body = parse_server_tool_result(content)
+                if tool_use_id is not None:
+                    tool_use = next(
+                        (
+                            item
+                            for item in pending_tool_uses
+                            if item.id == tool_use_id
+                            and item.id not in completed_tool_use_ids
+                        ),
+                        None,
+                    )
+                else:
+                    while (
+                        pending_result_index < len(pending_tool_uses)
+                        and pending_tool_uses[pending_result_index].id
+                        in completed_tool_use_ids
+                    ):
+                        pending_result_index += 1
+                    tool_use = (
+                        pending_tool_uses[pending_result_index]
+                        if pending_result_index < len(pending_tool_uses)
+                        else None
+                    )
+                if tool_use is not None:
+                    native_content, raw_text = parse_tool_result_content(
+                        result_body, base
+                    )
                     messages.append(
                         MessageParam(
                             role="user",
@@ -110,10 +136,12 @@ def parse_document(
                             ],
                         )
                     )
-                    pending_result_index += 1
+                    completed_tool_use_ids.add(tool_use.id)
+                    if tool_use_id is None:
+                        pending_result_index += 1
                 else:
                     processed_content: list[Content] = list(
-                        process_tool_result_content(content, base)
+                        process_tool_result_content(result_body, base)
                     )
                     messages.append(
                         MessageParam(
@@ -124,6 +152,7 @@ def parse_document(
         elif block.type == "user":
             pending_tool_uses = []
             pending_result_index = 0
+            completed_tool_use_ids = set()
             parsed = parse_user_content(content, base)
             if any(
                 (isinstance(item, TextContent) and item.value.strip())
@@ -143,11 +172,28 @@ def parse_document(
                 assets_path=assets_path,
             )
             if parsed_assistant:
-                messages.append(MessageParam(role="assistant", content=parsed_assistant))
-                pending_tool_uses = [
-                    item for item in parsed_assistant if isinstance(item, ToolUseContent)
+                assistant_items: list[Content] = []
+                for item in parsed_assistant:
+                    if isinstance(item, ToolResultContent):
+                        if assistant_items:
+                            messages.append(
+                                MessageParam(role="assistant", content=assistant_items)
+                            )
+                            assistant_items = []
+                        messages.append(MessageParam(role="user", content=[item]))
+                    else:
+                        assistant_items.append(item)
+                if assistant_items:
+                    messages.append(MessageParam(role="assistant", content=assistant_items))
+                new_tool_uses = [
+                    item
+                    for item in parsed_assistant
+                    if isinstance(item, ToolUseContent) and not item.server_tool
                 ]
-                pending_result_index = 0
+                if new_tool_uses:
+                    pending_tool_uses = new_tool_uses
+                    pending_result_index = 0
+                    completed_tool_use_ids = set()
             else:
                 logger.debug("Skipping assistant block that parsed to empty content")
 

@@ -5,6 +5,8 @@ import { Lock } from "./utils/lock";
 import { AnthropicClient } from "./anthropicClient";
 import { OpenAIClient } from "./openaiClient";
 import { OpenAIResponsesClient } from "./openaiResponsesClient";
+import { ClaudeCodeClient } from "./claudeCodeClient";
+import { CodexSdkClient } from "./codexSdkClient";
 import { couldBecomeMarkerLine, escapeMarkers, unescapeMarkers } from "./utils/markerEscape";
 import {
   stripThinkingSections,
@@ -25,10 +27,19 @@ import {
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
 import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
 import { mcpClientManager } from "./mcpClientManager";
-import { buildNativeTools } from "./nativeTools";
+import {
+  buildNativeTools,
+  decodeAgentToolEvent,
+  isAgentToolEvent,
+  renderServerToolResult,
+  renderToolCall,
+} from "./nativeTools";
+import { formatToolResult } from "./tools/toolExecutor";
 import {
   appendToChatHistory,
+  TOOL_RESULT_LINE_THRESHOLD,
   updateChatHistoryUsage,
+  writeToolResultAttachment,
 } from "./utils/fileUtils";
 import {
   parseToolCall,
@@ -58,6 +69,8 @@ export class StreamingService {
   private readonly anthropicClient?: AnthropicClient;
   private readonly openaiClient?: OpenAIClient;
   private openaiResponsesClient?: OpenAIResponsesClient;
+  private readonly claudeCodeClient?: ClaudeCodeClient;
+  private readonly codexSdkClient?: CodexSdkClient;
   private readonly openaiApiKey?: string;
   private readonly openaiBaseUrl?: string;
   private readonly provider: string;
@@ -116,6 +129,10 @@ export class StreamingService {
         // The Responses API client is created lazily, since the choice depends on
         // per-file configuration that is only known per request.
         this.openaiApiKey = apiKey;
+      } else if (this.provider === "claude-code") {
+        this.claudeCodeClient = new ClaudeCodeClient();
+      } else if (this.provider === "codex") {
+        this.codexSdkClient = new CodexSdkClient();
       } else {
         log(`Unknown provider: ${this.provider}, falling back to Anthropic`);
         this.provider = "anthropic";
@@ -291,6 +308,8 @@ export class StreamingService {
       // Set to inactive regardless of current state to ensure cancellation works
       // during retries, waiting periods, or normal streaming
       streamer.isActive = false;
+      this.claudeCodeClient?.cancel();
+      this.codexSdkClient?.cancel();
       
       // Immediately hide streaming status
       requestStatusBarUpdate(this.document.uri.fsPath, "streaming cancelled");
@@ -386,6 +405,99 @@ export class StreamingService {
     streamer.textSectionEnd = state.textSectionEnd;
 
     return rendered.length > 0 ? [rendered] : [];
+  }
+
+  private async updateManagedTokens(
+    streamer: StreamerState,
+    tokens: string[],
+  ): Promise<boolean> {
+    let ordinary: string[] = [];
+    const flushOrdinary = async (): Promise<boolean> => {
+      if (ordinary.length === 0) return true;
+      const rendered = this.renderTokens(streamer, ordinary);
+      ordinary = [];
+      return this.updateDocumentWithTokens(streamer, rendered);
+    };
+
+    for (const token of tokens) {
+      if (!isAgentToolEvent(token)) {
+        ordinary.push(token);
+        continue;
+      }
+      if (!(await flushOrdinary())) return false;
+      const event = decodeAgentToolEvent(token);
+      if (!event) continue;
+
+      if (event.type === "tool_use") {
+        const call = renderToolCall(event.id, event.name, event.input);
+        if (event.serverTool) {
+          const prefix = streamer.tokens.join("").endsWith("\n")
+            || streamer.tokens.length === 0 ? "" : "\n";
+          const section = `${prefix}## %% server_tool\n${call.replace(/^\n/, "")}`;
+          if (!(await this.updateDocumentWithTokens(streamer, [section]))) return false;
+          streamer.sawThinking = true;
+          streamer.thinkingOpen = false;
+          streamer.textOpen = false;
+        } else {
+          const rendered = this.renderTokens(streamer, [call]);
+          if (!(await this.updateDocumentWithTokens(streamer, rendered))) return false;
+        }
+        continue;
+      }
+
+      const body = event.isError && !event.content.trimStart().startsWith("Error:")
+        ? `Error: ${event.content}`
+        : event.content;
+      const normalizedBody = body.trim();
+      let bodyToRender = normalizedBody;
+      const logicalLineCount =
+        normalizedBody.split("\n").length +
+        (normalizedBody.match(/\\n/g)?.length ?? 0);
+      if (logicalLineCount > TOOL_RESULT_LINE_THRESHOLD) {
+        try {
+          const relativePath = writeToolResultAttachment(
+            path.dirname(this.document.uri.fsPath),
+            normalizedBody,
+            ".txt",
+          );
+          bodyToRender = `[Tool Result](${relativePath})`;
+        } catch (error) {
+          log(`Could not save managed tool result to an attachment: ${error}`);
+        }
+      }
+      const wrapped = formatToolResult(escapeMarkers(bodyToRender));
+      if (event.serverTool) {
+        const prefix = streamer.tokens.join("").endsWith("\n")
+          || streamer.tokens.length === 0 ? "" : "\n";
+        const section = `${prefix}## %% server_tool_results\n${renderServerToolResult(
+          event.toolUseId,
+          wrapped,
+        )}`;
+        if (!(await this.updateDocumentWithTokens(streamer, [section]))) return false;
+        streamer.sawThinking = true;
+        streamer.thinkingOpen = false;
+        streamer.textOpen = false;
+      } else {
+        const text = this.document.getText();
+        const anchor = streamer.streamAnchor;
+        const offset = anchor === undefined
+          ? text.length
+          : anchor + streamer.tokens.join("").length;
+        const prefix = blockMarkerPrefix(text.substring(0, offset));
+        const structure = `${prefix}# %% tool_execute\n${renderServerToolResult(
+          event.toolUseId,
+          wrapped,
+        )}\n\n# %% assistant\n`;
+        if (!(await this.updateDocumentWithTokens(streamer, [structure]))) return false;
+        streamer.sawThinking = false;
+        streamer.thinkingOpen = false;
+        streamer.textOpen = false;
+        streamer.scanOffset = streamer.tokens.join("").length;
+        streamer.textSectionEnd = null;
+      }
+    }
+
+    return flushOrdinary();
   }
 
   /**
@@ -835,6 +947,12 @@ export class StreamingService {
     if (this.openaiResponsesClient?.lastUsage) {
       return this.openaiResponsesClient.lastUsage;
     }
+    if (this.provider === "claude-code") {
+      return this.claudeCodeClient?.getLastUsage() ?? undefined;
+    }
+    if (this.provider === "codex") {
+      return this.codexSdkClient?.getLastUsage() ?? undefined;
+    }
     return this.openaiClient?.lastUsage;
   }
 
@@ -893,6 +1011,7 @@ export class StreamingService {
 
           // Start streaming completion based on provider, passing document for file path resolution
           let stream;
+          const managesTools = this.provider === "claude-code" || this.provider === "codex";
           if (this.provider === "anthropic" && this.anthropicClient) {
             stream = await this.anthropicClient.streamCompletion(
               messages,
@@ -950,6 +1069,24 @@ export class StreamingService {
                 fileConfig,
               );
             }
+          } else if (this.provider === "claude-code" && this.claudeCodeClient) {
+            stream = this.claudeCodeClient.streamCompletion(
+              messages,
+              this.document,
+              systemPrompt,
+              modelNameOverride,
+              this.configNameOverride,
+              fileConfig,
+            );
+          } else if (this.provider === "codex" && this.codexSdkClient) {
+            stream = this.codexSdkClient.streamCompletion(
+              messages,
+              this.document,
+              systemPrompt,
+              modelNameOverride,
+              this.configNameOverride,
+              fileConfig,
+            );
           } else {
             throw new Error(
               `Provider ${this.provider} not properly configured`,
@@ -1012,11 +1149,24 @@ export class StreamingService {
 
             if (tokens.length > 0) {
               tokenCount += tokens.length;
-              log(`Received batched ${tokens.length} tokens: "${tokens.join("")}"`);
+              log(
+                tokens.some(isAgentToolEvent)
+                  ? `Received batched ${tokens.length} tokens including SDK tool activity`
+                  : `Received batched ${tokens.length} tokens: "${tokens.join("")}"`,
+              );
 
               // Log received tokens to the chat history file if available
               if (streamer.historyFilePath) {
-                appendToChatHistory(streamer.historyFilePath, tokens.join(""));
+                const visibleTokens = tokens.filter((token) => !isAgentToolEvent(token));
+                if (visibleTokens.length > 0) {
+                  appendToChatHistory(streamer.historyFilePath, visibleTokens.join(""));
+                }
+              }
+
+              if (managesTools) {
+                updateFailed = !(await this.updateManagedTokens(streamer, tokens));
+                if (updateFailed) break;
+                continue;
               }
 
               if (bufferingMode) {
@@ -1289,6 +1439,7 @@ export class StreamingService {
             !updateFailed &&
             !cancelledExternally &&
             streamer.isActive &&
+            !managesTools &&
             streamer.tokens.length > 0 &&
             stripThinkingSections(streamer.tokens.join("")).includes(
               CMD_NAMESPACE_PREFIX,
@@ -1629,6 +1780,9 @@ export class StreamingService {
     text: string,
     streamer: StreamerState,
   ): number {
+    if (streamer.streamAnchor !== undefined) {
+      return streamer.streamAnchor;
+    }
     // Get all assistant blocks in the document
     const assistantMarkers = findAllAssistantBlocks(text);
 
@@ -1800,19 +1954,17 @@ export class StreamingService {
       const text = this.document.getText();
       const tokensSoFar = streamer.tokens.join("");
       
-      // Find the last assistant block
-      const assistantMarkers = findAllAssistantBlocks(text);
-      
-      if (assistantMarkers.length === 0) {
+      const anchor = streamer.streamAnchor;
+      const assistantMarkers = anchor === undefined
+        ? findAllAssistantBlocks(text)
+        : [];
+      if (anchor === undefined && assistantMarkers.length === 0) {
         log('No assistant blocks found, cannot add user block');
         return;
       }
-      
-      // Get the last assistant block
-      const lastMarker = assistantMarkers[assistantMarkers.length - 1];
-      
-      // Calculate position to insert the new user block
-      const insertOffset = lastMarker.contentStart + tokensSoFar.length;
+      const insertOffset = (anchor
+        ?? assistantMarkers[assistantMarkers.length - 1].contentStart)
+        + tokensSoFar.length;
       const insertPosition = this.document.positionAt(insertOffset);
       
       // Create the edit to insert the new user block
@@ -1851,8 +2003,13 @@ export class StreamingService {
       return true; // Consider empty tokens a successful update
     }
 
+    const containsToolActivity = newTokens.some(
+      (token) => token.includes("## %% server_tool") || token.includes("# %% tool_execute"),
+    );
     log(
-      `STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens: "${newTokens.join("")}"`,
+      containsToolActivity
+        ? `STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens containing SDK tool activity`
+        : `STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens: "${newTokens.join("")}"`,
     );
     await this.lock.acquire();
 
@@ -1862,7 +2019,9 @@ export class StreamingService {
       const isFirstStreamingEvent = streamer.tokens.length === 0;
 
       log(
-        `Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join("")}"`,
+        containsToolActivity
+          ? `Looking for insertion point for ${newTokens.length} tokens containing SDK tool activity`
+          : `Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join("")}"`,
       );
       log(`Is first streaming event: ${isFirstStreamingEvent}`);
 
@@ -1875,7 +2034,11 @@ export class StreamingService {
       const assistantMarkers = findAllAssistantBlocks(text);
       log(`Found ${assistantMarkers.length} assistant blocks in document`);
 
-      if (isFirstStreamingEvent) {
+      if (streamer.streamAnchor !== undefined) {
+        targetAssistantIdx = streamer.streamAnchor;
+        blockStart = streamer.streamAnchor;
+        isEmptyBlock = false;
+      } else if (isFirstStreamingEvent) {
         // For the first streaming event, find the first empty assistant block
         log(`First streaming event: looking for empty assistant blocks`);
         let foundEmptyBlock = false;
@@ -1986,17 +2149,23 @@ export class StreamingService {
 
       // Check if we need to add a newline before the first token
       let textToInsert = newTokens.join("");
+      let streamAnchor = blockStart;
       if (isFirstStreamingEvent && tokensSoFar.length === 0) {
         // Check if there's no newline between the heading and where we're about to insert
         // blockStart points to where content should start, check the character before it
         if (blockStart > 0 && text[blockStart - 1] !== '\n') {
           log("No newline after assistant heading, adding one before first token");
           textToInsert = '\n' + textToInsert;
+          streamAnchor++;
         }
       }
 
       // Insert text using a workspace edit as per original design
-      log(`Inserting text: "${textToInsert}"`);
+      log(
+        containsToolActivity
+          ? "Inserting SDK tool activity"
+          : `Inserting text: "${textToInsert}"`,
+      );
 
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, insertPosition, textToInsert);
@@ -2009,6 +2178,9 @@ export class StreamingService {
       log(`STREAMER RESULT: Edit applied: ${applied}`);
 
       if (applied) {
+        if (streamer.streamAnchor === undefined) {
+          streamer.streamAnchor = streamAnchor;
+        }
         // Auto-scrolling disabled - users can scroll manually as needed
       } else {
         log(`STREAMER ERROR: Failed to apply edit, details:`);

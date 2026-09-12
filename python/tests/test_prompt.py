@@ -15,6 +15,7 @@ import json
 import re
 from pathlib import Path
 
+from chatmd.providers.agent_context import chatmd_format_instructions
 from chatmd.providers.prompt import (
     _AGENT_SECTION,
     build_system_prompt,
@@ -246,7 +247,10 @@ def test_persona_and_protocol_text_matches_config_ts() -> None:
     tool_prompt = generate_tool_calling_system_prompt({}, {}, cli_command=None)
     assert tool_prompt.startswith(header)
     assert middle == "\n\n"
-    assert tool_prompt.endswith(tail)
+    assert tail in tool_prompt
+    assert tool_prompt.endswith(
+        chatmd_format_instructions("the ChatMD configuration used by this client")
+    )
 
     # And with one, the section is appended after that same tail rather than
     # replacing any of it.

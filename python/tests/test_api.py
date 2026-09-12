@@ -26,6 +26,10 @@ from chatmd.types import (
     ThinkingPayload,
     ThinkingPayloadDelta,
     ToolCall,
+    ToolResultContent,
+    ToolResultDelta,
+    ToolUseContent,
+    ToolUseDelta,
     Usage,
     UsageDelta,
 )
@@ -40,6 +44,8 @@ def tool_call(name: str, value: str = "x") -> str:
 
 class FakeClient:
     """Yields scripted events, one script per turn."""
+
+    manages_tools = False
 
     def __init__(self, *scripts: Sequence[StreamEvent]) -> None:
         self.scripts = list(scripts)
@@ -62,6 +68,9 @@ class FakeClient:
                 yield event
 
         return generate()
+
+    def cancel(self) -> None:
+        pass
 
 
 class FakePool:
@@ -104,7 +113,7 @@ def resolved(config: ChatmdConfig) -> Any:
 
 
 def install(monkeypatch: pytest.MonkeyPatch, client: FakeClient) -> None:
-    monkeypatch.setattr(api, "create_client", lambda _config: client)
+    monkeypatch.setattr(api, "create_client", lambda _config, _chat_path: client)
 
 
 def user(text: str) -> MessageParam:
@@ -213,6 +222,35 @@ async def test_a_turn_with_no_tool_calls_reports_none(
     assert turn.ended_on_wait_marker is False
 
 
+async def test_sdk_managed_tools_are_collected_without_becoming_pending_calls(
+    monkeypatch: pytest.MonkeyPatch, resolved: Any
+) -> None:
+    client = FakeClient(
+        [
+            TextDelta("Checking. "),
+            ToolUseDelta("call-1", "files.read", {"path": "a.txt"}, False),
+            ToolResultDelta("call-1", "files.read", "contents", False, False),
+            TextDelta("Done."),
+        ]
+    )
+    client.manages_tools = True
+    install(monkeypatch, client)
+
+    turn = await complete_turn(resolved, [user("read")], "", [])
+
+    assert turn.tool_calls == []
+    assert [type(item) for item in turn.content] == [
+        TextContent,
+        ToolUseContent,
+        ToolResultContent,
+        TextContent,
+    ]
+    assert isinstance(turn.content[1], ToolUseContent)
+    assert turn.content[1].server_tool is False
+    assert isinstance(turn.content[2], ToolResultContent)
+    assert turn.content[2].content == [TextContent(value="contents")]
+
+
 # --------------------------------------------------------------------------- #
 # run_tool_calls
 # --------------------------------------------------------------------------- #
@@ -313,12 +351,45 @@ async def test_run_does_not_mutate_the_caller_list(
     assert len(messages) == 1
 
 
-def test_native_system_prompt_omits_the_custom_tool_protocol(
+async def test_sdk_session_preserves_managed_role_boundaries_without_rerunning_tools(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    config = ChatmdConfig(
+        api_configs={"work": ApiConfig(type="codex", api_key=None)},
+        selected_config="work",
+    )
+    client = FakeClient(
+        [
+            ToolUseDelta("call-1", "files.read", {"path": "a.txt"}, False),
+            ToolResultDelta("call-1", "files.read", "contents", False, False),
+            TextDelta("Finished."),
+        ]
+    )
+    client.manages_tools = True
+    install(monkeypatch, client)
+    pool = FakePool()
+    session = ChatSession(config, pool)  # type: ignore[arg-type]
+
+    history = await session.run([user("read")], doc_dir=tmp_path)
+
+    assert [message.role for message in history] == [
+        "user",
+        "assistant",
+        "user",
+        "assistant",
+    ]
+    assert len(client.calls) == 1
+    assert pool.called == []
+    assert session.system_prompt("Only edit tests.") == "Only edit tests."
+
+
+def test_native_system_prompt_describes_chatmd_without_requesting_custom_calls(
     config: ChatmdConfig,
 ) -> None:
     session = ChatSession(config, FakePool())  # type: ignore[arg-type]
     prompt = session.system_prompt("Be brief.")
-    assert "<cmd:tool_call>" not in prompt
+    assert "ChatMD document format" in prompt
+    assert "Use the following XML-like format to call a tool" not in prompt
     assert "Be brief." in prompt
 
 

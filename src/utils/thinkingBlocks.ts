@@ -23,7 +23,7 @@ export const THINKING_TOKEN_PREFIX = "\u0000thinking:";
 export const THINKING_PAYLOAD_PREFIX = "\u0000thinking_payload:";
 
 export interface AssistantSection {
-  type: "thinking" | "text";
+  type: "thinking" | "text" | "server_tool" | "server_tool_results";
   content: string;
 }
 
@@ -36,8 +36,10 @@ export interface ParsedThinkingSection {
   hash?: string;
 }
 
-const SECTION_SPLIT_REGEX = /^## %% (thinking|text)[ \t]*$/im;
-const SECTION_TEST_REGEX = /^## %% (thinking|text)[ \t]*$/im;
+const SECTION_SPLIT_REGEX =
+  /^## %% (thinking|text|server_tool|server_tool_results)[ \t]*$/im;
+const SECTION_TEST_REGEX =
+  /^## %% (thinking|text|server_tool|server_tool_results)[ \t]*$/im;
 
 /** Greedy model part so the split happens on the last "::" of the line */
 const SIGNATURE_LINE_REGEX = /^(.+)::([0-9a-f]{8})$/;
@@ -68,7 +70,7 @@ export function splitAssistantSections(text: string): AssistantSection[] {
   }
 
   for (let i = 1; i < parts.length; i += 2) {
-    const kind = parts[i].toLowerCase() === "thinking" ? "thinking" : "text";
+    const kind = parts[i].toLowerCase() as AssistantSection["type"];
     sections.push({ type: kind, content: parts[i + 1] ?? "" });
   }
 

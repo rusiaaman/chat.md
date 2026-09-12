@@ -4,13 +4,14 @@ import { log } from "./extension";
 import { getSystemToolDefinitions } from "./systemTools";
 import { McpResource } from "./types";
 import { chatmdAgentSection, findChatmdCommand } from "./utils/chatmdCli";
+import { chatmdFormatInstructions } from "./agentContext";
 
 /**
  * API Configuration interface
  */
 export interface ApiConfig {
-  type: "anthropic" | "openai";
-  apiKey: string;
+  type: "anthropic" | "openai" | "claude-code" | "codex";
+  apiKey?: string;
   model_name?: string;
   base_url?: string;
   reasoningEffort?: "none" | "minimal" | "low" | "medium" | "high" | "max";
@@ -21,6 +22,12 @@ export interface ApiConfig {
    * hosted gpt and o-series models, and chat completions everywhere else.
    */
   openaiApi?: "auto" | "chat" | "responses";
+  claudeCode?: Record<string, unknown>;
+  codex?: {
+    options?: Record<string, unknown>;
+    thread?: Record<string, unknown>;
+    turn?: Record<string, unknown>;
+  };
 }
 
 /**
@@ -170,7 +177,10 @@ Chatmd avoids writing lists, but if it does need to write a list, Chatmd focuses
   // Appended rather than interpolated, so the template literal above stays one
   // static block that the drift test can extract and compare against the Python
   // port. Empty unless a chat.md CLI was actually found.
-  return prompt + chatmdAgentSection(findChatmdCommand());
+  return prompt
+    + "\n\n"
+    + chatmdFormatInstructions("the ChatMD configuration used by this client")
+    + chatmdAgentSection(findChatmdCommand());
 }
 
 export function generateNativeToolSystemPrompt(
@@ -178,7 +188,8 @@ export function generateNativeToolSystemPrompt(
 ): string {
   const resources = buildAdvertisedResourceSection(mcpGroupedResources);
   const agent = chatmdAgentSection(findChatmdCommand());
-  return [resources, agent].filter((part) => part.trim() !== "").join("\n\n");
+  const format = chatmdFormatInstructions("the ChatMD configuration used by this client");
+  return [resources, format, agent].filter((part) => part.trim() !== "").join("\n\n");
 }
 
 function buildAdvertisedResourceSection(
@@ -298,7 +309,10 @@ export function getApiKeyForConfig(configName?: string): string {
   if (!cfg) {
     throw new Error(`Configuration '${configName}' not found. Please check your API configurations.`);
   }
-  return cfg.apiKey;
+  if ((cfg.type === "anthropic" || cfg.type === "openai") && !cfg.apiKey) {
+    throw new Error(`Configuration '${configName}' has no API key.`);
+  }
+  return cfg.apiKey || "";
 }
 
 /**
@@ -405,7 +419,10 @@ export function getApiKey(): string {
     );
   }
 
-  return config.apiKey;
+  if ((config.type === "anthropic" || config.type === "openai") && !config.apiKey) {
+    throw new Error("The selected API configuration has no API key.");
+  }
+  return config.apiKey || "";
 }
 
 /**

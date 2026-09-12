@@ -21,8 +21,13 @@ class LlmClient(Protocol):
     """A streaming completion client for one provider/API style."""
 
     config: ResolvedConfig
+    manages_tools: bool
     #: Usage of the most recent request, populated as the stream progresses.
     last_usage: Usage | None
+
+    def cancel(self) -> None:
+        """Interrupt an active provider stream."""
+        ...
 
     def stream(
         self,
@@ -30,7 +35,7 @@ class LlmClient(Protocol):
         system_prompt: str,
         tools: Sequence[NativeToolDefinition],
         *,
-        base_dir: str | Path | None = None,
+        base_dir: str | Path | None,
     ) -> AsyncIterator[StreamEvent]:
         """Yield events for one assistant turn.
 

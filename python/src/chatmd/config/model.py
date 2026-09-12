@@ -34,29 +34,35 @@ class ApiConfig:
     """One named provider configuration."""
 
     type: ProviderType
-    api_key: str
+    api_key: str | None
     model_name: str | None = None
     base_url: str | None = None
     reasoning_effort: ReasoningEffort | None = None
     max_tokens: int | None = None
     max_thinking_tokens: int | None = None
     openai_api: OpenaiApiStyle | None = None
+    claude_code: dict[str, Any] = field(default_factory=dict)
+    codex: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ApiConfig:
         return cls(
             type=data.get("type", "anthropic"),
-            api_key=data.get("apiKey", ""),
+            api_key=data.get("apiKey") or None,
             model_name=data.get("model_name") or None,
             base_url=(data.get("base_url") or None),
             reasoning_effort=data.get("reasoningEffort") or None,
             max_tokens=data.get("maxTokens"),
             max_thinking_tokens=data.get("maxThinkingTokens"),
             openai_api=data.get("openaiApi") or None,
+            claude_code=dict(data.get("claudeCode") or {}),
+            codex=dict(data.get("codex") or {}),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"type": self.type, "apiKey": self.api_key}
+        out: dict[str, Any] = {"type": self.type}
+        if self.api_key is not None:
+            out["apiKey"] = self.api_key
         for attr, key in (
             ("model_name", "model_name"),
             ("base_url", "base_url"),
@@ -68,6 +74,10 @@ class ApiConfig:
             value = getattr(self, attr)
             if value is not None:
                 out[key] = value
+        if self.claude_code:
+            out["claudeCode"] = dict(self.claude_code)
+        if self.codex:
+            out["codex"] = dict(self.codex)
         return out
 
 
@@ -130,7 +140,7 @@ class ResolvedConfig:
     """Everything one request needs, after applying the precedence rules."""
 
     provider: ProviderType
-    api_key: str
+    api_key: str | None
     config_name: str | None = None
     model_name: str | None = None
     base_url: str | None = None
@@ -139,6 +149,9 @@ class ResolvedConfig:
     reasoning_effort: ReasoningEffort | None = None
     openai_api: OpenaiApiStyle = "auto"
     assets_path: str = DEFAULT_ASSETS_PATH
+    claude_code: dict[str, Any] = field(default_factory=dict)
+    codex: dict[str, Any] = field(default_factory=dict)
+    mcp_servers: dict[str, McpServerConfig] = field(default_factory=dict)
 
     @property
     def thinking_enabled(self) -> bool:
@@ -231,7 +244,7 @@ class ChatmdConfig:
             raise ConfigError(
                 f"Configuration '{name}' not found. Available configurations: {available}"
             )
-        if not api_config.api_key:
+        if api_config.type in ("anthropic", "openai") and not api_config.api_key:
             raise ConfigError(f"Configuration '{name}' has no apiKey.")
 
         def pick(key: str, from_config: Any, global_value: Any) -> Any:
@@ -264,4 +277,7 @@ class ChatmdConfig:
             ),
             openai_api=pick("openaiApi", api_config.openai_api, self.openai_api) or "auto",
             assets_path=self.assets_path,
+            claude_code=dict(api_config.claude_code),
+            codex=dict(api_config.codex),
+            mcp_servers=dict(self.mcp_servers),
         )

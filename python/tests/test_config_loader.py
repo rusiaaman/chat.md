@@ -76,6 +76,36 @@ def test_round_trip_default_path() -> None:
     assert loaded == original
 
 
+def test_named_subscription_profiles_round_trip_without_api_keys() -> None:
+    original = ChatmdConfig.from_dict(
+        {
+            "selectedConfig": "codex-terra",
+            "apiConfigs": {
+                "claude-work": {
+                    "type": "claude-code",
+                    "model_name": "claude-sonnet-5",
+                    "claudeCode": {"permissionMode": "plan"},
+                },
+                "codex-terra": {
+                    "type": "codex",
+                    "model_name": "gpt-5.6-terra",
+                    "codex": {"thread": {"sandboxMode": "workspace-write"}},
+                },
+            },
+        }
+    )
+
+    save_config(original)
+    loaded = load_config()
+    resolved = loaded.resolve(config_name="codex-terra")
+
+    assert set(loaded.api_configs) == {"claude-work", "codex-terra"}
+    assert resolved.provider == "codex"
+    assert resolved.api_key is None
+    assert resolved.model_name == "gpt-5.6-terra"
+    assert resolved.codex == {"thread": {"sandboxMode": "workspace-write"}}
+
+
 def test_round_trip_explicit_path(tmp_path: Path) -> None:
     original = _sample_config()
     target = tmp_path / "nested" / "dir" / "config.json"

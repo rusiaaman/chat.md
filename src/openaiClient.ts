@@ -784,8 +784,12 @@ export class OpenAIClient {
         const payload = thinking.payload;
         if (payload?.kind === "reasoning_details" && payload.reasoningDetails) {
           formatted.reasoning_details = payload.reasoningDetails;
-        } else if (thinking.value.trim() !== "") {
-          const field = payload?.field ?? "reasoning_content";
+        } else if (
+          payload?.kind === "raw"
+          && payload.field
+          && thinking.value.trim() !== ""
+        ) {
+          const field = payload.field;
           formatted[field] = thinking.value;
         }
       }

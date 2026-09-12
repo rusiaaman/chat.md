@@ -19,12 +19,16 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-from ..assets import assets_dir
+from ..assets import TOOL_RESULT_LINE_THRESHOLD, assets_dir, write_tool_result_file
 from ..markers import could_become_marker_line, escape_markers, unescape_markers
 from ..parser.assistant_content import parse_assistant_content
 from ..parser.blocks import find_all_assistant_blocks
 from ..providers.base import LlmClient, MaxTokensError, RetryableError
-from ..providers.native_tools import NativeToolDefinition
+from ..providers.native_tools import (
+    NativeToolDefinition,
+    render_server_tool_result,
+    render_tool_call,
+)
 from ..render import (
     SectionState,
     block_marker_prefix,
@@ -40,6 +44,7 @@ from ..tools.call_parser import (
     find_wait_marker,
     wait_marker_prefix_length,
 )
+from ..tools.result_format import format_tool_result
 from ..types import (
     MessageParam,
     StreamEvent,
@@ -47,6 +52,8 @@ from ..types import (
     ThinkingDelta,
     ThinkingPayload,
     ThinkingPayloadDelta,
+    ToolResultDelta,
+    ToolUseDelta,
     Usage,
 )
 from .stream_batching import DEFAULT_BATCH_INTERVAL, batched_events
@@ -103,6 +110,7 @@ class StreamerState:
     pending_is_thinking: bool = False
     is_handling_tool_call: bool = False
     active: bool = True
+    anchor_start: int | None = None
 
     @property
     def written(self) -> str:
@@ -139,6 +147,7 @@ class FileStreamer:
     def cancel(self) -> None:
         """Stop at the next batch boundary, leaving what is already written."""
         self.state.active = False
+        self.client.cancel()
 
     async def run(
         self,
@@ -190,6 +199,9 @@ class FileStreamer:
         system_prompt: str,
         tools: list[NativeToolDefinition],
     ) -> StreamResult:
+        if self.client.manages_tools:
+            return await self._stream_managed_once(messages, system_prompt, tools)
+
         buffering = False
         buffer_text = ""
         update_failed = False
@@ -341,6 +353,135 @@ class FileStreamer:
         if written:
             self._append_new_user_block()
         return StreamResult(StreamOutcome.COMPLETED, usage=usage, characters_written=written)
+
+    async def _stream_managed_once(
+        self,
+        messages: list[MessageParam],
+        system_prompt: str,
+        tools: list[NativeToolDefinition],
+    ) -> StreamResult:
+        """Stream an SDK-owned agent turn through all of its tool activity."""
+        update_failed = False
+        cancelled = False
+        tool_calls_written = 0
+        stream = self.client.stream(
+            messages, system_prompt, tools, base_dir=self.path.parent
+        )
+
+        async for events in batched_events(stream, self.batch_interval):
+            if not self.state.active:
+                self.client.cancel()
+                cancelled = True
+                break
+            for event in events:
+                if isinstance(event, ToolUseDelta):
+                    rendered_call = render_tool_call(event.id, event.name, event.input)
+                    if event.server_tool:
+                        addition = self._assistant_section(
+                            "server_tool", rendered_call.lstrip("\n")
+                        )
+                        self.state.section.saw_thinking = True
+                        self.state.section.text_open = False
+                        self.state.section.thinking_open = False
+                    else:
+                        addition = render_stream_events(
+                            [TextDelta(rendered_call)],
+                            self.state.written,
+                            self.state.section,
+                            self._record_payload,
+                        )
+                    if addition and not self._append(addition):
+                        update_failed = True
+                        self.client.cancel()
+                        break
+                    tool_calls_written += 1
+                    continue
+
+                if isinstance(event, ToolResultDelta):
+                    body = event.content
+                    if event.is_error and not body.lstrip().startswith("Error:"):
+                        body = "Error: " + body
+                    body_to_render = self._managed_result_body(body.strip())
+                    wrapped = format_tool_result(escape_markers(body_to_render))
+                    if event.server_tool:
+                        addition = self._assistant_section(
+                            "server_tool_results",
+                            render_server_tool_result(event.tool_use_id, wrapped),
+                        )
+                        self.state.section.saw_thinking = True
+                        self.state.section.text_open = False
+                        self.state.section.thinking_open = False
+                    else:
+                        prefix = block_marker_prefix(self._text_before_insert())
+                        addition = (
+                            f"{prefix}# %% tool_execute\n"
+                            f"{render_server_tool_result(event.tool_use_id, wrapped)}\n\n"
+                            "# %% assistant\n"
+                        )
+                        self.state.section = SectionState()
+                    if not self._append(addition):
+                        update_failed = True
+                        self.client.cancel()
+                        break
+                    continue
+
+                rendered = render_stream_events(
+                    [event], self.state.written, self.state.section, self._record_payload
+                )
+                if rendered and not self._append(rendered):
+                    update_failed = True
+                    self.client.cancel()
+                    break
+            if update_failed:
+                break
+
+        usage = getattr(self.client, "last_usage", None)
+        written = len(self.state.written)
+        if cancelled or update_failed or not self.state.active:
+            return StreamResult(
+                StreamOutcome.ABORTED,
+                usage=usage,
+                characters_written=written,
+                tool_calls_written=tool_calls_written,
+            )
+        if written:
+            self._append_new_user_block()
+        return StreamResult(
+            StreamOutcome.COMPLETED,
+            usage=usage,
+            characters_written=written,
+            tool_calls_written=tool_calls_written,
+        )
+
+    def _managed_result_body(self, content: str) -> str:
+        logical_line_count = len(content.splitlines()) + content.count("\\n")
+        if logical_line_count <= TOOL_RESULT_LINE_THRESHOLD:
+            return content
+        try:
+            relative = write_tool_result_file(
+                self.path.parent,
+                content,
+                extension=".txt",
+                assets_path=self.assets_path,
+            )
+        except OSError as error:
+            logger.warning("Could not spill managed tool result to a file: %s", error)
+            return content
+        return f"[Tool Result]({relative})"
+
+    def _assistant_section(self, name: str, body: str) -> str:
+        prefix = "" if not self.state.written or self.state.written.endswith("\n") else "\n"
+        return f"{prefix}## %% {name}\n{body}"
+
+    def _text_before_insert(self) -> str:
+        try:
+            text = self._read()
+        except OSError:
+            return self.state.written
+        anchor = self.state.anchor_start
+        if anchor is None:
+            return text
+        return text[: anchor + len(self.state.written)]
 
     # -- buffering --------------------------------------------------------- #
 
@@ -535,6 +676,9 @@ class FileStreamer:
         The first write goes into the first *empty* assistant block; later writes
         continue in the last one, which is that same block grown by our own writes.
         """
+        if self.state.anchor_start is not None:
+            return self.state.anchor_start
+
         blocks = find_all_assistant_blocks(text)
         if not blocks:
             logger.warning("No assistant block found in %s", self.path)
@@ -588,6 +732,10 @@ class FileStreamer:
         if first_write and content_start > 0 and text[content_start - 1] != "\n":
             # The marker line had no newline after it, so give the content one.
             to_insert = "\n" + rendered
+            content_start += 1
+
+        if first_write:
+            self.state.anchor_start = content_start
 
         try:
             if insert_at == len(text):
@@ -612,12 +760,16 @@ class FileStreamer:
             logger.error("Could not read %s: %s", self.path, error)
             return False
 
-        blocks = find_all_assistant_blocks(text)
-        if not blocks:
+        anchor = self.state.anchor_start
+        if anchor is None:
+            blocks = find_all_assistant_blocks(text)
+            if blocks:
+                anchor = blocks[-1].content_start
+        if anchor is None:
             logger.warning("No assistant block found, cannot append to %s", self.path)
             return False
 
-        offset = blocks[-1].content_start + len(self.state.written)
+        offset = anchor + len(self.state.written)
         offset = min(offset, len(text))
         payload = block_marker_prefix(text[:offset]) + addition
         try:

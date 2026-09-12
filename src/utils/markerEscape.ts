@@ -37,7 +37,12 @@ export const BLOCK_ROLES = [
 ] as const;
 
 /** Roles that open a section inside an assistant block. */
-export const SECTION_ROLES = ["thinking", "text"] as const;
+export const SECTION_ROLES = [
+  "thinking",
+  "text",
+  "server_tool",
+  "server_tool_results",
+] as const;
 
 /**
  * Captures a block body up to the next complete block marker or end of document.

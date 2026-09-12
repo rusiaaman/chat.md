@@ -89,11 +89,15 @@ async function build() {
       sourcemap: !production,
       metafile: true,
       logLevel: 'info',
-      target: 'node14',
+      target: 'node18',
       resolveExtensions: ['.ts', '.js', '.json', '.node'],
       plugins: [esmCompatPlugin],
+      banner: {
+        js: 'const __chatmdImportMetaUrl = require("url").pathToFileURL(__filename).href;',
+      },
       define: {
-        'process.env.NODE_ENV': production ? '"production"' : '"development"'
+        'process.env.NODE_ENV': production ? '"production"' : '"development"',
+        'import.meta.url': '__chatmdImportMetaUrl',
       },
       // Prefer CommonJS builds from packages that provide both ESM and CJS
       mainFields: ['module', 'main'],

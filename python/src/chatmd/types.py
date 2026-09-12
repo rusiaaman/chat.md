@@ -15,8 +15,10 @@ Role = Literal["user", "assistant"]
 BlockType = Literal["user", "assistant", "system", "tool_execute", "settings"]
 ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "max"]
 OpenaiApiStyle = Literal["auto", "chat", "responses"]
-ProviderType = Literal["anthropic", "openai"]
-ApiStyle = Literal["anthropic", "openai_chat", "openai_responses"]
+ProviderType = Literal["anthropic", "openai", "claude-code", "codex"]
+ApiStyle = Literal[
+    "anthropic", "openai_chat", "openai_responses", "claude_code", "codex"
+]
 
 ThinkingPayloadKind = Literal[
     "anthropic_signature",
@@ -124,6 +126,7 @@ class ToolUseContent:
     name: str
     input: dict[str, Any]
     raw_xml: str
+    server_tool: bool = False
     type: Literal["tool_use"] = "tool_use"
 
 
@@ -136,6 +139,7 @@ class ToolResultContent:
     content: list[TextContent | ImageContent]
     raw_text: str
     is_error: bool
+    server_tool: bool = False
     type: Literal["tool_result"] = "tool_result"
 
 
@@ -252,7 +256,35 @@ class UsageDelta:
     usage: Usage
 
 
-StreamEvent = TextDelta | ThinkingDelta | ThinkingPayloadDelta | UsageDelta
+@dataclass(frozen=True)
+class ToolUseDelta:
+    """A complete SDK-managed tool call ready to be written to the chat."""
+
+    id: str
+    name: str
+    input: dict[str, Any]
+    server_tool: bool
+
+
+@dataclass(frozen=True)
+class ToolResultDelta:
+    """The result of a tool call already executed by an agent SDK."""
+
+    tool_use_id: str
+    name: str
+    content: str
+    is_error: bool
+    server_tool: bool
+
+
+StreamEvent = (
+    TextDelta
+    | ThinkingDelta
+    | ThinkingPayloadDelta
+    | UsageDelta
+    | ToolUseDelta
+    | ToolResultDelta
+)
 
 
 @dataclass

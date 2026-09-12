@@ -53,6 +53,8 @@ def tool_call(name: str, value: str) -> str:
 class ScriptedClient:
     """One scripted turn per call, so a whole conversation can be laid out."""
 
+    manages_tools = False
+
     def __init__(self, *turns: Sequence[StreamEvent]) -> None:
         self.turns = list(turns)
         self.prompts: list[str] = []
@@ -80,6 +82,9 @@ class ScriptedClient:
                 yield event
 
         return generate()
+
+    def cancel(self) -> None:
+        pass
 
 
 class ScriptedPool:
@@ -115,7 +120,9 @@ def config() -> ChatmdConfig:
 
 
 def install(monkeypatch: pytest.MonkeyPatch, client: ScriptedClient) -> None:
-    monkeypatch.setattr(driver_module, "create_client", lambda _resolved: client)
+    monkeypatch.setattr(
+        driver_module, "create_client", lambda _resolved, _chat_path: client
+    )
 
 
 async def test_a_tool_using_conversation_runs_to_completion(
@@ -433,6 +440,8 @@ async def test_a_tool_call_writing_a_chat_file_gets_its_markers_back(
 class StallingClient:
     """Holds a turn open, and records how many are open at once."""
 
+    manages_tools = False
+
     def __init__(self, delay: float, counter: dict[str, int]) -> None:
         self.delay = delay
         self.counter = counter
@@ -458,6 +467,9 @@ class StallingClient:
 
         return generate()
 
+    def cancel(self) -> None:
+        pass
+
 
 async def test_separate_chats_stream_at_the_same_time(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: ChatmdConfig
@@ -466,7 +478,9 @@ async def test_separate_chats_stream_at_the_same_time(
     delay = 0.4
     counter = {"active": 0, "peak": 0}
     monkeypatch.setattr(
-        driver_module, "create_client", lambda _resolved: StallingClient(delay, counter)
+        driver_module,
+        "create_client",
+        lambda _resolved, _chat_path: StallingClient(delay, counter),
     )
 
     chats = []
@@ -517,6 +531,7 @@ async def test_tool_calls_from_different_chats_overlap(
     # Decides from the history rather than a shared script list: with several
     # chats interleaving, a shared list hands turns to whichever asks first.
     class ToolThenAnswer:
+        manages_tools = False
         last_usage = None
 
         def stream(
@@ -541,7 +556,12 @@ async def test_tool_calls_from_different_chats_overlap(
 
             return generate()
 
-    monkeypatch.setattr(driver_module, "create_client", lambda _resolved: ToolThenAnswer())
+        def cancel(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        driver_module, "create_client", lambda _resolved, _chat_path: ToolThenAnswer()
+    )
     pool = StallingPool(0.3)
 
     chats = []
