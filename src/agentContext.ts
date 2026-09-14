@@ -1,4 +1,5 @@
 import { MessageParam, ToolResultContent, ToolUseContent } from "./types";
+import { truncateToolResultsForApi } from "./nativeTools";
 
 export const RECENT_TOOL_PAIRS = 5;
 export const TOOL_PREVIEW_CHARACTERS = 100;
@@ -101,7 +102,8 @@ export function buildAgentPrompt(
   customSystemPrompt: string,
   agentSection: string,
 ): string {
-  const activities = toolActivities(messages);
+  const processedMessages = truncateToolResultsForApi(messages);
+  const activities = toolActivities(processedMessages);
   const custom = customSystemPrompt.trim()
     ? `## Chat-specific system instructions\n${customSystemPrompt.trim()}`
     : "";
@@ -111,7 +113,7 @@ export function buildAgentPrompt(
     chatmdFormatInstructions(configLocation),
     custom,
     agentSection,
-    `## Pruned visible transcript\n${prunedMessages(messages)}`,
+    `## Pruned visible transcript\n${prunedMessages(processedMessages)}`,
     `## Complete tool activity index\n${compactToolIndex(activities)}`,
     `## Most recent tool calls and results in full\n${recentToolActivity(
       activities,

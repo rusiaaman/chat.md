@@ -14,8 +14,10 @@ from xml.sax.saxutils import escape, unescape
 from ..tools.system_tools import get_system_tool_definitions
 from ..types import (
     Content,
+    ImageContent,
     McpToolDefinition,
     MessageParam,
+    TextContent,
     ToolCall,
     ToolResultContent,
     ToolUseContent,
@@ -24,6 +26,8 @@ from ..types import (
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _INVALID_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
 _SERVER_RESULT_ID_RE = re.compile(r"^\s*<cmd:tool_id>([^<]*)</cmd:tool_id>[ \t]*(?:\r?\n)?")
+MAX_TOOL_RESULT_TEXT_CHARACTERS = 100_000
+TOOL_RESULT_TRUNCATION_MARKER = "\n...truncated"
 
 
 @dataclass(frozen=True)
@@ -164,6 +168,61 @@ def tool_result_text(value: object) -> str:
     if callable(dump):
         return tool_result_text(dump(mode="json", by_alias=True, exclude_none=True))
     return "" if value is None else str(value)
+
+
+def _truncated_tool_result_raw_text(
+    raw_text: str, content: Sequence[TextContent | ImageContent]
+) -> str:
+    body = "\n\n".join(
+        part.value if isinstance(part, TextContent) else f"![Tool result image]({part.path})"
+        for part in content
+    )
+    if re.search(r"<tool_result>[\s\S]*?</tool_result>", raw_text):
+        return f"<tool_result>\n{body}\n</tool_result>"
+    return body
+
+
+def _truncate_tool_result(result: ToolResultContent) -> ToolResultContent:
+    text_characters = sum(
+        len(part.value) for part in result.content if isinstance(part, TextContent)
+    )
+    if text_characters <= MAX_TOOL_RESULT_TEXT_CHARACTERS:
+        return result
+
+    remaining = MAX_TOOL_RESULT_TEXT_CHARACTERS - len(TOOL_RESULT_TRUNCATION_MARKER)
+    content: list[TextContent | ImageContent] = []
+    for part in result.content:
+        if isinstance(part, ImageContent):
+            content.append(part)
+            continue
+        if remaining <= 0:
+            continue
+        value = part.value[:remaining]
+        remaining -= len(value)
+        if value:
+            content.append(TextContent(value=value))
+    content.append(TextContent(value=TOOL_RESULT_TRUNCATION_MARKER))
+
+    return replace(
+        result,
+        content=content,
+        raw_text=_truncated_tool_result_raw_text(result.raw_text, content),
+    )
+
+
+def truncate_tool_results_for_api(
+    messages: Sequence[MessageParam],
+) -> list[MessageParam]:
+    return [
+        MessageParam(
+            role=message.role,
+            content=[
+                _truncate_tool_result(item) if isinstance(item, ToolResultContent) else item
+                for item in message.content
+            ],
+        )
+        for message in messages
+    ]
 
 
 def assign_deterministic_tool_ids(

@@ -6,11 +6,14 @@ from typing import Any
 from chatmd.config.model import ResolvedConfig
 from chatmd.providers.anthropic_client import AnthropicClient
 from chatmd.providers.native_tools import (
+    MAX_TOOL_RESULT_TEXT_CHARACTERS,
+    TOOL_RESULT_TRUNCATION_MARKER,
     NativeToolDefinition,
     native_tool_name,
     render_server_tool_result,
     render_tool_call,
     tool_result_text,
+    truncate_tool_results_for_api,
 )
 from chatmd.providers.openai_chat import _translate_stream, format_messages
 from chatmd.providers.openai_responses import (
@@ -19,6 +22,7 @@ from chatmd.providers.openai_responses import (
 )
 from chatmd.tools.call_parser import parse_tool_call
 from chatmd.types import (
+    ImageContent,
     MessageParam,
     ProviderType,
     TextContent,
@@ -49,6 +53,34 @@ def test_persistent_tool_format_has_no_ids_and_results_keep_only_output() -> Non
     assert (
         tool_result_text({"output": "contents", "exitCode": 0, "status": "completed"}) == "contents"
     )
+
+
+def test_tool_result_text_is_capped_before_api_without_dropping_images() -> None:
+    first = "a" * 60_000
+    second = "b" * 60_000
+    original = ToolResultContent(
+        tool_use_id="call",
+        name="files.read",
+        content=[
+            TextContent(value=first),
+            ImageContent(path="result.png"),
+            TextContent(value=second),
+        ],
+        raw_text=f"<tool_result>\n{first}{second}\n</tool_result>",
+        is_error=False,
+    )
+
+    [message] = truncate_tool_results_for_api([MessageParam(role="user", content=[original])])
+    [result] = message.content
+    assert isinstance(result, ToolResultContent)
+    assert (
+        sum(len(part.value) for part in result.content if isinstance(part, TextContent))
+        == MAX_TOOL_RESULT_TEXT_CHARACTERS
+    )
+    assert result.content[-1] == TextContent(value=TOOL_RESULT_TRUNCATION_MARKER)
+    assert result.content[1] == ImageContent(path="result.png")
+    assert result.raw_text.endswith("...truncated\n</tool_result>")
+    assert original.content[-1] == TextContent(value=second)
 
 
 def tool_history() -> list[MessageParam]:

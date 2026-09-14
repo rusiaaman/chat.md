@@ -113,3 +113,42 @@ test("SDK result rendering keeps output text and drops execution metadata", asyn
     "MCP contents",
   );
 });
+
+test("tool result text is capped before an API request without dropping images", async () => {
+  const {
+    MAX_TOOL_RESULT_TEXT_CHARACTERS,
+    TOOL_RESULT_TRUNCATION_MARKER,
+    truncateToolResultsForApi,
+  } = await loadNativeTools();
+  const first = "a".repeat(60_000);
+  const second = "b".repeat(60_000);
+  const original = {
+    role: "user",
+    content: [
+      {
+        type: "tool_result",
+        toolUseId: "call",
+        name: "files.read",
+        content: [
+          { type: "text", value: first },
+          { type: "image", path: "result.png" },
+          { type: "text", value: second },
+        ],
+        rawText: `<tool_result>\n${first}${second}\n</tool_result>`,
+        isError: false,
+      },
+    ],
+  };
+
+  const [processed] = truncateToolResultsForApi([original]);
+  const [result] = processed.content;
+  const textCharacters = result.content
+    .filter((part) => part.type === "text")
+    .reduce((total, part) => total + part.value.length, 0);
+
+  assert.equal(textCharacters, MAX_TOOL_RESULT_TEXT_CHARACTERS);
+  assert.equal(result.content.at(-1).value, TOOL_RESULT_TRUNCATION_MARKER);
+  assert.equal(result.content[1].path, "result.png");
+  assert.match(result.rawText, /\.\.\.truncated\n<\/tool_result>$/);
+  assert.equal(original.content[0].content[2].value.length, 60_000);
+});

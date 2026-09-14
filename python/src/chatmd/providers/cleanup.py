@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..types import ApiStyle, Content, MessageParam, TextContent, ThinkingContent
+from .native_tools import truncate_tool_results_for_api
 
 CONTINUING_PLACEHOLDER = "[continuing]"
 
@@ -89,23 +90,15 @@ def clean_messages_for_api(
             if message.role != "assistant" or not thinking_enabled:
                 blocks = [b for b in blocks if not isinstance(b, ThinkingContent)]
             else:
-                candidates = [
-                    b for b in thinking_blocks if thinking_matches_model(b, model_name)
-                ]
+                candidates = [b for b in thinking_blocks if thinking_matches_model(b, model_name)]
 
                 # Find the first thinking block with non-empty opaque/encrypted content
                 with_opaque = next(
-                    (
-                        b
-                        for b in candidates
-                        if b.payload and payload_usable_for_api(b, api_style)
-                    ),
+                    (b for b in candidates if b.payload and payload_usable_for_api(b, api_style)),
                     None,
                 )
 
-                others: list[Content] = [
-                    b for b in blocks if not isinstance(b, ThinkingContent)
-                ]
+                others: list[Content] = [b for b in blocks if not isinstance(b, ThinkingContent)]
 
                 if with_opaque is not None:
                     # Opaque content exists - text is irrelevant, set it to empty string
@@ -133,4 +126,4 @@ def clean_messages_for_api(
 
         cleaned.append(MessageParam(role=message.role, content=blocks))
 
-    return cleaned
+    return truncate_tool_results_for_api(cleaned)

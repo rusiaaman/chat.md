@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from chatmd.providers.agent_context import build_agent_prompt
-from chatmd.providers.native_tools import render_tool_call
+from chatmd.providers.native_tools import (
+    MAX_TOOL_RESULT_TEXT_CHARACTERS,
+    TOOL_RESULT_TRUNCATION_MARKER,
+    render_tool_call,
+)
 from chatmd.types import (
     MessageParam,
     TextContent,
@@ -79,3 +83,30 @@ def test_agent_prompt_prunes_reasoning_and_keeps_searchable_tool_history(
     assert "argument-1-" + "x" * 100 not in prompt
     assert "## %% server_tool" in prompt
     assert "Provider profiles are named entries" in prompt
+
+
+def test_agent_prompt_caps_a_large_recent_tool_result(tmp_path: Path) -> None:
+    call, result = tool_pair(1)
+    large_result = "x" * (MAX_TOOL_RESULT_TEXT_CHARACTERS + 1_000)
+    result = ToolResultContent(
+        tool_use_id=result.tool_use_id,
+        name=result.name,
+        content=[TextContent(value=large_result)],
+        raw_text=f"<tool_result>\n{large_result}\n</tool_result>",
+        is_error=False,
+    )
+
+    prompt = build_agent_prompt(
+        [
+            MessageParam(role="assistant", content=[call]),
+            MessageParam(role="user", content=[result]),
+        ],
+        tmp_path / "task.chat.md",
+        "/config/settings.json",
+        "",
+        "",
+    )
+
+    assert TOOL_RESULT_TRUNCATION_MARKER in prompt
+    assert large_result not in prompt
+    assert len(prompt) < 150_000

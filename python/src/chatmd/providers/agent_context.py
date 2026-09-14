@@ -9,6 +9,8 @@ from pathlib import Path
 
 from chatmd.types import MessageParam, TextContent, ToolResultContent, ToolUseContent
 
+from .native_tools import truncate_tool_results_for_api
+
 RECENT_TOOL_PAIRS = 5
 TOOL_PREVIEW_CHARACTERS = 100
 
@@ -58,10 +60,7 @@ def _tool_activities(messages: list[MessageParam]) -> list[ToolActivity]:
         if isinstance(item, ToolResultContent)
     }
     calls = [
-        item
-        for message in messages
-        for item in message.content
-        if isinstance(item, ToolUseContent)
+        item for message in messages for item in message.content if isinstance(item, ToolUseContent)
     ]
     return [
         ToolActivity(ordinal=index, call=call, result=results.get(call.id))
@@ -126,7 +125,8 @@ def build_agent_prompt(
     agent_section: str,
 ) -> str:
     """Build one stateless SDK turn from the editable document."""
-    activities = _tool_activities(messages)
+    processed_messages = truncate_tool_results_for_api(messages)
+    activities = _tool_activities(processed_messages)
     custom = (
         f"## Chat-specific system instructions\n{custom_system_prompt.strip()}"
         if custom_system_prompt.strip()
@@ -138,7 +138,7 @@ def build_agent_prompt(
         chatmd_format_instructions(config_location),
         custom,
         agent_section,
-        "## Pruned visible transcript\n" + _pruned_messages(messages),
+        "## Pruned visible transcript\n" + _pruned_messages(processed_messages),
         "## Complete tool activity index\n" + _compact_tool_index(activities),
         "## Most recent tool calls and results in full\n" + _recent_tool_activity(activities),
         "Continue the latest request. Use the current chat file when omitted details matter.",

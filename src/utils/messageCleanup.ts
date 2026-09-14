@@ -14,6 +14,7 @@
  */
 
 import { Content, MessageParam, ThinkingContent } from "../types";
+import { truncateToolResultsForApi } from "../nativeTools";
 
 export type ApiStyle = "anthropic" | "openai_chat" | "openai_responses";
 
@@ -91,7 +92,7 @@ export function cleanMessagesForApi(
   messages: readonly MessageParam[],
   options: CleanupOptions,
 ): MessageParam[] {
-  return messages.map((message) => {
+  const cleaned = messages.map((message) => {
     let blocks: Content[] = message.content.filter((block) => {
       if (block.type === "text") {
         return block.value.trim() !== "";
@@ -112,7 +113,8 @@ export function cleanMessagesForApi(
 
         // Find the first thinking block with non-empty opaque/encrypted content
         const withOpaque = candidates.find(
-          (block) => block.payload && payloadUsableForApi(block, options.apiStyle),
+          (block) =>
+            block.payload && payloadUsableForApi(block, options.apiStyle),
         );
 
         const others = blocks.filter((block) => !isThinking(block));
@@ -154,4 +156,5 @@ export function cleanMessagesForApi(
 
     return { role: message.role, content: blocks };
   });
+  return truncateToolResultsForApi(cleaned);
 }

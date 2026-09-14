@@ -1,7 +1,15 @@
 import { createHash } from "crypto";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { getSystemToolDefinitions } from "./systemTools";
-import type { MessageParam } from "./types";
+import type {
+  ImageContent,
+  MessageParam,
+  TextContent,
+  ToolResultContent,
+} from "./types";
+
+export const MAX_TOOL_RESULT_TEXT_CHARACTERS = 100_000;
+export const TOOL_RESULT_TRUNCATION_MARKER = "\n...truncated";
 
 export interface NativeToolDefinition {
   apiName: string;
@@ -201,6 +209,60 @@ export function toolResultText(value: unknown): string {
     return "";
   }
   return value === undefined || value === null ? "" : String(value);
+}
+
+function truncatedToolResultRawText(
+  rawText: string,
+  content: readonly (TextContent | ImageContent)[],
+): string {
+  const body = content
+    .map((part) =>
+      part.type === "text" ? part.value : `![Tool result image](${part.path})`,
+    )
+    .join("\n\n");
+  return /<tool_result>[\s\S]*?<\/tool_result>/.test(rawText)
+    ? `<tool_result>\n${body}\n</tool_result>`
+    : body;
+}
+
+function truncateToolResult(result: ToolResultContent): ToolResultContent {
+  const textCharacters = result.content.reduce(
+    (total, part) => total + (part.type === "text" ? part.value.length : 0),
+    0,
+  );
+  if (textCharacters <= MAX_TOOL_RESULT_TEXT_CHARACTERS) return result;
+
+  let remaining =
+    MAX_TOOL_RESULT_TEXT_CHARACTERS - TOOL_RESULT_TRUNCATION_MARKER.length;
+  const content: Array<TextContent | ImageContent> = [];
+  for (const part of result.content) {
+    if (part.type === "image") {
+      content.push(part);
+      continue;
+    }
+    if (remaining <= 0) continue;
+    const value = part.value.substring(0, remaining);
+    remaining -= value.length;
+    if (value) content.push({ type: "text", value });
+  }
+  content.push({ type: "text", value: TOOL_RESULT_TRUNCATION_MARKER });
+
+  return {
+    ...result,
+    content,
+    rawText: truncatedToolResultRawText(result.rawText, content),
+  };
+}
+
+export function truncateToolResultsForApi(
+  messages: readonly MessageParam[],
+): MessageParam[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.map((item) =>
+      item.type === "tool_result" ? truncateToolResult(item) : item,
+    ),
+  }));
 }
 
 export function assignDeterministicToolIds(
