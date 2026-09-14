@@ -16,8 +16,8 @@ The editable \`.chat.md\` file is the source of truth. Top-level blocks use \`# 
 \`# %% user\`, \`# %% assistant\`, \`# %% tool_execute\`, and \`# %% settings\`. Assistant
 reasoning may appear under \`## %% thinking\`; visible answers use \`## %% text\`. Tool
 calls are stored as \`<cmd:tool_call>\` blocks and results are stored in corresponding
-\`# %% tool_execute\` blocks; an SDK-written result may start with \`<cmd:tool_id>\` to
-preserve its call association. SDK built-in activity is recorded inside inert
+\`# %% tool_execute\` blocks, paired with calls in document order. SDK built-in activity
+is recorded inside inert
 \`## %% server_tool\` and \`## %% server_tool_results\` assistant sections. MCP activity
 from an SDK still uses ordinary tool-call and tool-execute blocks. When history is sent
 to any provider, both forms become the same native tool-use/tool-result message structure.

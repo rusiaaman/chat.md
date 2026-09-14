@@ -201,17 +201,17 @@ def test_tool_call_is_structured_without_an_execution_result() -> None:
     assert result[1].name == "foo"
 
 
-def test_server_results_use_ids_when_parallel_calls_finish_out_of_order() -> None:
+def test_server_results_pair_with_calls_in_document_order() -> None:
     content = "\n".join(
         [
             "## %% server_tool",
-            render_tool_call("call-1", "first", {}),
+            render_tool_call("first", {}),
             "## %% server_tool",
-            render_tool_call("call-2", "second", {}),
+            render_tool_call("second", {}),
             "## %% server_tool_results",
-            render_server_tool_result("call-2", format_tool_result("second result")),
+            render_server_tool_result(format_tool_result("first result")),
             "## %% server_tool_results",
-            render_server_tool_result("call-1", format_tool_result("first result")),
+            render_server_tool_result(format_tool_result("second result")),
         ]
     )
 
@@ -219,6 +219,6 @@ def test_server_results_use_ids_when_parallel_calls_finish_out_of_order() -> Non
     results = [item for item in parsed if isinstance(item, ToolResultContent)]
 
     assert [(item.tool_use_id, item.name) for item in results] == [
-        ("call-2", "second"),
-        ("call-1", "first"),
+        ("chatmd_call_0", "first"),
+        ("chatmd_call_1", "second"),
     ]

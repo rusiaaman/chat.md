@@ -27,8 +27,11 @@ import {
 import { getThinkingEntry } from "./utils/thinkingMap";
 import { findAllToolCalls, parseToolCall } from "./tools/toolCallParser";
 import { unescapeMarkers } from "./utils/markerEscape";
-import { createHash } from "crypto";
-import { inputFromParams, parseServerToolResult } from "./nativeTools";
+import {
+  assignDeterministicToolIds,
+  inputFromParams,
+  parseServerToolResult,
+} from "./nativeTools";
 // import * as vscode from "vscode"; // Already imported
 
 /**
@@ -283,7 +286,6 @@ export function parseDocument(
   let settingsBlock: string | null = null;
   let pendingToolUses: ToolUseContent[] = [];
   let pendingResultIndex = 0;
-  let completedToolUseIds = new Set<string>();
 
   // Regex to split document on # %% markers, now including 'system' and 'settings'
   const regex = /^# %% (user|assistant|system|tool_execute|settings)\s*$/im;
@@ -364,18 +366,7 @@ export function parseDocument(
         const referencedResult = parseServerToolResult(content);
         // Process tool_execute blocks to potentially inline file content from links
         // and extract images as proper image content objects
-        while (
-          pendingResultIndex < pendingToolUses.length
-          && completedToolUseIds.has(pendingToolUses[pendingResultIndex].id)
-        ) {
-          pendingResultIndex++;
-        }
-        const toolUse = referencedResult.id
-          ? pendingToolUses.find(
-              (item) =>
-                item.id === referencedResult.id && !completedToolUseIds.has(item.id),
-            )
-          : pendingToolUses[pendingResultIndex];
+        const toolUse = pendingToolUses[pendingResultIndex];
         if (toolUse) {
           const processed = parseToolResultContent(referencedResult.result, document);
           messages.push({
@@ -395,8 +386,7 @@ export function parseDocument(
               },
             ],
           });
-          completedToolUseIds.add(toolUse.id);
-          if (!referencedResult.id) pendingResultIndex++;
+          pendingResultIndex++;
         } else {
           const processedContent = processToolResultContent(
             referencedResult.result,
@@ -411,7 +401,6 @@ export function parseDocument(
     else if (role === "user") {
       pendingToolUses = [];
       pendingResultIndex = 0;
-      completedToolUseIds = new Set<string>();
       const parsedContent = parseUserContent(content, document);
       // Only add user message if it results in non-empty content after parsing
       // Check if there's any non-whitespace text or an image
@@ -455,7 +444,6 @@ export function parseDocument(
            if (newToolUses.length > 0) {
              pendingToolUses = newToolUses;
              pendingResultIndex = 0;
-             completedToolUseIds = new Set<string>();
            }
          } else {
            logVerbose(() => "Skipping assistant block that parsed to empty content.");
@@ -474,8 +462,9 @@ export function parseDocument(
   
   log(`Parsed document. Messages: ${messages.length}, System Prompt Length: ${finalSystemPrompt.length}, Has Image in System: ${hasImageInSystemBlock}, Has Settings: ${settings ? 'yes' : 'no'}`);
 
+  const deterministicMessages = assignDeterministicToolIds(messages);
   return Object.freeze({
-    messages: Object.freeze(messages),
+    messages: Object.freeze(deterministicMessages),
     systemPrompt: finalSystemPrompt,
     hasImageInSystemBlock: hasImageInSystemBlock,
     settings: settings || undefined,
@@ -502,6 +491,7 @@ export function parseAssistantContent(
   const result: Content[] = [];
   const serverToolUses: ToolUseContent[] = [];
   let serverResultIndex = 0;
+  let toolUseIndex = 0;
 
   for (const section of sections) {
     // After the split, never before: an escaped "## %%% text" line inside the
@@ -512,13 +502,17 @@ export function parseAssistantContent(
     if (section.type === "text") {
       const text = body.trim();
       if (text) {
-        result.push(...parseTextAndTools(text, false));
+        const parsed = parseTextAndTools(text, false, toolUseIndex);
+        result.push(...parsed.content);
+        toolUseIndex = parsed.nextToolUseIndex;
       }
       continue;
     }
 
     if (section.type === "server_tool") {
-      const parsedTools = parseTextAndTools(body.trim(), true);
+      const parsed = parseTextAndTools(body.trim(), true, toolUseIndex);
+      const parsedTools = parsed.content;
+      toolUseIndex = parsed.nextToolUseIndex;
       result.push(...parsedTools);
       serverToolUses.push(
         ...parsedTools.filter(
@@ -533,9 +527,7 @@ export function parseAssistantContent(
       if (!serverResult.result.trim()) {
         continue;
       }
-      const toolUse = serverResult.id
-        ? serverToolUses.find((item) => item.id === serverResult.id)
-        : serverToolUses[serverResultIndex];
+      const toolUse = serverToolUses[serverResultIndex];
       if (!toolUse) continue;
       const processed = parseToolResultContent(serverResult.result.trim(), document);
       result.push({
@@ -550,7 +542,7 @@ export function parseAssistantContent(
         ),
         serverTool: true,
       });
-      if (!serverResult.id) serverResultIndex++;
+      serverResultIndex++;
       continue;
     }
 
@@ -586,10 +578,15 @@ export function parseAssistantContent(
   return result;
 }
 
-function parseTextAndTools(text: string, serverTool: boolean): Content[] {
+function parseTextAndTools(
+  text: string,
+  serverTool: boolean,
+  toolUseIndex: number,
+): { content: Content[]; nextToolUseIndex: number } {
   const content: Content[] = [];
+  const toolCalls = findAllToolCalls(text);
   let cursor = 0;
-  for (const [ordinal, rawXml] of findAllToolCalls(text).entries()) {
+  for (const [ordinal, rawXml] of toolCalls.entries()) {
     const start = text.indexOf(rawXml, cursor);
     const before = text.substring(cursor, start).trim();
     if (before) {
@@ -597,13 +594,9 @@ function parseTextAndTools(text: string, serverTool: boolean): Content[] {
     }
     const parsed = parseToolCall(rawXml);
     if (parsed) {
-      const digest = createHash("sha256")
-        .update(`${ordinal}:${rawXml}`)
-        .digest("hex")
-        .substring(0, 24);
       content.push({
         type: "tool_use",
-        id: parsed.id || `chatmd_${digest}`,
+        id: parsed.id || `chatmd_call_${toolUseIndex + ordinal}`,
         name: parsed.name,
         input: parsed.input || inputFromParams(parsed.params),
         rawXml,
@@ -618,7 +611,10 @@ function parseTextAndTools(text: string, serverTool: boolean): Content[] {
   if (after) {
     content.push({ type: "text", value: after });
   }
-  return content;
+  return {
+    content,
+    nextToolUseIndex: toolUseIndex + toolCalls.length,
+  };
 }
 
 /**

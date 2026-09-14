@@ -5,7 +5,10 @@ import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
-import { generateToolCallingSystemPrompt, getDefaultSystemPrompt } from "./config";
+import {
+  generateToolCallingSystemPrompt,
+  getDefaultSystemPrompt,
+} from "./config";
 import {
   encodeThinkingPayloadToken,
   encodeThinkingToken,
@@ -13,6 +16,7 @@ import {
 import { cleanMessagesForApi } from "./utils/messageCleanup";
 import {
   NativeToolDefinition,
+  assignDeterministicToolIds,
   anthropicToolSchemas,
   apiToolName,
   canonicalToolName,
@@ -46,6 +50,7 @@ export class AnthropicClient {
   public async *streamCompletion(
     messages: readonly MessageParam[],
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -79,9 +84,17 @@ export class AnthropicClient {
           : generateToolCallingSystemPrompt(new Map(), new Map()));
 
       // Get configuration values with proper precedence (file config > provider config > global config)
-      const { getMaxTokens, getMaxThinkingTokens, getReasoningEffort, calculateThinkingTokensFromEffort } = require("./config");
+      const {
+        getMaxTokens,
+        getMaxThinkingTokens,
+        getReasoningEffort,
+        calculateThinkingTokensFromEffort,
+      } = require("./config");
       const maxTokens = getMaxTokens(configName, fileConfig);
-      const configuredThinkingTokens = getMaxThinkingTokens(configName, fileConfig);
+      const configuredThinkingTokens = getMaxThinkingTokens(
+        configName,
+        fileConfig,
+      );
       const reasoningEffort = getReasoningEffort(configName, fileConfig);
 
       // Thinking is on unless it was explicitly turned off
@@ -109,7 +122,11 @@ export class AnthropicClient {
             };
           }
           log(
-            `Using adaptive thinking: ${JSON.stringify(requestBody.thinking)}${requestBody.output_config ? ` with ${JSON.stringify(requestBody.output_config)}` : ""}`,
+            `Using adaptive thinking: ${JSON.stringify(requestBody.thinking)}${
+              requestBody.output_config
+                ? ` with ${JSON.stringify(requestBody.output_config)}`
+                : ""
+            }`,
           );
         } else if (!requiresAlwaysOnThinking(modelName)) {
           requestBody.thinking = { type: "disabled" };
@@ -126,7 +143,10 @@ export class AnthropicClient {
           thinkingTokens = configuredThinkingTokens;
           log(`Using configured thinking tokens: ${thinkingTokens}`);
         } else if (reasoningEffort) {
-          thinkingTokens = calculateThinkingTokensFromEffort(maxTokens, reasoningEffort);
+          thinkingTokens = calculateThinkingTokensFromEffort(
+            maxTokens,
+            reasoningEffort,
+          );
           log(
             `Using thinking tokens calculated from reasoning effort "${reasoningEffort}": ${thinkingTokens}`,
           );
@@ -158,8 +178,11 @@ export class AnthropicClient {
         thinkingEnabled: thinkingActive,
         apiStyle: "anthropic",
       });
+      const apiMessages = native
+        ? assignDeterministicToolIds(cleanedMessages)
+        : cleanedMessages;
       requestBody.messages = this.formatMessages(
-        cleanedMessages,
+        apiMessages,
         nativeTools,
         native,
         document,
@@ -188,6 +211,7 @@ export class AnthropicClient {
       const requestOptions = {
         method: "POST",
         headers,
+        signal,
       };
 
       log("Creating HTTPS request");
@@ -196,13 +220,12 @@ export class AnthropicClient {
       req.on("error", (error) => {
         const message = error instanceof Error ? error.message : String(error);
         log(`API request error: ${message}`);
-        console.error("API request error:", error);
-        vscode.window.showErrorMessage(
-          `Anthropic API request error: ${message}`,
-        );
-        // We still need to reject the promise or throw to stop the process
-        // The promise rejection in the main try/catch handles this
-        throw error;
+        if (!signal.aborted) {
+          console.error("API request error:", error);
+          vscode.window.showErrorMessage(
+            `Anthropic API request error: ${message}`,
+          );
+        }
       });
 
       log("Writing request body");
@@ -248,7 +271,9 @@ export class AnthropicClient {
           );
         } else {
           vscode.window.showErrorMessage(
-            `Anthropic API Error (${response.statusCode}): ${errorData || "Failed to get error details"}`,
+            `Anthropic API Error (${response.statusCode}): ${
+              errorData || "Failed to get error details"
+            }`,
           );
         }
 
@@ -256,13 +281,20 @@ export class AnthropicClient {
       }
 
       log("Processing streaming response");
-      yield* this.createStreamGenerator(response, modelName, nativeTools);
+      yield* this.createStreamGenerator(
+        response,
+        modelName,
+        nativeTools,
+        signal,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
-      vscode.window.showErrorMessage(
-        `Failed to initiate Anthropic stream: ${message}`,
-      );
+      if (!signal.aborted) {
+        vscode.window.showErrorMessage(
+          `Failed to initiate Anthropic stream: ${message}`,
+        );
+      }
       throw error; // Re-throw the error to be caught by the caller (e.g., streamer.ts)
     }
   }
@@ -274,6 +306,7 @@ export class AnthropicClient {
     response: http.IncomingMessage,
     modelName: string,
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
@@ -305,7 +338,9 @@ export class AnthropicClient {
 
           eventCount++;
           log(
-            `Processing event ${eventCount}: ${event.substring(0, 100)}${event.length > 100 ? "..." : ""}`,
+            `Processing event ${eventCount}: ${event.substring(0, 100)}${
+              event.length > 100 ? "..." : ""
+            }`,
           );
 
           if (event.startsWith("event: ")) {
@@ -380,19 +415,24 @@ export class AnthropicClient {
                     encodeThinkingToken("[redacted thinking]"),
                     encodeThinkingPayloadToken(payload),
                   ];
-                } else if (block && block.type === "thinking" && block.thinking) {
+                } else if (
+                  block &&
+                  block.type === "thinking" &&
+                  block.thinking
+                ) {
                   thinkingText += block.thinking;
                   yield [encodeThinkingToken(block.thinking)];
                 } else if (block && block.type === "tool_use") {
                   activeToolBlocks.add(data.index || 0);
                   const tokens = [
                     renderToolCallStart(
-                      block.id || `chatmd_call_${data.index || 0}`,
                       canonicalToolName(block.name, nativeTools),
                     ),
                   ];
                   if (block.input && Object.keys(block.input).length > 0) {
-                    tokens.push(renderToolArgumentsDelta(JSON.stringify(block.input)));
+                    tokens.push(
+                      renderToolArgumentsDelta(JSON.stringify(block.input)),
+                    );
                   }
                   yield tokens;
                 }
@@ -418,7 +458,8 @@ export class AnthropicClient {
                     inputTokens: data.message.usage.input_tokens,
                     outputTokens: data.message.usage.output_tokens,
                     cacheReadTokens: data.message.usage.cache_read_input_tokens,
-                    cacheWriteTokens: data.message.usage.cache_creation_input_tokens,
+                    cacheWriteTokens:
+                      data.message.usage.cache_creation_input_tokens,
                   };
                 }
                 log(`Message start received: ${JSON.stringify(data.message)}`);
@@ -443,7 +484,11 @@ export class AnthropicClient {
       log(`Error in createStreamGenerator: ${message}`);
 
       // Don't show error notification for max tokens errors - they're handled gracefully
-      if (!message.includes("max_tokens") && !message.includes("token limit")) {
+      if (
+        !signal.aborted &&
+        !message.includes("max_tokens") &&
+        !message.includes("token limit")
+      ) {
         // Only notify about unexpected errors, not max tokens which we handle
         vscode.window.showErrorMessage(
           `Error during Anthropic stream processing: ${message}`,
@@ -493,7 +538,10 @@ export class AnthropicClient {
         const payload = content.payload;
         if (payload?.kind === "anthropic_redacted" && payload.data) {
           blocks.push({ type: "redacted_thinking", data: payload.data });
-        } else if (payload?.kind === "anthropic_signature" && payload.signature) {
+        } else if (
+          payload?.kind === "anthropic_signature" &&
+          payload.signature
+        ) {
           // When opaque content exists, text is irrelevant to the API
           blocks.push({
             type: "thinking",

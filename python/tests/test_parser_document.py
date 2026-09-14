@@ -116,11 +116,7 @@ def test_no_image_reference_leaves_the_flag_false() -> None:
 
 
 def test_flag_stays_true_once_set_even_if_a_later_system_block_has_no_image() -> None:
-    text = (
-        "# %% system\nSee [a diagram](diagram.png)\n"
-        "# %% system\nAlso be terse.\n"
-        "# %% user\nHi\n"
-    )
+    text = "# %% system\nSee [a diagram](diagram.png)\n# %% system\nAlso be terse.\n# %% user\nHi\n"
     doc = parse_document(text, None)
     assert doc.has_image_in_system_block is True
 
@@ -151,22 +147,18 @@ def test_empty_tool_execute_block_in_the_middle_of_history_is_dropped() -> None:
     assert [m.role for m in doc.messages] == ["user", "assistant"]
 
 
-def test_tool_results_use_ids_when_parallel_sdk_calls_finish_out_of_order() -> None:
+def test_tool_results_pair_with_calls_in_document_order() -> None:
     text = "\n".join(
         [
             "# %% user",
             "Run both",
             "# %% assistant",
-            render_tool_call("call-1", "files.first", {}),
-            render_tool_call("call-2", "files.second", {}),
+            render_tool_call("files.first", {}),
+            render_tool_call("files.second", {}),
             "# %% tool_execute",
-            render_server_tool_result(
-                "call-2", "<tool_result>\nsecond result\n</tool_result>"
-            ),
+            render_server_tool_result("<tool_result>\nfirst result\n</tool_result>"),
             "# %% tool_execute",
-            render_server_tool_result(
-                "call-1", "<tool_result>\nfirst result\n</tool_result>"
-            ),
+            render_server_tool_result("<tool_result>\nsecond result\n</tool_result>"),
         ]
     )
 
@@ -179,8 +171,8 @@ def test_tool_results_use_ids_when_parallel_sdk_calls_finish_out_of_order() -> N
     ]
 
     assert [(item.tool_use_id, item.name) for item in results] == [
-        ("call-2", "files.second"),
-        ("call-1", "files.first"),
+        ("chatmd_call_0", "files.first"),
+        ("chatmd_call_1", "files.second"),
     ]
 
 

@@ -47,6 +47,7 @@ from .cleanup import clean_messages_for_api
 from .native_tools import (
     NativeToolDefinition,
     api_tool_name,
+    assign_deterministic_tool_ids,
     canonical_tool_name,
     openai_chat_tool_schemas,
     render_tool_arguments_delta,
@@ -217,9 +218,7 @@ def format_message(message: MessageParam, base_dir: str | Path | None = None) ->
     return formatted
 
 
-def _custom_protocol_message(
-    message: MessageParam, base_dir: str | Path | None
-) -> dict[str, Any]:
+def _custom_protocol_message(message: MessageParam, base_dir: str | Path | None) -> dict[str, Any]:
     materialized: list[Content] = []
     has_tool_use = False
     for item in message.content:
@@ -244,11 +243,10 @@ def format_messages(
     if not native:
         return [_custom_protocol_message(message, base_dir) for message in messages]
 
+    messages = assign_deterministic_tool_ids(messages)
     formatted: list[dict[str, Any]] = []
     for message in messages:
-        results = [
-            item for item in message.content if isinstance(item, ToolResultContent)
-        ]
+        results = [item for item in message.content if isinstance(item, ToolResultContent)]
         if results:
             for result in results:
                 text_parts = [
@@ -277,9 +275,7 @@ def format_messages(
             for item in message.content
             if not isinstance(item, (ToolUseContent, ToolResultContent))
         ]
-        base_message = format_message(
-            MessageParam(role=message.role, content=normal), base_dir
-        )
+        base_message = format_message(MessageParam(role=message.role, content=normal), base_dir)
         if tool_uses:
             base_message["tool_calls"] = [
                 {
@@ -409,7 +405,6 @@ async def _translate_stream(
                     state.started = True
                     yield TextDelta(
                         render_tool_call_start(
-                            state.id or f"chatmd_call_{index}",
                             canonical_tool_name(state.name, tools),
                         )
                     )
@@ -440,7 +435,6 @@ async def _translate_stream(
                     continue
                 yield TextDelta(
                     render_tool_call_start(
-                        state.id or f"chatmd_call_{index}",
                         canonical_tool_name(state.name, tools),
                     )
                 )
@@ -458,7 +452,6 @@ async def _translate_stream(
                 continue
             yield TextDelta(
                 render_tool_call_start(
-                    state.id or f"chatmd_call_{index}",
                     canonical_tool_name(state.name, tools),
                 )
             )

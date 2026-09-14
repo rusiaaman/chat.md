@@ -19,6 +19,7 @@ import {
 import { cleanMessagesForApi } from "./utils/messageCleanup";
 import {
   NativeToolDefinition,
+  assignDeterministicToolIds,
   apiToolName,
   canonicalToolName,
   openaiChatToolSchemas,
@@ -53,7 +54,10 @@ class ReasoningDetailsAccumulator {
 
     const existing = this.details[existingIndex];
     for (const [field, value] of Object.entries(detail)) {
-      if ((field === "text" || field === "summary") && typeof value === "string") {
+      if (
+        (field === "text" || field === "summary") &&
+        typeof value === "string"
+      ) {
         existing[field] =
           typeof existing[field] === "string" ? existing[field] + value : value;
       } else if (value !== null && value !== undefined) {
@@ -72,7 +76,8 @@ class ReasoningDetailsAccumulator {
   }
 
   private keyFor(detail: any, fallbackIndex: number): string {
-    const type = typeof detail.type === "string" ? detail.type : "reasoning.unknown";
+    const type =
+      typeof detail.type === "string" ? detail.type : "reasoning.unknown";
     if (typeof detail.id === "string" && detail.id) {
       return `${type}::id::${detail.id}`;
     }
@@ -136,6 +141,7 @@ export class OpenAIClient {
   public async *streamCompletion(
     messages: readonly MessageParam[],
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -179,11 +185,14 @@ export class OpenAIClient {
         thinkingEnabled: reasoningEffort !== "none",
         apiStyle: "openai_chat",
       });
+      const apiMessages = native
+        ? assignDeterministicToolIds(cleanedMessages)
+        : cleanedMessages;
 
       // Add system message as the first message
       const allMessages = [
         systemMessage,
-        ...this.formatMessages(cleanedMessages, nativeTools, native, document),
+        ...this.formatMessages(apiMessages, nativeTools, native, document),
       ];
 
       // Initial request body
@@ -215,6 +224,7 @@ export class OpenAIClient {
 
       const requestOptions = {
         method: "POST",
+        signal,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
@@ -238,11 +248,12 @@ export class OpenAIClient {
       req.on("error", (error) => {
         const message = error instanceof Error ? error.message : String(error);
         log(`OpenAI API request error: ${message}`);
-        console.error("OpenAI API request error:", error);
-        vscode.window.showErrorMessage(`OpenAI API request error: ${message}`);
-        // We still need to reject the promise or throw to stop the process
-        // The promise rejection in the main try/catch handles this
-        throw error;
+        if (!signal.aborted) {
+          console.error("OpenAI API request error:", error);
+          vscode.window.showErrorMessage(
+            `OpenAI API request error: ${message}`,
+          );
+        }
       });
 
       log("Writing request body");
@@ -266,7 +277,7 @@ export class OpenAIClient {
         }
         const errorMessage = `OpenAI API request failed with status ${response.statusCode}: ${errorData}`;
         log(errorMessage);
-        
+
         if (response.statusCode! >= 500) {
           // 5xx errors will be retried by the streamer
           vscode.window.showErrorMessage(
@@ -279,21 +290,30 @@ export class OpenAIClient {
           );
         } else {
           vscode.window.showErrorMessage(
-            `OpenAI API Error (${response.statusCode}): ${errorData || "Failed to get error details"}`,
+            `OpenAI API Error (${response.statusCode}): ${
+              errorData || "Failed to get error details"
+            }`,
           );
         }
-        
+
         throw new Error(errorMessage);
       }
 
       log("Processing streaming response from OpenAI");
-      yield* this.createStreamGenerator(response, modelName, nativeTools);
+      yield* this.createStreamGenerator(
+        response,
+        modelName,
+        nativeTools,
+        signal,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in streamCompletion: ${message}`);
-      vscode.window.showErrorMessage(
-        `Failed to initiate OpenAI stream: ${message}`,
-      );
+      if (!signal.aborted) {
+        vscode.window.showErrorMessage(
+          `Failed to initiate OpenAI stream: ${message}`,
+        );
+      }
       throw error; // Re-throw the error to be caught by the caller (e.g., streamer.ts)
     }
   }
@@ -306,6 +326,7 @@ export class OpenAIClient {
     response: http.IncomingMessage,
     modelName: string,
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
@@ -313,8 +334,10 @@ export class OpenAIClient {
     // Reasoning state for the current assistant turn
     let reasoningAccumulator = new ReasoningDetailsAccumulator();
     let reasoningText = "";
-    let reasoningField: "reasoning" | "reasoning_content" | "reasoning_summary" =
-      "reasoning_content";
+    let reasoningField:
+      | "reasoning"
+      | "reasoning_content"
+      | "reasoning_summary" = "reasoning_content";
     let reasoningOpen = false;
     const partialToolCalls = new Map<
       number,
@@ -338,10 +361,7 @@ export class OpenAIClient {
           continue;
         }
         tokens.push(
-          renderToolCallStart(
-            call.id || `chatmd_call_${index}`,
-            canonicalToolName(call.name, nativeTools),
-          ),
+          renderToolCallStart(canonicalToolName(call.name, nativeTools)),
         );
         if (call.arguments) {
           tokens.push(renderToolArgumentsDelta(call.arguments));
@@ -482,10 +502,12 @@ export class OpenAIClient {
 
             // If any recent chunk had finish_reason="length", throw max tokens error
             if (maxTokensDetected) {
-                log(
+              log(
                 "🚨 Max completion tokens detected in recent chunks! Will restart stream.",
-                );
-              throw new Error("max_completion_tokens: Detected finish_reason=length");
+              );
+              throw new Error(
+                "max_completion_tokens: Detected finish_reason=length",
+              );
             }
 
             break;
@@ -504,7 +526,8 @@ export class OpenAIClient {
                     this.lastUsage = {
                       inputTokens: data.usage.prompt_tokens,
                       outputTokens: data.usage.completion_tokens,
-                      cacheReadTokens: data.usage.prompt_tokens_details?.cached_tokens,
+                      cacheReadTokens:
+                        data.usage.prompt_tokens_details?.cached_tokens,
                     };
                   }
 
@@ -550,17 +573,22 @@ export class OpenAIClient {
                           activeToolCall = index;
                         }
                         const tokens: string[] = [];
-                        if (activeToolCall === index && !call.started && call.name) {
+                        if (
+                          activeToolCall === index &&
+                          !call.started &&
+                          call.name
+                        ) {
                           call.started = true;
                           tokens.push(
                             renderToolCallStart(
-                              call.id || `chatmd_call_${index}`,
                               canonicalToolName(call.name, nativeTools),
                             ),
                           );
                         }
                         if (activeToolCall === index && call.started) {
-                          const pending = call.arguments.substring(call.emitted);
+                          const pending = call.arguments.substring(
+                            call.emitted,
+                          );
                           if (pending) {
                             call.emitted = call.arguments.length;
                             tokens.push(renderToolArgumentsDelta(pending));
@@ -696,7 +724,7 @@ export class OpenAIClient {
       log(`Error in createStreamGenerator: ${message}`);
 
       // Don't show error notification for max completion tokens errors - they're handled gracefully
-      if (!message.includes("max_completion_tokens")) {
+      if (!signal.aborted && !message.includes("max_completion_tokens")) {
         // Only notify about unexpected errors, not max tokens which we handle
         vscode.window.showErrorMessage(
           `Error during OpenAI stream processing: ${message}`,
@@ -725,7 +753,9 @@ export class OpenAIClient {
   ): any[] {
     const formattedMessages: any[] = [];
     for (const msg of messages) {
-      const results = msg.content.filter((block) => block.type === "tool_result");
+      const results = msg.content.filter(
+        (block) => block.type === "tool_result",
+      );
       if (native && results.length > 0) {
         for (const result of results) {
           if (result.type !== "tool_result") {
@@ -753,14 +783,16 @@ export class OpenAIClient {
 
       const thinking = msg.content.find((block) => block.type === "thinking");
       const toolUses = msg.content.filter((block) => block.type === "tool_use");
-      let rest: Content[] = msg.content.filter((block) => block.type !== "thinking");
+      let rest: Content[] = msg.content.filter(
+        (block) => block.type !== "thinking",
+      );
       if (!native) {
         rest = rest.map((block) =>
           block.type === "tool_use"
             ? { type: "text", value: block.rawXml }
             : block.type === "tool_result"
-              ? { type: "text", value: block.rawText }
-              : block,
+            ? { type: "text", value: block.rawText }
+            : block,
         );
         if (toolUses.length > 0) {
           rest.push({ type: "text", value: "<cmd:wait-tool-result/>" });
@@ -780,14 +812,18 @@ export class OpenAIClient {
 
       // Reasoning travels in top level fields on the assistant message, never in
       // the content array, using the provider's top-level reasoning fields.
-      if (thinking && thinking.type === "thinking" && msg.role === "assistant") {
+      if (
+        thinking &&
+        thinking.type === "thinking" &&
+        msg.role === "assistant"
+      ) {
         const payload = thinking.payload;
         if (payload?.kind === "reasoning_details" && payload.reasoningDetails) {
           formatted.reasoning_details = payload.reasoningDetails;
         } else if (
-          payload?.kind === "raw"
-          && payload.field
-          && thinking.value.trim() !== ""
+          payload?.kind === "raw" &&
+          payload.field &&
+          thinking.value.trim() !== ""
         ) {
           const field = payload.field;
           formatted[field] = thinking.value;

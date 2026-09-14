@@ -112,7 +112,11 @@ export function readFileAsTextCached(filePath: string): string | undefined {
     textCacheBytes -= cached.content.length;
   }
   if (content.length <= TEXT_CACHE_MAX_FILE_BYTES) {
-    textCache.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, content });
+    textCache.set(filePath, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      content,
+    });
     textCacheBytes += content.length;
     evictOldestUntilUnder(TEXT_CACHE_MAX_BYTES);
   }
@@ -153,7 +157,10 @@ export function getAssetsDirectory(docDir: string): string {
     : path.resolve(docDir, configured);
 }
 
-export function getAssetsRelativePath(docDir: string, fileName: string): string {
+export function getAssetsRelativePath(
+  docDir: string,
+  fileName: string,
+): string {
   return path
     .relative(docDir, path.join(getAssetsDirectory(docDir), fileName))
     .replace(/\\/g, "/");
@@ -178,6 +185,22 @@ export function writeToolResultAttachment(
   return getAssetsRelativePath(docDir, filename);
 }
 
+export function isDocumentOpenInTab(document: vscode.TextDocument): boolean {
+  const target = document.uri.toString();
+  return vscode.window.tabGroups.all.some((group) =>
+    group.tabs.some((tab) => {
+      const input = tab.input as {
+        uri?: vscode.Uri;
+        original?: vscode.Uri;
+        modified?: vscode.Uri;
+      };
+      return [input.uri, input.original, input.modified].some(
+        (uri) => uri?.toString() === target,
+      );
+    }),
+  );
+}
+
 function getChatMdCacheDirectory(): string {
   const cacheRoot =
     process.env.XDG_CACHE_HOME ||
@@ -190,7 +213,9 @@ function createHistoryFileName(document: vscode.TextDocument): string {
   const baseName = path
     .basename(document.fileName)
     .replace(/[^a-zA-Z0-9._-]/g, "_");
-  return `${baseName}-${timestamp}-${Math.random().toString(36).slice(2, 8)}.json`;
+  return `${baseName}-${timestamp}-${Math.random()
+    .toString(36)
+    .slice(2, 8)}.json`;
 }
 
 /**
@@ -251,7 +276,11 @@ export function saveChatHistory(
     // The path is returned now and the bytes are written later. Callers only ever
     // use the path to address subsequent updates, which queue behind this write.
     queueHistoryWrite(filePath, () =>
-      fs.promises.writeFile(filePath, JSON.stringify(history, null, 2) + "\n", "utf8"),
+      fs.promises.writeFile(
+        filePath,
+        JSON.stringify(history, null, 2) + "\n",
+        "utf8",
+      ),
     );
     return filePath;
   } catch (error) {

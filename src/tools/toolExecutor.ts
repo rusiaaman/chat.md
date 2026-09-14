@@ -5,8 +5,13 @@ import { statusManager } from "../extension";
 import { McpToolExecutionResult } from "../types";
 import { parseToolCall as parseCanonicalToolCall } from "./toolCallParser";
 
+interface ActiveToolExecution {
+  controller: AbortController;
+  documentUri: string | undefined;
+}
+
 // Track active tool executions for cancellation
-const activeToolExecutions = new Map<string, AbortController>();
+const activeToolExecutions = new Map<string, ActiveToolExecution>();
 // Track the current execution ID
 let currentToolExecution: string | null = null;
 // Track cancelled executions to ignore any late responses
@@ -33,7 +38,10 @@ export async function executeToolCall(
   
   // Create AbortController for cancellation
   const abortController = new AbortController();
-  activeToolExecutions.set(executionId, abortController);
+  activeToolExecutions.set(executionId, {
+    controller: abortController,
+    documentUri: document?.uri.toString(),
+  });
   
   // Show tool execution status - use coordinated system
   if (document) {
@@ -131,8 +139,8 @@ export function cancelCurrentToolExecution(): boolean {
     onActiveFileChanged();
     
     // Abort the execution
-    const controller = activeToolExecutions.get(executionId);
-    controller?.abort();
+    const execution = activeToolExecutions.get(executionId);
+    execution?.controller.abort();
     
     // Status is automatically restored to idle when the execution completes or errors out
     // in the executeToolCall function's finally block
@@ -141,6 +149,21 @@ export function cancelCurrentToolExecution(): boolean {
   }
   
   return false;
+}
+
+export function cancelToolExecutionsForDocument(
+  document: vscode.TextDocument,
+): boolean {
+  const documentUri = document.uri.toString();
+  let cancelled = false;
+  for (const [executionId, execution] of activeToolExecutions) {
+    if (execution.documentUri !== documentUri) continue;
+    cancelledExecutions.add(executionId);
+    execution.controller.abort();
+    cancelled = true;
+  }
+  if (cancelled) onActiveFileChanged();
+  return cancelled;
 }
 
 export function formatToolResult(result: string): string {

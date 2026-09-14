@@ -5,7 +5,10 @@ import { MessageParam, Content, ThinkingPayload } from "./types";
 import { resolveFilePath, readFileAsBuffer } from "./utils/fileUtils";
 import * as vscode from "vscode";
 import { log } from "./extension";
-import { generateToolCallingSystemPrompt, getDefaultSystemPrompt } from "./config";
+import {
+  generateToolCallingSystemPrompt,
+  getDefaultSystemPrompt,
+} from "./config";
 import {
   encodeThinkingPayloadToken,
   encodeThinkingToken,
@@ -13,6 +16,7 @@ import {
 import { cleanMessagesForApi } from "./utils/messageCleanup";
 import {
   NativeToolDefinition,
+  assignDeterministicToolIds,
   apiToolName,
   canonicalToolName,
   openaiResponsesToolSchemas,
@@ -58,6 +62,7 @@ export class OpenAIResponsesClient {
   public async *streamCompletion(
     messages: readonly MessageParam[],
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
     document?: vscode.TextDocument,
     systemPrompt?: string,
     modelNameOverride?: string,
@@ -97,11 +102,14 @@ export class OpenAIResponsesClient {
         thinkingEnabled,
         apiStyle: "openai_responses",
       });
+      const apiMessages = native
+        ? assignDeterministicToolIds(cleanedMessages)
+        : cleanedMessages;
 
       const requestBody: any = {
         model: modelName,
         input: this.convertToResponsesInput(
-          cleanedMessages,
+          apiMessages,
           nativeTools,
           native,
           document,
@@ -132,6 +140,7 @@ export class OpenAIResponsesClient {
       const parsedUrl = new URL(this.apiUrl);
       const requestOptions = {
         method: "POST",
+        signal,
         hostname: parsedUrl.hostname,
         port: parsedUrl.port || (parsedUrl.protocol === "https:" ? 443 : 80),
         path: parsedUrl.pathname + parsedUrl.search,
@@ -147,10 +156,11 @@ export class OpenAIResponsesClient {
       req.on("error", (error) => {
         const message = error instanceof Error ? error.message : String(error);
         log(`Responses API request error: ${message}`);
-        vscode.window.showErrorMessage(
-          `OpenAI Responses API request error: ${message}`,
-        );
-        throw error;
+        if (!signal.aborted) {
+          vscode.window.showErrorMessage(
+            `OpenAI Responses API request error: ${message}`,
+          );
+        }
       });
 
       req.write(JSON.stringify(requestBody));
@@ -184,18 +194,25 @@ export class OpenAIResponsesClient {
           );
         } else {
           vscode.window.showErrorMessage(
-            `OpenAI Responses API Error (${response.statusCode}): ${errorData || "Failed to get error details"}`,
+            `OpenAI Responses API Error (${response.statusCode}): ${
+              errorData || "Failed to get error details"
+            }`,
           );
         }
 
         throw new Error(errorMessage);
       }
 
-      yield* this.createStreamGenerator(response, modelName, nativeTools);
+      yield* this.createStreamGenerator(
+        response,
+        modelName,
+        nativeTools,
+        signal,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in Responses streamCompletion: ${message}`);
-      if (!message.includes("max_output_tokens")) {
+      if (!signal.aborted && !message.includes("max_output_tokens")) {
         vscode.window.showErrorMessage(
           `Failed to initiate OpenAI Responses stream: ${message}`,
         );
@@ -215,6 +232,7 @@ export class OpenAIResponsesClient {
     response: http.IncomingMessage,
     modelName: string,
     nativeTools: readonly NativeToolDefinition[],
+    signal: AbortSignal,
   ): AsyncGenerator<string[], void, unknown> {
     let buffer = "";
     let eventCount = 0;
@@ -297,7 +315,6 @@ export class OpenAIResponsesClient {
                   state.started = true;
                   const tokens = [
                     renderToolCallStart(
-                      state.callId || `chatmd_call_${index}`,
                       canonicalToolName(state.name, nativeTools),
                     ),
                   ];
@@ -340,7 +357,8 @@ export class OpenAIResponsesClient {
                   activeIndex = undefined;
                   while (activeIndex === undefined) {
                     const next = Array.from(calls.entries()).find(
-                      ([, candidate]) => !candidate.started && !candidate.closed,
+                      ([, candidate]) =>
+                        !candidate.started && !candidate.closed,
                     );
                     if (!next) {
                       break;
@@ -351,7 +369,6 @@ export class OpenAIResponsesClient {
                     candidate.emitted = candidate.arguments.length;
                     yield [
                       renderToolCallStart(
-                        candidate.callId || `chatmd_call_${nextIndex}`,
                         canonicalToolName(candidate.name, nativeTools),
                       ),
                       ...(candidate.arguments
@@ -416,7 +433,9 @@ export class OpenAIResponsesClient {
             case "response.failed":
             case "error": {
               const message =
-                data.response?.error?.message || data.message || "unknown error";
+                data.response?.error?.message ||
+                data.message ||
+                "unknown error";
               log(`Responses API error event: ${message}`);
               throw new Error(`Responses API error: ${message}`);
             }
@@ -426,21 +445,20 @@ export class OpenAIResponsesClient {
         }
       }
 
-      for (const [index, state] of calls) {
+      for (const state of calls.values()) {
         if (state.closed) {
           continue;
         }
         yield [
           ...(!state.started
-            ? [
-                renderToolCallStart(
-                  state.callId || `chatmd_call_${index}`,
-                  canonicalToolName(state.name, nativeTools),
-                ),
-              ]
+            ? [renderToolCallStart(canonicalToolName(state.name, nativeTools))]
             : []),
           ...(state.arguments.substring(state.emitted)
-            ? [renderToolArgumentsDelta(state.arguments.substring(state.emitted))]
+            ? [
+                renderToolArgumentsDelta(
+                  state.arguments.substring(state.emitted),
+                ),
+              ]
             : []),
           renderToolCallEnd(),
         ];
@@ -450,7 +468,7 @@ export class OpenAIResponsesClient {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log(`Error in Responses createStreamGenerator: ${message}`);
-      if (!message.includes("max_output_tokens")) {
+      if (!signal.aborted && !message.includes("max_output_tokens")) {
         vscode.window.showErrorMessage(
           `Error during OpenAI Responses stream processing: ${message}`,
         );
@@ -475,7 +493,9 @@ export class OpenAIResponsesClient {
 
     for (const message of messages) {
       if (!native) {
-        const hasToolUse = message.content.some((block) => block.type === "tool_use");
+        const hasToolUse = message.content.some(
+          (block) => block.type === "tool_use",
+        );
         const materialized = message.content.flatMap((block): Content[] => {
           if (block.type === "tool_use") {
             return [{ type: "text", value: block.rawXml }];
@@ -611,7 +631,9 @@ export class OpenAIResponsesClient {
       if (!imageData) {
         return undefined;
       }
-      return `data:${this.getMimeType(imagePath)};base64,${imageData.toString("base64")}`;
+      return `data:${this.getMimeType(imagePath)};base64,${imageData.toString(
+        "base64",
+      )}`;
     } catch (error) {
       log(`Error processing image ${content.path}: ${error}`);
       return undefined;

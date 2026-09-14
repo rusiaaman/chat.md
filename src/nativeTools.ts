@@ -1,6 +1,7 @@
 import { createHash } from "crypto";
 import { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { getSystemToolDefinitions } from "./systemTools";
+import type { MessageParam } from "./types";
 
 export interface NativeToolDefinition {
   apiName: string;
@@ -36,9 +37,13 @@ export function isAgentToolEvent(token: string): boolean {
   return token.startsWith(AGENT_TOOL_EVENT_PREFIX);
 }
 
-export function decodeAgentToolEvent(token: string): AgentToolEvent | undefined {
+export function decodeAgentToolEvent(
+  token: string,
+): AgentToolEvent | undefined {
   try {
-    return JSON.parse(token.substring(AGENT_TOOL_EVENT_PREFIX.length)) as AgentToolEvent;
+    return JSON.parse(
+      token.substring(AGENT_TOOL_EVENT_PREFIX.length),
+    ) as AgentToolEvent;
   } catch {
     return undefined;
   }
@@ -142,10 +147,8 @@ export function unescapeXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
-export function renderToolCallStart(id: string, name: string): string {
-  return `\n<cmd:tool_call>\n<cmd:tool_id>${escapeXml(
-    id,
-  )}</cmd:tool_id>\n<cmd:tool_name>${escapeXml(
+export function renderToolCallStart(name: string): string {
+  return `\n<cmd:tool_call>\n<cmd:tool_name>${escapeXml(
     name,
   )}</cmd:tool_name>\n<cmd:arguments>`;
 }
@@ -159,23 +162,90 @@ export function renderToolCallEnd(): string {
 }
 
 export function renderToolCall(
-  id: string,
   name: string,
   input: Record<string, unknown>,
 ): string {
-  return renderToolCallStart(id, name)
-    + renderToolArgumentsDelta(JSON.stringify(input))
-    + renderToolCallEnd();
+  return (
+    renderToolCallStart(name) +
+    renderToolArgumentsDelta(JSON.stringify(input)) +
+    renderToolCallEnd()
+  );
 }
 
-export function renderServerToolResult(id: string, result: string): string {
-  return `<cmd:tool_id>${escapeXml(id)}</cmd:tool_id>\n${result}`;
+export function renderServerToolResult(result: string): string {
+  return result;
 }
 
-export function parseServerToolResult(
-  value: string,
-): { id?: string; result: string } {
-  const matched = /^\s*<cmd:tool_id>([^<]*)<\/cmd:tool_id>[ \t]*(?:\r?\n)?/.exec(value);
+export function toolResultText(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) {
+    return value.map(toolResultText).filter(Boolean).join("\n");
+  }
+  if (value && typeof value === "object") {
+    const result = value as Record<string, unknown>;
+    for (const key of [
+      "output",
+      "aggregatedOutput",
+      "stdout",
+      "text",
+      "content",
+      "message",
+      "error",
+      "structuredContent",
+      "structured_content",
+    ]) {
+      if (result[key] === undefined) continue;
+      const text = toolResultText(result[key]);
+      if (text) return text;
+    }
+    return "";
+  }
+  return value === undefined || value === null ? "" : String(value);
+}
+
+export function assignDeterministicToolIds(
+  messages: readonly MessageParam[],
+): MessageParam[] {
+  const pendingIds: string[] = [];
+  let callIndex = 0;
+  let orphanResultIndex = 0;
+
+  return messages.map((message) => {
+    if (
+      message.role === "user" &&
+      !message.content.some((item) => item.type === "tool_result")
+    ) {
+      pendingIds.length = 0;
+    }
+    return {
+      ...message,
+      content: message.content.map((item) => {
+        if (item.type === "tool_use") {
+          const id = `chatmd_call_${callIndex}`;
+          callIndex++;
+          pendingIds.push(id);
+          return { ...item, id };
+        }
+        if (item.type === "tool_result") {
+          let toolUseId = pendingIds.shift();
+          if (!toolUseId) {
+            toolUseId = `chatmd_orphan_result_${orphanResultIndex}`;
+            orphanResultIndex++;
+          }
+          return { ...item, toolUseId };
+        }
+        return item;
+      }),
+    };
+  });
+}
+
+export function parseServerToolResult(value: string): {
+  id?: string;
+  result: string;
+} {
+  const matched =
+    /^\s*<cmd:tool_id>([^<]*)<\/cmd:tool_id>[ \t]*(?:\r?\n)?/.exec(value);
   if (!matched) return { result: value };
   return {
     id: unescapeXml(matched[1]),

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -40,24 +39,18 @@ from ..types import (
     UsageDelta,
 )
 from .agent_context import build_agent_prompt
-from .native_tools import NativeToolDefinition
+from .native_tools import NativeToolDefinition, tool_result_text
 from .prompt import chatmd_agent_section
 from .sdk_config import claude_agent_options
 
 logger = logging.getLogger(__name__)
 
 
-def _json_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
-
-
 def _mcp_name(name: str, server_names: Sequence[str]) -> str | None:
     for server_name in sorted(server_names, key=len, reverse=True):
         prefix = f"mcp__{server_name}__"
         if name.startswith(prefix):
-            return f"{server_name}.{name[len(prefix):]}"
+            return f"{server_name}.{name[len(prefix) :]}"
     return None
 
 
@@ -160,9 +153,7 @@ class ClaudeCodeClient:
                                 if block.id in emitted_tools:
                                     continue
                                 emitted_tools.add(block.id)
-                                native_name = _mcp_name(
-                                    block.name, tuple(self.config.mcp_servers)
-                                )
+                                native_name = _mcp_name(block.name, tuple(self.config.mcp_servers))
                                 name = native_name or block.name
                                 server_tool = native_name is None
                                 tool_names[block.id] = (name, server_tool)
@@ -172,9 +163,7 @@ class ClaudeCodeClient:
                                     input=block.input,
                                     server_tool=server_tool,
                                 )
-                            elif isinstance(
-                                block, (ToolResultBlock, ServerToolResultBlock)
-                            ):
+                            elif isinstance(block, (ToolResultBlock, ServerToolResultBlock)):
                                 if block.tool_use_id in emitted_results:
                                     continue
                                 emitted_results.add(block.tool_use_id)
@@ -184,7 +173,7 @@ class ClaudeCodeClient:
                                 yield ToolResultDelta(
                                     tool_use_id=block.tool_use_id,
                                     name=name,
-                                    content=_json_text(block.content),
+                                    content=tool_result_text(block.content) or "Completed",
                                     is_error=bool(getattr(block, "is_error", False)),
                                     server_tool=server_tool,
                                 )
@@ -197,24 +186,21 @@ class ClaudeCodeClient:
 
                     if isinstance(message, UserMessage) and isinstance(message.content, list):
                         for block in message.content:
-                            if not isinstance(
-                                block, (ToolResultBlock, ServerToolResultBlock)
-                            ):
+                            if not isinstance(block, (ToolResultBlock, ServerToolResultBlock)):
                                 continue
                             if block.tool_use_id in emitted_results:
                                 continue
                             emitted_results.add(block.tool_use_id)
-                            name, server_tool = tool_names.get(
-                                block.tool_use_id, ("tool", True)
-                            )
+                            name, server_tool = tool_names.get(block.tool_use_id, ("tool", True))
                             yield ToolResultDelta(
                                 tool_use_id=block.tool_use_id,
                                 name=name,
-                                content=_json_text(
+                                content=tool_result_text(
                                     message.tool_use_result
                                     if message.tool_use_result is not None
                                     else block.content
-                                ),
+                                )
+                                or "Completed",
                                 is_error=bool(getattr(block, "is_error", False)),
                                 server_tool=server_tool,
                             )

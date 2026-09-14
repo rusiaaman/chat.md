@@ -45,6 +45,7 @@ from .cleanup import clean_messages_for_api
 from .native_tools import (
     NativeToolDefinition,
     api_tool_name,
+    assign_deterministic_tool_ids,
     canonical_tool_name,
     openai_responses_tool_schemas,
     render_tool_arguments_delta,
@@ -180,6 +181,7 @@ def convert_to_responses_input_with_tools(
             materialized.append(MessageParam(role=message.role, content=content))
         return convert_to_responses_input(materialized, base_dir=base_dir)
 
+    messages = assign_deterministic_tool_ids(messages)
     input_items: list[dict[str, Any]] = []
     for message in messages:
         normal: list[Content] = [
@@ -328,9 +330,7 @@ class OpenAIResponsesClient:
             thinking_enabled=thinking_enabled,
             api_style="openai_responses",
         )
-        input_items = convert_to_responses_input_with_tools(
-            cleaned, tools, native, base_dir
-        )
+        input_items = convert_to_responses_input_with_tools(cleaned, tools, native, base_dir)
         kwargs = build_request_kwargs(
             model=model,
             input_items=input_items,
@@ -378,9 +378,7 @@ class OpenAIResponsesClient:
             usage_delta = _extract_usage(event)
             if usage_delta is not None:
                 merged = (
-                    usage_delta
-                    if self.last_usage is None
-                    else self.last_usage.merge(usage_delta)
+                    usage_delta if self.last_usage is None else self.last_usage.merge(usage_delta)
                 )
                 self.last_usage = merged
                 yield UsageDelta(usage=merged)
@@ -391,9 +389,7 @@ class OpenAIResponsesClient:
                 item = getattr(event, "item", None)
                 if getattr(item, "type", None) == "function_call":
                     index = getattr(event, "output_index", 0)
-                    state = calls.setdefault(
-                        index, _PartialFunctionCall(output_index=index)
-                    )
+                    state = calls.setdefault(index, _PartialFunctionCall(output_index=index))
                     state.call_id = getattr(item, "call_id", "") or state.call_id
                     state.name = getattr(item, "name", "") or state.name
                     initial = getattr(item, "arguments", "") or ""
@@ -403,7 +399,6 @@ class OpenAIResponsesClient:
                         state.started = True
                         yield TextDelta(
                             render_tool_call_start(
-                                state.call_id or f"chatmd_call_{index}",
                                 canonical_tool_name(state.name, tools),
                             )
                         )
@@ -452,15 +447,12 @@ class OpenAIResponsesClient:
                         active_index = candidate_index
                         yield TextDelta(
                             render_tool_call_start(
-                                candidate.call_id or f"chatmd_call_{candidate_index}",
                                 canonical_tool_name(candidate.name, tools),
                             )
                         )
                         if candidate.arguments:
                             candidate.emitted = len(candidate.arguments)
-                            yield TextDelta(
-                                render_tool_arguments_delta(candidate.arguments)
-                            )
+                            yield TextDelta(render_tool_arguments_delta(candidate.arguments))
                         if candidate.done:
                             yield TextDelta(render_tool_call_end())
                             candidate.closed = True
@@ -496,9 +488,7 @@ class OpenAIResponsesClient:
                     )
                 elif getattr(item, "type", None) == "function_call":
                     index = getattr(event, "output_index", 0)
-                    state = calls.setdefault(
-                        index, _PartialFunctionCall(output_index=index)
-                    )
+                    state = calls.setdefault(index, _PartialFunctionCall(output_index=index))
                     state.call_id = getattr(item, "call_id", "") or state.call_id
                     state.name = getattr(item, "name", "") or state.name
                     final_arguments = getattr(item, "arguments", None)
@@ -522,13 +512,12 @@ class OpenAIResponsesClient:
                 logger.error("Responses API error event: %s", message)
                 raise RuntimeError(f"Responses API error: {message}")
 
-        for index, state in calls.items():
+        for state in calls.values():
             if state.closed:
                 continue
             if not state.started:
                 yield TextDelta(
                     render_tool_call_start(
-                        state.call_id or f"chatmd_call_{index}",
                         canonical_tool_name(state.name, tools),
                     )
                 )

@@ -23,7 +23,7 @@ def tool_pair(index: int) -> tuple[ToolUseContent, ToolResultContent]:
         id=call_id,
         name=name,
         input=arguments,
-        raw_xml=render_tool_call(call_id, name, arguments),
+        raw_xml=render_tool_call(name, arguments),
         server_tool=index % 2 == 0,
     )
     result = ToolResultContent(

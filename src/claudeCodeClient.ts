@@ -8,7 +8,7 @@ import * as path from "path";
 import * as vscode from "vscode";
 import { buildAgentPrompt } from "./agentContext";
 import { getMaxThinkingTokens, getReasoningEffort } from "./config";
-import { encodeAgentToolEvent } from "./nativeTools";
+import { encodeAgentToolEvent, toolResultText } from "./nativeTools";
 import { MessageParam, ChatHistoryUsage } from "./types";
 import { chatmdAgentSection, findChatmdCommand } from "./utils/chatmdCli";
 import {
@@ -19,10 +19,6 @@ import {
 import { encodeThinkingToken } from "./utils/thinkingBlocks";
 import { sdkMcpBridge } from "./sdkMcpBridge";
 import { executableOnPath } from "./utils/executable";
-
-function jsonText(value: unknown): string {
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
-}
 
 function mcpName(
   name: string,
@@ -242,7 +238,7 @@ export class ClaudeCodeClient {
                   type: "tool_result",
                   toolUseId: block.tool_use_id,
                   name: identity.name,
-                  content: jsonText(block.content),
+                  content: toolResultText(block.content) || "Completed",
                   isError: block.is_error === true,
                   serverTool: identity.serverTool,
                 }),
@@ -268,7 +264,9 @@ export class ClaudeCodeClient {
                 type: "tool_result",
                 toolUseId: block.tool_use_id,
                 name: identity.name,
-                content: jsonText(item.tool_use_result ?? block.content),
+                content:
+                  toolResultText(item.tool_use_result ?? block.content) ||
+                  "Completed",
                 isError: block.is_error === true,
                 serverTool: identity.serverTool,
               }),

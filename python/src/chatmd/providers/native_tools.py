@@ -5,19 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import deque
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from xml.sax.saxutils import escape, unescape
 
 from ..tools.system_tools import get_system_tool_definitions
-from ..types import McpToolDefinition, ToolCall
+from ..types import (
+    Content,
+    McpToolDefinition,
+    MessageParam,
+    ToolCall,
+    ToolResultContent,
+    ToolUseContent,
+)
 
 _VALID_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _INVALID_NAME_RE = re.compile(r"[^A-Za-z0-9_-]")
-_SERVER_RESULT_ID_RE = re.compile(
-    r"^\s*<cmd:tool_id>([^<]*)</cmd:tool_id>[ \t]*(?:\r?\n)?"
-)
+_SERVER_RESULT_ID_RE = re.compile(r"^\s*<cmd:tool_id>([^<]*)</cmd:tool_id>[ \t]*(?:\r?\n)?")
 
 
 @dataclass(frozen=True)
@@ -47,9 +53,7 @@ def build_native_tools(
     grouped_tools: Mapping[str, Mapping[str, McpToolDefinition]],
 ) -> list[NativeToolDefinition]:
     definitions = [*get_system_tool_definitions()]
-    definitions.extend(
-        tool for tools in grouped_tools.values() for tool in tools.values()
-    )
+    definitions.extend(tool for tools in grouped_tools.values() for tool in tools.values())
     return [
         NativeToolDefinition(
             api_name=native_tool_name(tool.name),
@@ -108,13 +112,8 @@ def openai_responses_tool_schemas(
     ]
 
 
-def render_tool_call_start(call_id: str, name: str) -> str:
-    return (
-        "\n<cmd:tool_call>\n"
-        f"<cmd:tool_id>{escape(call_id)}</cmd:tool_id>\n"
-        f"<cmd:tool_name>{escape(name)}</cmd:tool_name>\n"
-        "<cmd:arguments>"
-    )
+def render_tool_call_start(name: str) -> str:
+    return f"\n<cmd:tool_call>\n<cmd:tool_name>{escape(name)}</cmd:tool_name>\n<cmd:arguments>"
 
 
 def render_tool_arguments_delta(delta: str) -> str:
@@ -125,22 +124,83 @@ def render_tool_call_end() -> str:
     return "</cmd:arguments>\n</cmd:tool_call>"
 
 
-def render_tool_call(call_id: str, name: str, input_: Mapping[str, Any]) -> str:
+def render_tool_call(name: str, input_: Mapping[str, Any]) -> str:
     arguments = json.dumps(input_, separators=(",", ":"), ensure_ascii=False)
     return (
-        render_tool_call_start(call_id, name)
+        render_tool_call_start(name)
         + render_tool_arguments_delta(arguments)
         + render_tool_call_end()
     )
 
 
-def render_server_tool_result(call_id: str, result: str) -> str:
-    """Carry an SDK result's exact call association in its inert section."""
-    return f"<cmd:tool_id>{escape(call_id)}</cmd:tool_id>\n{result}"
+def render_server_tool_result(result: str) -> str:
+    return result
+
+
+def tool_result_text(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (tool_result_text(item) for item in value)))
+    if isinstance(value, dict):
+        for key in (
+            "output",
+            "aggregatedOutput",
+            "stdout",
+            "text",
+            "content",
+            "message",
+            "error",
+            "structuredContent",
+            "structured_content",
+        ):
+            if key not in value:
+                continue
+            text = tool_result_text(value[key])
+            if text:
+                return text
+        return ""
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return tool_result_text(dump(mode="json", by_alias=True, exclude_none=True))
+    return "" if value is None else str(value)
+
+
+def assign_deterministic_tool_ids(
+    messages: Sequence[MessageParam],
+) -> list[MessageParam]:
+    pending_ids: deque[str] = deque()
+    call_index = 0
+    orphan_result_index = 0
+    normalized: list[MessageParam] = []
+
+    for message in messages:
+        if message.role == "user" and not any(
+            isinstance(item, ToolResultContent) for item in message.content
+        ):
+            pending_ids.clear()
+        content: list[Content] = []
+        for item in message.content:
+            if isinstance(item, ToolUseContent):
+                call_id = f"chatmd_call_{call_index}"
+                call_index += 1
+                pending_ids.append(call_id)
+                content.append(replace(item, id=call_id))
+            elif isinstance(item, ToolResultContent):
+                if pending_ids:
+                    call_id = pending_ids.popleft()
+                else:
+                    call_id = f"chatmd_orphan_result_{orphan_result_index}"
+                    orphan_result_index += 1
+                content.append(replace(item, tool_use_id=call_id))
+            else:
+                content.append(item)
+        normalized.append(MessageParam(role=message.role, content=content))
+    return normalized
 
 
 def parse_server_tool_result(value: str) -> tuple[str | None, str]:
-    """Read an ID-bearing result, accepting the older ordinal-only form too."""
+    """Strip the legacy ID prefix while accepting current ID-free content."""
     matched = _SERVER_RESULT_ID_RE.match(value)
     if matched is None:
         return None, value

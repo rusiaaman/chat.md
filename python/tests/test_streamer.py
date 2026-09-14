@@ -194,10 +194,8 @@ async def test_managed_tool_activity_stays_in_one_stream_and_round_trips(
     assert result.tool_calls_written == 2
     assert "## %% server_tool\n" in text
     assert "## %% server_tool_results\n" in text
-    assert (
-        "# %% tool_execute\n<cmd:tool_id>mcp-1</cmd:tool_id>\n"
-        "<tool_result>\ncontents"
-    ) in text
+    assert "<cmd:tool_id>" not in text
+    assert ("# %% tool_execute\n<tool_result>\ncontents") in text
     assert "# %% assistant\nDone." in text
     assert text.rstrip().endswith("# %% user")
 
@@ -234,17 +232,14 @@ async def test_managed_large_tool_results_use_attachments_and_round_trip(
     mcp_result = json.dumps(
         {
             "text": "\n".join(
-                f"mcp line {number}"
-                for number in range(TOOL_RESULT_LINE_THRESHOLD + 1)
+                f"mcp line {number}" for number in range(TOOL_RESULT_LINE_THRESHOLD + 1)
             )
         }
     )
     client = ManagedClient(
         [
             ToolUseDelta("built-in", "command_execution", {"command": "pwd"}, True),
-            ToolResultDelta(
-                "built-in", "command_execution", server_result, False, True
-            ),
+            ToolResultDelta("built-in", "command_execution", server_result, False, True),
             ToolUseDelta("mcp-1", "files.read", {"path": "a.txt"}, False),
             ToolResultDelta("mcp-1", "files.read", mcp_result, False, False),
         ]
@@ -765,9 +760,7 @@ async def test_a_marker_on_its_own_line_in_a_later_batch_is_still_escaped(
 ) -> None:
     """The continuation rule applies to the first line only."""
     chat = make_chat(tmp_path / "a.chat.md")
-    client = FakeClient(
-        [TextDelta("intro: "), Pause(), TextDelta("still here\n# %% user\nbody\n")]
-    )
+    client = FakeClient([TextDelta("intro: "), Pause(), TextDelta("still here\n# %% user\nbody\n")])
 
     await streamer(chat, client).run(one_message(), "sys")
 

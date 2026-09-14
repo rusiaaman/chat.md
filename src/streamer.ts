@@ -7,7 +7,11 @@ import { OpenAIClient } from "./openaiClient";
 import { OpenAIResponsesClient } from "./openaiResponsesClient";
 import { ClaudeCodeClient } from "./claudeCodeClient";
 import { CodexSdkClient } from "./codexSdkClient";
-import { couldBecomeMarkerLine, escapeMarkers, unescapeMarkers } from "./utils/markerEscape";
+import {
+  couldBecomeMarkerLine,
+  escapeMarkers,
+  unescapeMarkers,
+} from "./utils/markerEscape";
 import {
   stripThinkingSections,
   decodeThinkingPayloadToken,
@@ -25,7 +29,10 @@ import {
   blockMarkerPrefix,
 } from "./parser";
 import { log, statusManager, requestStatusBarUpdate } from "./extension";
-import { generateToolCallingSystemPrompt, getAutoSaveAfterStreaming } from "./config";
+import {
+  generateToolCallingSystemPrompt,
+  getAutoSaveAfterStreaming,
+} from "./config";
 import { mcpClientManager } from "./mcpClientManager";
 import {
   buildNativeTools,
@@ -37,6 +44,7 @@ import {
 import { formatToolResult } from "./tools/toolExecutor";
 import {
   appendToChatHistory,
+  isDocumentOpenInTab,
   TOOL_RESULT_LINE_THRESHOLD,
   updateChatHistoryUsage,
   writeToolResultAttachment,
@@ -58,9 +66,10 @@ const TOOL_CALL_OPEN_TAG = CMD_TOOL_CALL_OPEN_TAG;
 const WAIT_TOOL_RESULT_TAG = CMD_WAIT_TOOL_RESULT_TAG;
 /** Any use of the qualified namespace, including a malformed one */
 const CMD_NAMESPACE_PREFIX = "\u003ccmd:";
-const CMD_TOOL_NAME_TAGS = "\u003ccmd:tool_name\u003e...\u003c/cmd:tool_name\u003e";
+const CMD_TOOL_NAME_TAGS =
+  "\u003ccmd:tool_name\u003e...\u003c/cmd:tool_name\u003e";
 const CMD_PARAM_TAGS =
-  "\u003ccmd:param name=\"...\"\u003e...\u003c/cmd:param\u003e";
+  '\u003ccmd:param name="..."\u003e...\u003c/cmd:param\u003e';
 
 /**
  * Service for streaming LLM responses
@@ -74,6 +83,7 @@ export class StreamingService {
   private readonly openaiApiKey?: string;
   private readonly openaiBaseUrl?: string;
   private readonly provider: string;
+  private requestController?: AbortController;
 
   constructor(
     apiKey: string,
@@ -98,7 +108,11 @@ export class StreamingService {
         resolvedProvider = getProvider();
       }
       this.provider = resolvedProvider;
-      log(`Using LLM provider: ${this.provider} (configOverride: ${this.configNameOverride || 'none'})`);
+      log(
+        `Using LLM provider: ${this.provider} (configOverride: ${
+          this.configNameOverride || "none"
+        })`,
+      );
 
       // Decide base URL (use per-file override or file-specific config)
       let baseUrl = baseUrlOverride;
@@ -141,7 +155,9 @@ export class StreamingService {
     } catch (error) {
       log(`Error initializing streaming service: ${error}`);
       throw new Error(
-        `Could not initialize streaming service: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not initialize streaming service: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
       );
     }
   }
@@ -150,14 +166,14 @@ export class StreamingService {
    * Creates a batching wrapper around a stream that collects tokens for a specified interval
    * before emitting them as batches
    */
-  private async* createBatchingWrapper(
+  private async *createBatchingWrapper(
     stream: AsyncIterable<string[]>,
-    batchIntervalMs: number = 100
+    batchIntervalMs: number = 100,
   ): AsyncGenerator<string[], void, unknown> {
     const tokenBatch: string[] = [];
     let batchTimer: NodeJS.Timeout | null = null;
     let isTimerActive = false;
-    
+
     // Queue to store batches ready for emission
     const batchQueue: string[][] = [];
     let streamEnded = false;
@@ -173,11 +189,11 @@ export class StreamingService {
 
     const startBatchTimer = () => {
       if (isTimerActive) return;
-      
+
       isTimerActive = true;
       const timerTick = () => {
         emitCurrentBatch();
-        
+
         if (!streamEnded) {
           batchTimer = setTimeout(timerTick, batchIntervalMs);
         } else {
@@ -185,7 +201,7 @@ export class StreamingService {
           batchTimer = null;
         }
       };
-      
+
       batchTimer = setTimeout(timerTick, batchIntervalMs);
     };
 
@@ -208,7 +224,7 @@ export class StreamingService {
           if (tokens && tokens.length > 0) {
             log(`Batching: received ${tokens.length} tokens`);
             tokenBatch.push(...tokens);
-            
+
             // Start timer on first tokens
             if (!isTimerActive) {
               startBatchTimer();
@@ -220,16 +236,16 @@ export class StreamingService {
         // Store the error to be re-thrown after yielding remaining batches
         streamError = error instanceof Error ? error : new Error(String(error));
       } finally {
-        log('Batching: stream ended');
+        log("Batching: stream ended");
         streamEnded = true;
-        
+
         // Clear timer and emit final batch
         if (batchTimer) {
           clearTimeout(batchTimer);
           batchTimer = null;
         }
         isTimerActive = false;
-        
+
         // Emit any remaining tokens
         emitCurrentBatch();
       }
@@ -248,7 +264,7 @@ export class StreamingService {
           yield batch;
           continue;
         }
-        
+
         // If stream ended and we have remaining tokens, emit them
         if (streamEnded && tokenBatch.length > 0) {
           log(`Batching: yielding final ${tokenBatch.length} tokens`);
@@ -257,21 +273,22 @@ export class StreamingService {
           yield finalBatch;
           continue;
         }
-        
+
         // Wait a bit for more tokens or timer to fire
-        await new Promise(resolve => setTimeout(resolve, 10));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      
-      log('Batching: all batches emitted, wrapper complete');
-      
+
+      log("Batching: all batches emitted, wrapper complete");
+
       // After all batches are emitted, re-throw any error that occurred during stream processing
       // This ensures max_tokens errors and other important errors are propagated to the caller
       if (streamError) {
         const errorMessage = String(streamError);
-        log(`Batching: re-throwing stream error after all batches emitted: ${errorMessage}`);
+        log(
+          `Batching: re-throwing stream error after all batches emitted: ${errorMessage}`,
+        );
         throw streamError;
       }
-
     } finally {
       // Cleanup
       consumerDone = true;
@@ -293,8 +310,8 @@ export class StreamingService {
 
       // Wait for stream processing to complete
       await streamPromise;
-      
-      log('Batching: cleanup complete');
+
+      log("Batching: cleanup complete");
     }
   }
 
@@ -308,15 +325,31 @@ export class StreamingService {
       // Set to inactive regardless of current state to ensure cancellation works
       // during retries, waiting periods, or normal streaming
       streamer.isActive = false;
+      this.requestController?.abort();
       this.claudeCodeClient?.cancel();
       this.codexSdkClient?.cancel();
-      
+
       // Immediately hide streaming status
       requestStatusBarUpdate(this.document.uri.fsPath, "streaming cancelled");
-      
-      // Notify user that cancellation request was processed
-      vscode.window.showInformationMessage("Streaming cancellation initiated");
     }
+  }
+
+  private abortIfDocumentClosed(streamer: StreamerState): boolean {
+    if (isDocumentOpenInTab(this.document)) return false;
+    if (streamer.isActive) {
+      log(
+        `Aborting stream because the document tab was closed: ${this.document.uri.fsPath}`,
+      );
+      streamer.isActive = false;
+      this.requestController?.abort();
+      this.claudeCodeClient?.cancel();
+      this.codexSdkClient?.cancel();
+      requestStatusBarUpdate(
+        this.document.uri.fsPath,
+        "streaming aborted because document tab closed",
+      );
+    }
+    return true;
   }
 
   /**
@@ -420,6 +453,7 @@ export class StreamingService {
     };
 
     for (const token of tokens) {
+      if (this.abortIfDocumentClosed(streamer)) return false;
       if (!isAgentToolEvent(token)) {
         ordinary.push(token);
         continue;
@@ -429,25 +463,34 @@ export class StreamingService {
       if (!event) continue;
 
       if (event.type === "tool_use") {
-        const call = renderToolCall(event.id, event.name, event.input);
+        const call = renderToolCall(event.name, event.input);
         if (event.serverTool) {
-          const prefix = streamer.tokens.join("").endsWith("\n")
-            || streamer.tokens.length === 0 ? "" : "\n";
-          const section = `${prefix}## %% server_tool\n${call.replace(/^\n/, "")}`;
-          if (!(await this.updateDocumentWithTokens(streamer, [section]))) return false;
+          const prefix =
+            streamer.tokens.join("").endsWith("\n") ||
+            streamer.tokens.length === 0
+              ? ""
+              : "\n";
+          const section = `${prefix}## %% server_tool\n${call.replace(
+            /^\n/,
+            "",
+          )}`;
+          if (!(await this.updateDocumentWithTokens(streamer, [section])))
+            return false;
           streamer.sawThinking = true;
           streamer.thinkingOpen = false;
           streamer.textOpen = false;
         } else {
           const rendered = this.renderTokens(streamer, [call]);
-          if (!(await this.updateDocumentWithTokens(streamer, rendered))) return false;
+          if (!(await this.updateDocumentWithTokens(streamer, rendered)))
+            return false;
         }
         continue;
       }
 
-      const body = event.isError && !event.content.trimStart().startsWith("Error:")
-        ? `Error: ${event.content}`
-        : event.content;
+      const body =
+        event.isError && !event.content.trimStart().startsWith("Error:")
+          ? `Error: ${event.content}`
+          : event.content;
       const normalizedBody = body.trim();
       let bodyToRender = normalizedBody;
       const logicalLineCount =
@@ -467,28 +510,32 @@ export class StreamingService {
       }
       const wrapped = formatToolResult(escapeMarkers(bodyToRender));
       if (event.serverTool) {
-        const prefix = streamer.tokens.join("").endsWith("\n")
-          || streamer.tokens.length === 0 ? "" : "\n";
+        const prefix =
+          streamer.tokens.join("").endsWith("\n") ||
+          streamer.tokens.length === 0
+            ? ""
+            : "\n";
         const section = `${prefix}## %% server_tool_results\n${renderServerToolResult(
-          event.toolUseId,
           wrapped,
         )}`;
-        if (!(await this.updateDocumentWithTokens(streamer, [section]))) return false;
+        if (!(await this.updateDocumentWithTokens(streamer, [section])))
+          return false;
         streamer.sawThinking = true;
         streamer.thinkingOpen = false;
         streamer.textOpen = false;
       } else {
         const text = this.document.getText();
         const anchor = streamer.streamAnchor;
-        const offset = anchor === undefined
-          ? text.length
-          : anchor + streamer.tokens.join("").length;
+        const offset =
+          anchor === undefined
+            ? text.length
+            : anchor + streamer.tokens.join("").length;
         const prefix = blockMarkerPrefix(text.substring(0, offset));
         const structure = `${prefix}# %% tool_execute\n${renderServerToolResult(
-          event.toolUseId,
           wrapped,
         )}\n\n# %% assistant\n`;
-        if (!(await this.updateDocumentWithTokens(streamer, [structure]))) return false;
+        if (!(await this.updateDocumentWithTokens(streamer, [structure])))
+          return false;
         streamer.sawThinking = false;
         streamer.thinkingOpen = false;
         streamer.textOpen = false;
@@ -606,10 +653,7 @@ export class StreamingService {
    * escaped exactly once - escaping before withholding would escape it again on
    * the way back in.
    */
-  private withPendingText(
-    streamer: StreamerState,
-    tokens: string[],
-  ): string[] {
+  private withPendingText(streamer: StreamerState, tokens: string[]): string[] {
     const pending = streamer.pendingText ?? "";
     if (!pending) {
       return tokens;
@@ -629,7 +673,8 @@ export class StreamingService {
   private coalesceTokens(tokens: string[]): string[] {
     const merged: string[] = [];
     for (const token of tokens) {
-      const previous = merged.length > 0 ? merged[merged.length - 1] : undefined;
+      const previous =
+        merged.length > 0 ? merged[merged.length - 1] : undefined;
       if (previous === undefined || isThinkingPayloadToken(token)) {
         merged.push(token);
         continue;
@@ -771,7 +816,10 @@ export class StreamingService {
         // A model that forgot the marker still gets its batch executed: prose after
         // the last tool call ends the turn just as the marker would.
         log(
-          `Buffered content is neither another tool call nor the end-of-batch marker, interrupting stream and discarding buffer: "${buffer.substring(0, 80)}${buffer.length > 80 ? "..." : ""}"`,
+          `Buffered content is neither another tool call nor the end-of-batch marker, interrupting stream and discarding buffer: "${buffer.substring(
+            0,
+            80,
+          )}${buffer.length > 80 ? "..." : ""}"`,
         );
         return {
           remainingBuffer: "",
@@ -823,6 +871,7 @@ export class StreamingService {
   private async insertToolExecuteBlockAfterToolCalls(
     streamer: StreamerState,
   ): Promise<void> {
+    if (this.abortIfDocumentClosed(streamer)) return;
     const text = this.document.getText();
     const blockStart = this.findBlockStartPosition(text, streamer);
 
@@ -857,11 +906,14 @@ export class StreamingService {
 
     const edit = new vscode.WorkspaceEdit();
     edit.insert(this.document.uri, insertPosition, textToInsert);
+    if (this.abortIfDocumentClosed(streamer)) return;
     const applied = await vscode.workspace.applyEdit(edit);
 
     if (applied) {
       log(
-        `Successfully inserted ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+        `Successfully inserted ${
+          openingFenceMatch ? "closing fence and " : ""
+        }tool_execute block`,
       );
 
       // The tool_execute block has been added, but the status must stay visible
@@ -885,6 +937,8 @@ export class StreamingService {
 
           // Brief delay to ensure the insertion is processed by VS Code
           await new Promise((resolve) => setTimeout(resolve, 100));
+
+          if (this.abortIfDocumentClosed(streamer)) return;
 
           const saved = await this.document.save();
 
@@ -910,7 +964,9 @@ export class StreamingService {
       }
     } else {
       log(
-        `Failed to insert ${openingFenceMatch ? "closing fence and " : ""}tool_execute block`,
+        `Failed to insert ${
+          openingFenceMatch ? "closing fence and " : ""
+        }tool_execute block`,
       );
       // Since adding the tool_execute block failed, hide the status
       requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished");
@@ -962,8 +1018,11 @@ export class StreamingService {
     systemPrompt: string, // Added systemPrompt parameter
     currentRetryAttempt: number = 0, // Add parameter to track retry attempts across recursive calls
     maxTokenRetryAttempt: number = 0, // Add parameter to track max token retries
-    fileConfig?: Record<string, any> // Add optional file configuration parameter
+    fileConfig?: Record<string, any>, // Add optional file configuration parameter
   ): Promise<void> {
+    if (this.abortIfDocumentClosed(streamer)) return;
+    const requestController = new AbortController();
+    this.requestController = requestController;
     // Flag to track if we need to restart due to max tokens
     let maxTokensReached = false;
     // Track retry attempts for server errors - initialize from passed parameter
@@ -972,7 +1031,7 @@ export class StreamingService {
     let tokenRetryAttempt = maxTokenRetryAttempt;
     const maxRetries = 5;
     const maxTokenRetries = 10; // Maximum number of retries for max token errors
-    
+
     // Capture the success state early to avoid race conditions with isActive flag
     let streamCompletedSuccessfully = false;
     let shouldAutoSaveOnCompletion = false;
@@ -993,29 +1052,38 @@ export class StreamingService {
       );
 
       // Start streaming with retry logic for server errors
-      while (retryAttempt < maxRetries) {  // Changed <= to < to enforce max retry limit correctly
+      while (retryAttempt < maxRetries) {
+        // Changed <= to < to enforce max retry limit correctly
         try {
           log(
-            `Starting to stream response for ${messages.length} messages${retryAttempt > 0 ? ` (retry ${retryAttempt})` : ""}`,
+            `Starting to stream response for ${messages.length} messages${
+              retryAttempt > 0 ? ` (retry ${retryAttempt})` : ""
+            }`,
           );
           // Invariant 4: On any streamer status update the status bar refresh is triggered
           requestStatusBarUpdate(this.document.uri.fsPath, "streaming started");
 
           // Resolve model name (allow per-file override)
           const { getModelName, getModelNameForConfig } = require("./config");
-          const modelNameOverride: string | undefined = this.configNameOverride ? getModelNameForConfig(this.configNameOverride) : undefined;
-          const nativeTools = buildNativeTools(mcpClientManager.getGroupedTools());
+          const modelNameOverride: string | undefined = this.configNameOverride
+            ? getModelNameForConfig(this.configNameOverride)
+            : undefined;
+          const nativeTools = buildNativeTools(
+            mcpClientManager.getGroupedTools(),
+          );
 
           // Use the provided system prompt
           log(`Using provided system prompt (${systemPrompt.length} chars)`);
 
           // Start streaming completion based on provider, passing document for file path resolution
           let stream;
-          const managesTools = this.provider === "claude-code" || this.provider === "codex";
+          const managesTools =
+            this.provider === "claude-code" || this.provider === "codex";
           if (this.provider === "anthropic" && this.anthropicClient) {
             stream = await this.anthropicClient.streamCompletion(
               messages,
               nativeTools,
+              requestController.signal,
               this.document,
               systemPrompt,
               modelNameOverride,
@@ -1052,6 +1120,7 @@ export class StreamingService {
               stream = await this.openaiResponsesClient.streamCompletion(
                 messages,
                 nativeTools,
+                requestController.signal,
                 this.document,
                 systemPrompt,
                 modelNameOverride,
@@ -1062,6 +1131,7 @@ export class StreamingService {
               stream = await this.openaiClient.streamCompletion(
                 messages,
                 nativeTools,
+                requestController.signal,
                 this.document,
                 systemPrompt,
                 modelNameOverride,
@@ -1095,6 +1165,10 @@ export class StreamingService {
 
           log("Stream connection established");
 
+          if (this.abortIfDocumentClosed(streamer)) {
+            break;
+          }
+
           // Debug the document state before streaming
           const currentText = this.document.getText();
           log(`Current document text length: ${currentText.length} chars`);
@@ -1115,7 +1189,9 @@ export class StreamingService {
                   .join(" ")
               : "No user message";
           log(
-            `Streaming response to: "${lastUserMessage.substring(0, 50)}${lastUserMessage.length > 50 ? "..." : ""}"`,
+            `Streaming response to: "${lastUserMessage.substring(0, 50)}${
+              lastUserMessage.length > 50 ? "..." : ""
+            }"`,
           );
 
           let tokenCount = 0;
@@ -1140,6 +1216,10 @@ export class StreamingService {
           const batchingStream = this.createBatchingWrapper(stream, 100); // 100ms batching interval
 
           for await (const tokens of batchingStream) {
+            if (this.abortIfDocumentClosed(streamer)) {
+              cancelledExternally = true;
+              break;
+            }
             // Check streamer status at the beginning of each token processing
             if (!streamer.isActive) {
               log("Streamer no longer active, stopping stream immediately");
@@ -1152,19 +1232,29 @@ export class StreamingService {
               log(
                 tokens.some(isAgentToolEvent)
                   ? `Received batched ${tokens.length} tokens including SDK tool activity`
-                  : `Received batched ${tokens.length} tokens: "${tokens.join("")}"`,
+                  : `Received batched ${tokens.length} tokens: "${tokens.join(
+                      "",
+                    )}"`,
               );
 
               // Log received tokens to the chat history file if available
               if (streamer.historyFilePath) {
-                const visibleTokens = tokens.filter((token) => !isAgentToolEvent(token));
+                const visibleTokens = tokens.filter(
+                  (token) => !isAgentToolEvent(token),
+                );
                 if (visibleTokens.length > 0) {
-                  appendToChatHistory(streamer.historyFilePath, visibleTokens.join(""));
+                  appendToChatHistory(
+                    streamer.historyFilePath,
+                    visibleTokens.join(""),
+                  );
                 }
               }
 
               if (managesTools) {
-                updateFailed = !(await this.updateManagedTokens(streamer, tokens));
+                updateFailed = !(await this.updateManagedTokens(
+                  streamer,
+                  tokens,
+                ));
                 if (updateFailed) break;
                 continue;
               }
@@ -1177,7 +1267,9 @@ export class StreamingService {
                     !isThinkingToken(token) && !isThinkingPayloadToken(token),
                 );
                 if (textTokens.length !== tokens.length) {
-                  log("Ignoring thinking tokens received while buffering tool calls");
+                  log(
+                    "Ignoring thinking tokens received while buffering tool calls",
+                  );
                 }
                 if (textTokens.length === 0) {
                   continue;
@@ -1216,7 +1308,10 @@ export class StreamingService {
               // is bounded below by scanOffset (start of the text section) and above
               // by textSectionEnd (set when a thinking section opened after it, and
               // null while the text section is still open).
-              const currentTokens = [...streamer.tokens, ...renderedTokens].join("");
+              const currentTokens = [
+                ...streamer.tokens,
+                ...renderedTokens,
+              ].join("");
               const scanStart = streamer.scanOffset ?? 0;
               const scanEnd = streamer.textSectionEnd ?? currentTokens.length;
               const toolCallResult =
@@ -1232,23 +1327,31 @@ export class StreamingService {
                   "Detected completed tool call, entering buffering mode at position " +
                     toolCallResult.endIndex,
                 );
-                
+
                 // Set flag to indicate we're handling a tool call
-                log(`Setting isHandlingToolCall flag to true for streamer at index ${streamer.messageIndex}`);
+                log(
+                  `Setting isHandlingToolCall flag to true for streamer at index ${streamer.messageIndex}`,
+                );
                 streamer.isHandlingToolCall = true;
 
                 try {
                   // Get the end index of the completed tool call (absolute, since
                   // detection ran on the current text section only)
                   const endIndex = scanStart + toolCallResult.endIndex;
-                  const toolName = 'toolName' in toolCallResult ? toolCallResult.toolName : '';
-                  
+                  const toolName =
+                    "toolName" in toolCallResult ? toolCallResult.toolName : "";
+
                   // Always show the status bar when a tool call is detected
-                  requestStatusBarUpdate(this.document.uri.fsPath, "tool execution detected");
-                  log(`Showing 'executing tool' status for detected tool "${toolName}"`);
-                  
+                  requestStatusBarUpdate(
+                    this.document.uri.fsPath,
+                    "tool execution detected",
+                  );
+                  log(
+                    `Showing 'executing tool' status for detected tool "${toolName}"`,
+                  );
+
                   // All tools are always auto-executed since the feature to disable auto-execution has been removed
-                  const isAutoExecuteDisabled = false; 
+                  const isAutoExecuteDisabled = false;
                   log(`Auto-execute is always enabled for all tools`);
 
                   // Truncate existing tokens if needed
@@ -1299,8 +1402,11 @@ export class StreamingService {
                   // Keep the buffer in model-text form, including any partial
                   // marker withheld before rendering this batch. Later batches
                   // arrive raw; complete buffered calls are escaped on write.
-                  bufferText = unescapeMarkers(currentTokens.substring(endIndex))
-                    + (streamer.pendingIsThinking ? "" : (streamer.pendingText ?? ""));
+                  bufferText =
+                    unescapeMarkers(currentTokens.substring(endIndex)) +
+                    (streamer.pendingIsThinking
+                      ? ""
+                      : streamer.pendingText ?? "");
                   streamer.pendingText = "";
                   streamer.pendingIsThinking = false;
                   log(
@@ -1401,9 +1507,18 @@ export class StreamingService {
             }
           }
 
-          updateChatHistoryUsage(streamer.historyFilePath || "", this.getLastUsage());
+          if (!this.abortIfDocumentClosed(streamer)) {
+            updateChatHistoryUsage(
+              streamer.historyFilePath || "",
+              this.getLastUsage(),
+            );
+          }
           log(
-            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${this.provider}${bufferingMode ? " (buffered tool calls)" : ""}${endedOnWaitMarker ? ", ended on end-of-batch marker" : ""}`,
+            `Stream completed successfully, processed ${tokenCount} tokens total, provider: ${
+              this.provider
+            }${bufferingMode ? " (buffered tool calls)" : ""}${
+              endedOnWaitMarker ? ", ended on end-of-batch marker" : ""
+            }`,
           );
 
           // Parallel tool calls: a single tool_execute block is added after the whole
@@ -1454,15 +1569,18 @@ export class StreamingService {
             await this.appendMalformedToolCorrection(streamer);
             correctionInserted = true;
           }
-          
+
           // Capture success state immediately to avoid race conditions
           streamCompletedSuccessfully = true;
-          shouldAutoSaveOnCompletion = getAutoSaveAfterStreaming() && 
-                                      streamer.tokens.length > 0 && 
-                                      streamer.isActive && 
-                                      !streamer.isHandlingToolCall;
-          
-          log(`Auto-save decision captured: ${shouldAutoSaveOnCompletion} (tokens: ${streamer.tokens.length}, active: ${streamer.isActive}, toolCall: ${streamer.isHandlingToolCall})`);
+          shouldAutoSaveOnCompletion =
+            getAutoSaveAfterStreaming() &&
+            streamer.tokens.length > 0 &&
+            streamer.isActive &&
+            !streamer.isHandlingToolCall;
+
+          log(
+            `Auto-save decision captured: ${shouldAutoSaveOnCompletion} (tokens: ${streamer.tokens.length}, active: ${streamer.isActive}, toolCall: ${streamer.isHandlingToolCall})`,
+          );
 
           // Log information about completed stream
           if (tokenCount < 100) {
@@ -1473,31 +1591,38 @@ export class StreamingService {
           if (this.isServerError(error)) {
             // Increment retry attempt before checking limits
             retryAttempt++;
-            log(`Server error encountered, incrementing retry attempt to ${retryAttempt} of ${maxRetries} max`);
-            
+            log(
+              `Server error encountered, incrementing retry attempt to ${retryAttempt} of ${maxRetries} max`,
+            );
+
             if (retryAttempt < maxRetries && streamer.isActive) {
               const backoffDelay = Math.min(
                 1000 * Math.pow(2, retryAttempt),
                 32000,
               );
-              
+
               // Determine if this is a rate limit error
-              const isRateLimit = error instanceof Error && 
-                (error.message.includes("429") || 
-                 error.message.includes("Too Many Requests") || 
-                 error.message.includes("rate limit"));
-              
+              const isRateLimit =
+                error instanceof Error &&
+                (error.message.includes("429") ||
+                  error.message.includes("Too Many Requests") ||
+                  error.message.includes("rate limit"));
+
               // Log with appropriate error type
               log(
-                `${isRateLimit ? "Rate limit" : "Server"} error: ${error}. Retrying in ${backoffDelay}ms (attempt ${retryAttempt}/${maxRetries})`,
+                `${
+                  isRateLimit ? "Rate limit" : "Server"
+                } error: ${error}. Retrying in ${backoffDelay}ms (attempt ${retryAttempt}/${maxRetries})`,
               );
-              
+
               // Show different messages based on error type
-              const message = `${isRateLimit ? "Rate limit reached" : "Server error"}. Retrying in ${backoffDelay / 1000} seconds...`;
+              const message = `${
+                isRateLimit ? "Rate limit reached" : "Server error"
+              }. Retrying in ${backoffDelay / 1000} seconds...`;
               vscode.window.showInformationMessage(
                 message + " (Click 'Cancel Streaming' to abort)",
               );
-              
+
               // Simpler implementation for backoff with better cancellation handling
               let isCancelled = false;
               const checkIntervalId = setInterval(() => {
@@ -1505,36 +1630,48 @@ export class StreamingService {
                   isCancelled = true;
                 }
               }, 100);
-              
+
               try {
-                log(`Starting backoff wait for ${backoffDelay}ms at ${new Date().toISOString()}`);
+                log(
+                  `Starting backoff wait for ${backoffDelay}ms at ${new Date().toISOString()}`,
+                );
                 // Wait for the backoff delay, but allow for early cancellation
                 const startTime = Date.now();
-                while (!isCancelled && (Date.now() - startTime) < backoffDelay) {
+                while (!isCancelled && Date.now() - startTime < backoffDelay) {
                   // Wait in small chunks to allow for more responsive cancellation
-                  await new Promise(resolve => setTimeout(resolve, 100));
+                  await new Promise((resolve) => setTimeout(resolve, 100));
                 }
-                log(`Completed backoff wait at ${new Date().toISOString()}, waited for ${Date.now() - startTime}ms, cancelled=${isCancelled}`);
+                log(
+                  `Completed backoff wait at ${new Date().toISOString()}, waited for ${
+                    Date.now() - startTime
+                  }ms, cancelled=${isCancelled}`,
+                );
               } finally {
                 // Always clean up the interval
                 clearInterval(checkIntervalId);
               }
-              
+
               // Check if streaming was cancelled during the timeout
               if (!streamer.isActive) {
-                log("Streaming was cancelled during retry backoff, aborting retry attempts");
+                log(
+                  "Streaming was cancelled during retry backoff, aborting retry attempts",
+                );
                 break; // Exit the retry loop
               }
-              
-              log(`Retry attempt ${retryAttempt} of ${maxRetries} starting now after ${backoffDelay}ms backoff`);
+
+              log(
+                `Retry attempt ${retryAttempt} of ${maxRetries} starting now after ${backoffDelay}ms backoff`,
+              );
               continue; // Try again with backoff
             } else {
               // Handle max retries reached or streamer no longer active
               if (retryAttempt >= maxRetries) {
                 // We've reached or exceeded the maximum number of retries
-                log(`Maximum retry attempts (${maxRetries}) reached, giving up`);
+                log(
+                  `Maximum retry attempts (${maxRetries}) reached, giving up`,
+                );
                 vscode.window.showErrorMessage(
-                  `Reached maximum retry attempts (${maxRetries}). Unable to connect to LLM service.`
+                  `Reached maximum retry attempts (${maxRetries}). Unable to connect to LLM service.`,
                 );
               } else {
                 log("Streaming is no longer active, aborting retry attempts");
@@ -1547,20 +1684,20 @@ export class StreamingService {
           if (this.isMaxTokensError(error) && streamer.isActive) {
             // Increment the token retry counter
             tokenRetryAttempt++;
-            
+
             // Check if we've reached the maximum token retries
             if (tokenRetryAttempt >= maxTokenRetries) {
               log(
                 `🛑 Max token retry limit (${maxTokenRetries}) reached. Stopping stream.`,
               );
               vscode.window.showErrorMessage(
-                `Maximum token retry limit (${maxTokenRetries}) reached. Unable to complete response.`
+                `Maximum token retry limit (${maxTokenRetries}) reached. Unable to complete response.`,
               );
               maxTokensReached = false; // Report this one to the user
               streamer.isActive = false;
               break;
             }
-            
+
             maxTokensReached = true;
             log(
               `🚨 Max tokens reached: ${error}. Will restart stream automatically (token retry ${tokenRetryAttempt}/${maxTokenRetries}).`,
@@ -1575,10 +1712,12 @@ export class StreamingService {
             vscode.window.showInformationMessage(
               `Maximum token limit reached. Restarting stream automatically (retry ${tokenRetryAttempt}/${maxTokenRetries})... (Click 'Cancel Streaming' to abort)`,
             );
-            
+
             // Check if streaming was cancelled while showing the notification
             if (!streamer.isActive) {
-              log("Streaming was cancelled before max tokens restart, aborting");
+              log(
+                "Streaming was cancelled before max tokens restart, aborting",
+              );
               break; // Exit the retry loop
             }
 
@@ -1589,7 +1728,10 @@ export class StreamingService {
             if (streamer.tokens.length > 0) {
               const partialResponse = streamer.tokens.join("");
               log(
-                `Adding partial assistant response to context: ${partialResponse.substring(0, 100)}${partialResponse.length > 100 ? "..." : ""}`,
+                `Adding partial assistant response to context: ${partialResponse.substring(
+                  0,
+                  100,
+                )}${partialResponse.length > 100 ? "..." : ""}`,
               );
 
               // Parse the partial response so thinking sections become thinking
@@ -1642,18 +1784,22 @@ export class StreamingService {
                   systemPrompt,
                   retryAttempt, // Pass the current retry count to maintain it across calls
                   tokenRetryAttempt, // Pass the token retry count
-                  fileConfig // Pass the file configuration
+                  fileConfig, // Pass the file configuration
                 );
                 // The nested call owns the streamer now and has already run the
                 // finally below on its own way out.
                 handedOffToRestart = true;
                 return;
               } catch (retryError) {
-                log(`❌ Error restarting stream after max tokens: ${retryError}`);
+                log(
+                  `❌ Error restarting stream after max tokens: ${retryError}`,
+                );
                 // Fall through to general error handling
               }
             } else {
-              log("Streaming cancelled during token handling, aborting restart");
+              log(
+                "Streaming cancelled during token handling, aborting restart",
+              );
             }
           }
 
@@ -1673,7 +1819,9 @@ export class StreamingService {
       const message = error instanceof Error ? error.message : String(error);
 
       // Don't log or show errors if this was due to max tokens (we already handled that)
-      if (!maxTokensReached && !this.isMaxTokensError(error)) {
+      if (!streamer.isActive) {
+        log(`Streaming request aborted: ${message}`);
+      } else if (!maxTokensReached && !this.isMaxTokensError(error)) {
         log(`Streaming error: ${message}`);
         console.error("Streaming error:", error);
         vscode.window.showErrorMessage(`chat.md streaming error: ${message}`);
@@ -1683,15 +1831,20 @@ export class StreamingService {
         maxTokensReached = true; // Ensure we mark this for proper handling
       }
     } finally {
+      if (this.requestController === requestController) {
+        this.requestController = undefined;
+      }
       // Cleanup belongs to whoever finishes the turn. Only a nested restart that
       // actually returned has already done it; every other exit -- normal
       // completion, a server error, a max tokens restart that itself threw --
       // lands here and must release the streamer.
       if (!handedOffToRestart) {
         log(
-          `Streaming finished (${maxTokensReached ? "after a max tokens error" : "normal completion"}), marking streamer as inactive`,
+          `Streaming finished (${
+            maxTokensReached ? "after a max tokens error" : "normal completion"
+          }), marking streamer as inactive`,
         );
-        
+
         // Add a new user block after the assistant response completes successfully
         // But only if tokens were successfully added to document (check tokens length and streamer state)
         let userBlockAdded = false;
@@ -1701,62 +1854,98 @@ export class StreamingService {
           // 2. Tokens were actually written successfully to the document (non-zero tokens)
           // 3. The streamer wasn't cancelled or failed due to other errors
           if (correctionInserted) {
-            log('Not adding user block since a tool call correction turn was appended');
+            log(
+              "Not adding user block since a tool call correction turn was appended",
+            );
             userBlockAdded = true;
-          } else if (!streamer.isHandlingToolCall && streamer.tokens.length > 0 && streamer.isActive) {
-            log('Adding new user block after completed assistant response');
+          } else if (
+            !streamer.isHandlingToolCall &&
+            streamer.tokens.length > 0 &&
+            streamer.isActive
+          ) {
+            log("Adding new user block after completed assistant response");
             await this.appendNewUserBlock(streamer);
             userBlockAdded = true;
           } else if (streamer.isHandlingToolCall) {
-            log('Not adding user block since streaming completed due to tool call');
+            log(
+              "Not adding user block since streaming completed due to tool call",
+            );
           } else if (streamer.tokens.length === 0) {
-            log('Not adding user block since no tokens were written to document');
+            log(
+              "Not adding user block since no tokens were written to document",
+            );
           } else if (!streamer.isActive) {
-            log('Not adding user block since streaming was cancelled or failed');
+            log(
+              "Not adding user block since streaming was cancelled or failed",
+            );
           }
         } catch (error) {
           log(`Error adding new user block: ${error}`);
         }
-        
+
         // Auto-save AFTER user block is added (correct order)
         try {
-          if (shouldAutoSaveOnCompletion) {
-            log(`Auto-saving document after user block added (userBlockAdded: ${userBlockAdded})`);
-            
+          if (
+            shouldAutoSaveOnCompletion &&
+            !this.abortIfDocumentClosed(streamer)
+          ) {
+            log(
+              `Auto-saving document after user block added (userBlockAdded: ${userBlockAdded})`,
+            );
+
             // Brief delay to ensure user block addition is processed by VS Code
-            await new Promise(resolve => setTimeout(resolve, 100));
-            
-            log(`Document state before save: isDirty=${this.document.isDirty}, version=${this.document.version}`);
-            
-            const saved = await this.document.save();
-            
-            log(`Auto-save result: ${saved}, final isDirty=${this.document.isDirty}`);
-            
-            if (saved && !this.document.isDirty) {
-              log("Document auto-saved successfully");
-            } else if (saved && this.document.isDirty) {
-              log("Document save returned true but document is still dirty - this may indicate a problem");
+            await new Promise((resolve) => setTimeout(resolve, 100));
+
+            if (this.abortIfDocumentClosed(streamer)) {
+              log("Skipped auto-save because the document tab was closed");
             } else {
-              log("Document auto-save failed - save() returned false");
+              log(
+                `Document state before save: isDirty=${this.document.isDirty}, version=${this.document.version}`,
+              );
+
+              const saved = await this.document.save();
+
+              log(
+                `Auto-save result: ${saved}, final isDirty=${this.document.isDirty}`,
+              );
+
+              if (saved && !this.document.isDirty) {
+                log("Document auto-saved successfully");
+              } else if (saved && this.document.isDirty) {
+                log(
+                  "Document save returned true but document is still dirty - this may indicate a problem",
+                );
+              } else {
+                log("Document auto-save failed - save() returned false");
+              }
             }
           } else if (streamCompletedSuccessfully) {
-            log("Stream completed successfully but auto-save was not needed (captured at completion time)");
+            log(
+              "Stream completed successfully but auto-save was not needed (captured at completion time)",
+            );
           } else {
-            log("Auto-save skipped - stream did not complete successfully or conditions not met");
+            log(
+              "Auto-save skipped - stream did not complete successfully or conditions not met",
+            );
           }
         } catch (error) {
           log(`Error during auto-save: ${error}`);
           // Don't show error to user as auto-save is a convenience feature
         }
-        
+
         streamer.isActive = false;
-        
+
         // Only hide streaming status if we're NOT handling a tool call
         if (!streamer.isHandlingToolCall) {
           log(`Streaming completed normally, restoring status to idle`);
-          requestStatusBarUpdate(this.document.uri.fsPath, "streaming finished with error");
+          requestStatusBarUpdate(
+            this.document.uri.fsPath,
+            "streaming finished with error",
+          );
         } else {
-          log(`Streaming completed due to tool call detection, keeping 'executing tool' status visible`);
+          log(
+            `Streaming completed due to tool call detection, keeping 'executing tool' status visible`,
+          );
         }
       } else {
         log(
@@ -1863,6 +2052,7 @@ export class StreamingService {
   ): Promise<void> {
     await this.lock.acquire();
     try {
+      if (this.abortIfDocumentClosed(streamer)) return;
       const text = this.document.getText();
       const blocks = findAllAssistantBlocks(text);
       if (blocks.length === 0) {
@@ -1887,7 +2077,12 @@ export class StreamingService {
       streamer.isActive = false;
 
       const edit = new vscode.WorkspaceEdit();
-      edit.insert(this.document.uri, this.document.positionAt(offset), correction);
+      edit.insert(
+        this.document.uri,
+        this.document.positionAt(offset),
+        correction,
+      );
+      if (this.abortIfDocumentClosed(streamer)) return;
       const applied = await vscode.workspace.applyEdit(edit);
 
       if (!applied) {
@@ -1901,7 +2096,9 @@ export class StreamingService {
       try {
         if (getAutoSaveAfterStreaming()) {
           await new Promise((resolve) => setTimeout(resolve, 100));
-          await this.document.save();
+          if (!this.abortIfDocumentClosed(streamer)) {
+            await this.document.save();
+          }
         }
       } catch (error) {
         log(`Error during auto-save after tool call correction: ${error}`);
@@ -1949,38 +2146,39 @@ export class StreamingService {
 
   private async appendNewUserBlock(streamer: StreamerState): Promise<void> {
     await this.lock.acquire();
-    
+
     try {
+      if (this.abortIfDocumentClosed(streamer)) return;
       const text = this.document.getText();
       const tokensSoFar = streamer.tokens.join("");
-      
+
       const anchor = streamer.streamAnchor;
-      const assistantMarkers = anchor === undefined
-        ? findAllAssistantBlocks(text)
-        : [];
+      const assistantMarkers =
+        anchor === undefined ? findAllAssistantBlocks(text) : [];
       if (anchor === undefined && assistantMarkers.length === 0) {
-        log('No assistant blocks found, cannot add user block');
+        log("No assistant blocks found, cannot add user block");
         return;
       }
-      const insertOffset = (anchor
-        ?? assistantMarkers[assistantMarkers.length - 1].contentStart)
-        + tokensSoFar.length;
+      const insertOffset =
+        (anchor ?? assistantMarkers[assistantMarkers.length - 1].contentStart) +
+        tokensSoFar.length;
       const insertPosition = this.document.positionAt(insertOffset);
-      
+
       // Create the edit to insert the new user block
       const textToInsert = `${blockMarkerPrefix(
         text.substring(0, insertOffset),
       )}# %% user\n`;
       const edit = new vscode.WorkspaceEdit();
       edit.insert(this.document.uri, insertPosition, textToInsert);
-      
+
       // Apply the edit
+      if (this.abortIfDocumentClosed(streamer)) return;
       const applied = await vscode.workspace.applyEdit(edit);
-      
+
       if (applied) {
-        log('Successfully added new user block after assistant response');
+        log("Successfully added new user block after assistant response");
       } else {
-        log('Failed to add new user block after assistant response');
+        log("Failed to add new user block after assistant response");
       }
     } catch (error) {
       log(`Error appending user block: ${error}`);
@@ -2003,17 +2201,24 @@ export class StreamingService {
       return true; // Consider empty tokens a successful update
     }
 
+    if (this.abortIfDocumentClosed(streamer)) return false;
+
     const containsToolActivity = newTokens.some(
-      (token) => token.includes("## %% server_tool") || token.includes("# %% tool_execute"),
+      (token) =>
+        token.includes("## %% server_tool") ||
+        token.includes("# %% tool_execute"),
     );
     log(
       containsToolActivity
         ? `STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens containing SDK tool activity`
-        : `STREAMER DEBUG: Attempting to update with ${newTokens.length} tokens: "${newTokens.join("")}"`,
+        : `STREAMER DEBUG: Attempting to update with ${
+            newTokens.length
+          } tokens: "${newTokens.join("")}"`,
     );
     await this.lock.acquire();
 
     try {
+      if (this.abortIfDocumentClosed(streamer)) return false;
       const text = this.document.getText();
       const tokensSoFar = streamer.tokens.join("");
       const isFirstStreamingEvent = streamer.tokens.length === 0;
@@ -2021,7 +2226,9 @@ export class StreamingService {
       log(
         containsToolActivity
           ? `Looking for insertion point for ${newTokens.length} tokens containing SDK tool activity`
-          : `Looking for insertion point for ${newTokens.length} new tokens: "${newTokens.join("")}"`,
+          : `Looking for insertion point for ${
+              newTokens.length
+            } new tokens: "${newTokens.join("")}"`,
       );
       log(`Is first streaming event: ${isFirstStreamingEvent}`);
 
@@ -2103,7 +2310,10 @@ export class StreamingService {
         return false;
       }
       log(
-        `Document text at block start (20 chars): "${text.substring(blockStart, blockStart + 20)}"`,
+        `Document text at block start (20 chars): "${text.substring(
+          blockStart,
+          blockStart + 20,
+        )}"`,
       );
 
       // Check if our tokens match what's already in the document
@@ -2114,10 +2324,14 @@ export class StreamingService {
           `STREAMER ERROR: Tokens don't match what's in the document, stopping streamer`,
         );
         log(
-          `Expected: "${tokensSoFar.substring(0, 20)}${tokensSoFar.length > 20 ? "..." : ""}"`,
+          `Expected: "${tokensSoFar.substring(0, 20)}${
+            tokensSoFar.length > 20 ? "..." : ""
+          }"`,
         );
         log(
-          `Found: "${textAfterBlock.substring(0, 20)}${textAfterBlock.length > 20 ? "..." : ""}"`,
+          `Found: "${textAfterBlock.substring(0, 20)}${
+            textAfterBlock.length > 20 ? "..." : ""
+          }"`,
         );
 
         // Additional troubleshooting logs
@@ -2127,7 +2341,11 @@ export class StreamingService {
         log(`- Document length: ${text.length}`);
         log(`- tokensSoFar length: ${tokensSoFar.length}`);
         log(
-          `- Last 3 token chunks: ${JSON.stringify(streamer.tokens.slice(-3).map((t) => t.substring(0, 10) + (t.length > 10 ? "..." : "")))}`,
+          `- Last 3 token chunks: ${JSON.stringify(
+            streamer.tokens
+              .slice(-3)
+              .map((t) => t.substring(0, 10) + (t.length > 10 ? "..." : "")),
+          )}`,
         );
 
         // Do not attempt to find tokens elsewhere - simply stop the streamer
@@ -2153,9 +2371,11 @@ export class StreamingService {
       if (isFirstStreamingEvent && tokensSoFar.length === 0) {
         // Check if there's no newline between the heading and where we're about to insert
         // blockStart points to where content should start, check the character before it
-        if (blockStart > 0 && text[blockStart - 1] !== '\n') {
-          log("No newline after assistant heading, adding one before first token");
-          textToInsert = '\n' + textToInsert;
+        if (blockStart > 0 && text[blockStart - 1] !== "\n") {
+          log(
+            "No newline after assistant heading, adding one before first token",
+          );
+          textToInsert = "\n" + textToInsert;
           streamAnchor++;
         }
       }
@@ -2190,7 +2410,9 @@ export class StreamingService {
         );
         log(`- Document version: ${this.document.version}`);
         log(
-          `- Document read-only: ${this.document.isUntitled ? "No" : "Unknown"}`,
+          `- Document read-only: ${
+            this.document.isUntitled ? "No" : "Unknown"
+          }`,
         );
       }
 

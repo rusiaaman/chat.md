@@ -29,7 +29,10 @@ test("an isolated Codex home shares auth without inheriting config", () => {
   });
   fs.writeFileSync(path.join(sourceHome, "config.toml"), "invalid = true\n");
 
-  const isolated = isolatedCodexHome({ CODEX_HOME: sourceHome, KEEP: "yes" });
+  const isolated = isolatedCodexHome(
+    { CODEX_HOME: sourceHome, KEEP: "yes" },
+    "/usr/bin/true",
+  );
   const temporaryHome = isolated.environment.CODEX_HOME;
   try {
     assert.equal(isolated.environment.KEEP, "yes");
@@ -39,6 +42,33 @@ test("an isolated Codex home shares auth without inheriting config", () => {
       "credential",
     );
     assert.equal(fs.existsSync(path.join(temporaryHome, "config.toml")), false);
+    if (process.platform !== "win32") {
+      assert.equal(isolated.capturesToolInput, true);
+      assert.equal(fs.existsSync(path.join(temporaryHome, "hooks.json")), true);
+      assert.equal(
+        fs.readFileSync(isolated.codexPath, "utf8").includes(
+          "--dangerously-bypass-hook-trust",
+        ),
+        true,
+      );
+      const captureDirectory = path.join(temporaryHome, "tool-inputs");
+      fs.writeFileSync(
+        path.join(captureDirectory, "1.json"),
+        JSON.stringify({
+          cwd: "/workspace",
+          tool_name: "apply_patch",
+          tool_input: { command: "*** Update File: src/main.ts" },
+        }),
+      );
+      assert.deepEqual(
+        isolated.takeToolInput(
+          "apply_patch",
+          { changes: [] },
+          ["/workspace/src/main.ts"],
+        ),
+        { command: "*** Update File: src/main.ts" },
+      );
+    }
   } finally {
     isolated.dispose();
     fs.rmSync(sourceHome, { recursive: true, force: true });

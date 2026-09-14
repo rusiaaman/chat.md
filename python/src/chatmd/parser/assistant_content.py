@@ -6,7 +6,6 @@ helper in ``src/parser.ts``.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -30,9 +29,7 @@ from chatmd.types import (
 logger = logging.getLogger(__name__)
 
 
-def _lookup_payload(
-    base_dir: Path, assets_path: str, hash_: str
-) -> ThinkingPayload | None:
+def _lookup_payload(base_dir: Path, assets_path: str, hash_: str) -> ThinkingPayload | None:
     """Resolve a thinking hash against the on-disk map.
 
     Never raises. An unreadable or absent map degrades the thinking section to
@@ -51,12 +48,9 @@ def _lookup_payload(
     return payload
 
 
-def _tool_use_id(raw_xml: str, ordinal: int) -> str:
-    digest = hashlib.sha256(f"{ordinal}:{raw_xml}".encode()).hexdigest()[:24]
-    return f"chatmd_{digest}"
-
-
-def _parse_text_and_tools(text: str, server_tool: bool) -> list[Content]:
+def _parse_text_and_tools(
+    text: str, server_tool: bool, tool_use_index: int
+) -> tuple[list[Content], int]:
     """Split display text around calls and turn every complete call into data."""
     output: list[Content] = []
     calls = find_all_tool_calls(text)
@@ -70,14 +64,13 @@ def _parse_text_and_tools(text: str, server_tool: bool) -> list[Content]:
         if parsed is not None:
             output.append(
                 ToolUseContent(
-                    id=parsed.id or _tool_use_id(raw_xml, ordinal),
+                    id=parsed.id or f"chatmd_call_{tool_use_index + ordinal}",
                     name=parsed.name,
                     input=(
                         parsed.input
                         if parsed.input is not None
                         else {
-                            key: _parse_legacy_value(value)
-                            for key, value in parsed.params.items()
+                            key: _parse_legacy_value(value) for key, value in parsed.params.items()
                         }
                     ),
                     raw_xml=raw_xml,
@@ -90,7 +83,7 @@ def _parse_text_and_tools(text: str, server_tool: bool) -> list[Content]:
     after = text[cursor:].strip()
     if after:
         output.append(TextContent(value=after))
-    return output
+    return output, tool_use_index + len(calls)
 
 
 def _parse_legacy_value(value: str) -> object:
@@ -119,6 +112,7 @@ def parse_assistant_content(
     result: list[Content] = []
     server_tool_uses: list[ToolUseContent] = []
     server_result_index = 0
+    tool_use_index = 0
 
     for section in split_assistant_sections(content):
         # After the split, never before: an escaped "## %%% text" line inside the
@@ -129,11 +123,12 @@ def parse_assistant_content(
         if section.type == "text":
             text = body.strip()
             if text:
-                result.extend(_parse_text_and_tools(text, False))
+                parsed_content, tool_use_index = _parse_text_and_tools(text, False, tool_use_index)
+                result.extend(parsed_content)
             continue
 
         if section.type == "server_tool":
-            parsed_tools = _parse_text_and_tools(body.strip(), True)
+            parsed_tools, tool_use_index = _parse_text_and_tools(body.strip(), True, tool_use_index)
             result.extend(parsed_tools)
             server_tool_uses.extend(
                 item for item in parsed_tools if isinstance(item, ToolUseContent)
@@ -141,24 +136,17 @@ def parse_assistant_content(
             continue
 
         if section.type == "server_tool_results":
-            tool_use_id, result_body = parse_server_tool_result(body.strip())
+            _tool_use_id, result_body = parse_server_tool_result(body.strip())
             if not result_body.strip():
                 continue
             tool_use = (
-                next(
-                    (item for item in server_tool_uses if item.id == tool_use_id),
-                    None,
-                )
-                if tool_use_id is not None
-                else server_tool_uses[server_result_index]
+                server_tool_uses[server_result_index]
                 if server_result_index < len(server_tool_uses)
                 else None
             )
             if tool_use is None:
                 continue
-            native_content, raw_text = parse_tool_result_content(
-                result_body.strip(), base_dir
-            )
+            native_content, raw_text = parse_tool_result_content(result_body.strip(), base_dir)
             result.append(
                 ToolResultContent(
                     tool_use_id=tool_use.id,
@@ -166,15 +154,13 @@ def parse_assistant_content(
                     content=native_content,
                     raw_text=raw_text,
                     is_error=any(
-                        isinstance(item, TextContent)
-                        and item.value.lstrip().startswith("Error:")
+                        isinstance(item, TextContent) and item.value.lstrip().startswith("Error:")
                         for item in native_content
                     ),
                     server_tool=True,
                 )
             )
-            if tool_use_id is None:
-                server_result_index += 1
+            server_result_index += 1
             continue
 
         parsed = parse_thinking_section(body)

@@ -156,7 +156,7 @@ async def _complete_turn(
                     id=event.id,
                     name=event.name,
                     input=event.input,
-                    raw_xml=render_tool_call(event.id, event.name, event.input),
+                    raw_xml=render_tool_call(event.name, event.input),
                     server_tool=event.server_tool,
                 )
             )

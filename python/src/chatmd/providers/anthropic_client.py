@@ -50,6 +50,7 @@ from .native_tools import (
     NativeToolDefinition,
     anthropic_tool_schemas,
     api_tool_name,
+    assign_deterministic_tool_ids,
     canonical_tool_name,
     render_tool_arguments_delta,
     render_tool_call_end,
@@ -177,15 +178,16 @@ class AnthropicClient:
             thinking_enabled=thinking_active,
             api_style="anthropic",
         )
+        api_messages = (
+            assign_deterministic_tool_ids(cleaned_messages) if native else cleaned_messages
+        )
 
         kwargs: dict[str, Any] = {
             "model": model_name,
             "system": system_prompt,
             "stream": True,
             "max_tokens": max_tokens,
-            "messages": self._format_messages(
-                cleaned_messages, tools, native, base_dir=base_dir
-            ),
+            "messages": self._format_messages(api_messages, tools, native, base_dir=base_dir),
         }
         if native and tools:
             kwargs["tools"] = anthropic_tool_schemas(tools)
@@ -211,9 +213,7 @@ class AnthropicClient:
         return [
             {
                 "role": message.role,
-                "content": self._format_content(
-                    message.content, tools, native, base_dir=base_dir
-                ),
+                "content": self._format_content(message.content, tools, native, base_dir=base_dir),
             }
             for message in messages
         ]
@@ -367,12 +367,7 @@ class AnthropicClient:
                     index = getattr(event, "index", 0)
                     active_tool_blocks.add(index)
                     api_name = getattr(block, "name", "")
-                    call_id = getattr(block, "id", "")
-                    yield TextDelta(
-                        render_tool_call_start(
-                            call_id, canonical_tool_name(api_name, tools)
-                        )
-                    )
+                    yield TextDelta(render_tool_call_start(canonical_tool_name(api_name, tools)))
                     initial_input = getattr(block, "input", None)
                     if initial_input:
                         yield TextDelta(

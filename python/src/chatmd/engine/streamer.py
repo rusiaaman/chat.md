@@ -209,9 +209,7 @@ class FileStreamer:
         stray_wait_marker = False
         tool_calls_written = 0
 
-        stream = self.client.stream(
-            messages, system_prompt, tools, base_dir=self.path.parent
-        )
+        stream = self.client.stream(messages, system_prompt, tools, base_dir=self.path.parent)
 
         async for events in batched_events(stream, self.batch_interval):
             if not self.state.active:
@@ -234,9 +232,7 @@ class FileStreamer:
                     break
                 continue
 
-            batch = self._hold_back_marker_line(
-                self._coalesce(self._with_pending_text(events))
-            )
+            batch = self._hold_back_marker_line(self._coalesce(self._with_pending_text(events)))
             rendered = render_stream_events(
                 batch, self.state.written, self.state.section, self._record_payload
             )
@@ -308,9 +304,7 @@ class FileStreamer:
             was_thinking = self.state.pending_is_thinking
             self.state.pending_text = ""
             self.state.pending_is_thinking = False
-            final: StreamEvent = (
-                ThinkingDelta(flushed) if was_thinking else TextDelta(flushed)
-            )
+            final: StreamEvent = ThinkingDelta(flushed) if was_thinking else TextDelta(flushed)
             rendered = render_stream_events(
                 [final], self.state.written, self.state.section, self._record_payload
             )
@@ -364,9 +358,7 @@ class FileStreamer:
         update_failed = False
         cancelled = False
         tool_calls_written = 0
-        stream = self.client.stream(
-            messages, system_prompt, tools, base_dir=self.path.parent
-        )
+        stream = self.client.stream(messages, system_prompt, tools, base_dir=self.path.parent)
 
         async for events in batched_events(stream, self.batch_interval):
             if not self.state.active:
@@ -375,7 +367,7 @@ class FileStreamer:
                 break
             for event in events:
                 if isinstance(event, ToolUseDelta):
-                    rendered_call = render_tool_call(event.id, event.name, event.input)
+                    rendered_call = render_tool_call(event.name, event.input)
                     if event.server_tool:
                         addition = self._assistant_section(
                             "server_tool", rendered_call.lstrip("\n")
@@ -406,7 +398,7 @@ class FileStreamer:
                     if event.server_tool:
                         addition = self._assistant_section(
                             "server_tool_results",
-                            render_server_tool_result(event.tool_use_id, wrapped),
+                            render_server_tool_result(wrapped),
                         )
                         self.state.section.saw_thinking = True
                         self.state.section.text_open = False
@@ -415,7 +407,7 @@ class FileStreamer:
                         prefix = block_marker_prefix(self._text_before_insert())
                         addition = (
                             f"{prefix}# %% tool_execute\n"
-                            f"{render_server_tool_result(event.tool_use_id, wrapped)}\n\n"
+                            f"{render_server_tool_result(wrapped)}\n\n"
                             "# %% assistant\n"
                         )
                         self.state.section = SectionState()
@@ -688,9 +680,7 @@ class FileStreamer:
             return blocks[-1].content_start
 
         for index, block in enumerate(blocks):
-            next_start = (
-                blocks[index + 1].marker_start if index + 1 < len(blocks) else len(text)
-            )
+            next_start = blocks[index + 1].marker_start if index + 1 < len(blocks) else len(text)
             if not text[block.content_start : next_start].strip():
                 return block.content_start
 
@@ -851,9 +841,7 @@ class FileStreamer:
         if not written:
             return list(messages)
 
-        partial = parse_assistant_content(
-            written, self.path.parent, assets_path=self.assets_path
-        )
+        partial = parse_assistant_content(written, self.path.parent, assets_path=self.assets_path)
         if not partial:
             return list(messages)
 

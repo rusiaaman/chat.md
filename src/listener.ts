@@ -28,7 +28,11 @@ import {
   statusManager,
   requestStatusBarUpdate,
 } from "./extension";
-import { executeToolCall, formatToolResult } from "./tools/toolExecutor"; // Keep existing imports
+import {
+  cancelToolExecutionsForDocument,
+  executeToolCall,
+  formatToolResult,
+} from "./tools/toolExecutor"; // Keep existing imports
 import { parseToolCall, findAllToolCalls } from "./tools/toolCallParser"; // Keep existing imports
 import {
   ensureDirectoryExists, // Keep existing imports
@@ -36,6 +40,7 @@ import {
   saveChatHistory, // Keep existing imports
   getAssetsDirectory,
   getAssetsRelativePath,
+  isDocumentOpenInTab,
 } from "./utils/fileUtils";
 import { stripThinkingSections } from "./utils/thinkingBlocks";
 import { acquireChatFileLock, ChatLockHandle } from "./utils/fileLock";
@@ -84,6 +89,11 @@ export class DocumentListener {
     );
 
     this.disposables.push(changeListener);
+    this.disposables.push(
+      vscode.window.tabGroups.onDidChangeTabs((event) => {
+        if (event.closed.length > 0) this.abortIfDocumentClosed();
+      }),
+    );
 
     // Check document initially
     this.checkDocument();
@@ -101,6 +111,27 @@ export class DocumentListener {
         this.streamers.clear();
       },
     };
+  }
+
+  private abortIfDocumentClosed(): boolean {
+    if (isDocumentOpenInTab(this.document)) return false;
+    let aborted = false;
+    for (const streamer of this.streamers.values()) {
+      if (!streamer.isActive) continue;
+      aborted = true;
+      if (streamer.cancel) streamer.cancel();
+      else streamer.isActive = false;
+    }
+    if (this.isExecutingTool) {
+      aborted = cancelToolExecutionsForDocument(this.document) || aborted;
+    }
+    if (aborted) {
+      log(
+        `Aborted document activity because its tab was closed: ${this.document.uri.fsPath}`,
+      );
+      requestStatusBarUpdate(this.document.uri.fsPath, "document tab closed");
+    }
+    return true;
   }
 
   /**
@@ -141,6 +172,7 @@ export class DocumentListener {
   private async checkDocument(): Promise<void> {
     // Ignore if not a .chat.md file
     if (!this.document.fileName.endsWith(".chat.md")) return;
+    if (this.abortIfDocumentClosed()) return;
 
     log(`Checking document initially: ${this.document.fileName}`);
     const text = this.document.getText();
@@ -164,8 +196,8 @@ export class DocumentListener {
         // Call the main startStreaming function which handles parsing and error checks again
         await this.startStreaming();
       } else if (hasEmptyToolExecuteBlock(text)) {
-         log(`Initial check: Found empty tool_execute block, executing tool`);
-         await this.executeToolFromPreviousBlock();
+        log(`Initial check: Found empty tool_execute block, executing tool`);
+        await this.executeToolFromPreviousBlock();
       } else {
         log(`Initial check: No empty assistant or tool_execute block found.`);
       }
@@ -176,9 +208,14 @@ export class DocumentListener {
         vscode.window.showErrorMessage(
           "Invalid content: Nothing outside of a valid block (# %% user, # %% system, etc.) should be present. Please start with a valid block.",
         );
-      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+      } else if (
+        error instanceof Error &&
+        error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")
+      ) {
         const forbiddenKey = error.message.split(": ")[1];
-        log(`Initial check: Forbidden config key '${forbiddenKey}' in inline config.`);
+        log(
+          `Initial check: Forbidden config key '${forbiddenKey}' in inline config.`,
+        );
         vscode.window.showErrorMessage(
           `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
         );
@@ -189,7 +226,6 @@ export class DocumentListener {
     }
   }
 
-
   /**
    * Handle document changes: check for errors, trigger streaming, or trigger tool execution.
    */
@@ -197,13 +233,19 @@ export class DocumentListener {
     event: vscode.TextDocumentChangeEvent,
   ): Promise<void> {
     // Ignore changes to other documents or non-chat files
-    if (event.document.uri.toString() !== this.document.uri.toString() || !this.document.fileName.endsWith(".chat.md")) {
+    if (
+      event.document.uri.toString() !== this.document.uri.toString() ||
+      !this.document.fileName.endsWith(".chat.md")
+    ) {
       return;
     }
-    
+    if (this.abortIfDocumentClosed()) return;
+
     // Check if there are actual content changes (not just file save or metadata changes)
     if (event.contentChanges.length === 0) {
-      log(`Document saved without content changes: ${this.document.fileName} - ignoring`);
+      log(
+        `Document saved without content changes: ${this.document.fileName} - ignoring`,
+      );
       return;
     }
 
@@ -211,62 +253,69 @@ export class DocumentListener {
     const text = this.document.getText();
 
     try {
-        // Only the preamble is parsed here. A full parseDocument on every change is
-        // what made a long chat unusable: it costs time proportional to the whole
-        // document (and re-reads every attachment) on every keystroke and every
-        // paste, while the only things this handler decides are whether the
-        // preamble is malformed and whether the document now ends in a trigger
-        // block. Both are cheap. The full parse happens once, at the point of
-        // actually calling an LLM.
-        const parseResult = parseFileConfig(text);
+      // Only the preamble is parsed here. A full parseDocument on every change is
+      // what made a long chat unusable: it costs time proportional to the whole
+      // document (and re-reads every attachment) on every keystroke and every
+      // paste, while the only things this handler decides are whether the
+      // preamble is malformed and whether the document now ends in a trigger
+      // block. Both are cheap. The full parse happens once, at the point of
+      // actually calling an LLM.
+      const parseResult = parseFileConfig(text);
 
-        // Update status bar with file-specific provider/config hover info
+      // Update status bar with file-specific provider/config hover info
+      try {
+        requestStatusBarUpdate(this.document.uri.fsPath, "document changed");
+      } catch (e) {
+        log(`Failed to update status bar after parse: ${e}`);
+      }
+
+      // Insert default configuration block on first file update if missing
+      if (!this.defaultConfigInserted && !parseResult.hasConfigurationBlock) {
         try {
-          requestStatusBarUpdate(this.document.uri.fsPath, "document changed");
-        } catch (e) {
-          log(`Failed to update status bar after parse: ${e}`);
-        }
-
-        // Insert default configuration block on first file update if missing
-        if (!this.defaultConfigInserted && !parseResult.hasConfigurationBlock) {
-          try {
-            const { getSelectedConfigName } = require("./config");
-            const cfgName = getSelectedConfigName();
-            if (cfgName && this.document.fileName.endsWith(".chat.md")) {
-              const edit = new vscode.WorkspaceEdit();
-              const insertText = `selectedConfig="${cfgName}"\n\n`;
-              edit.insert(this.document.uri, new vscode.Position(0, 0), insertText);
-              const applied = await vscode.workspace.applyEdit(edit);
-              if (applied) {
-                this.defaultConfigInserted = true;
-                log(`Inserted default configuration preamble selectedConfig="${cfgName}"`);
-              } else {
-                log("Failed to insert default configuration preamble");
-              }
+          const { getSelectedConfigName } = require("./config");
+          const cfgName = getSelectedConfigName();
+          if (cfgName && this.document.fileName.endsWith(".chat.md")) {
+            if (this.abortIfDocumentClosed()) return;
+            const edit = new vscode.WorkspaceEdit();
+            const insertText = `selectedConfig="${cfgName}"\n\n`;
+            edit.insert(
+              this.document.uri,
+              new vscode.Position(0, 0),
+              insertText,
+            );
+            const applied = await vscode.workspace.applyEdit(edit);
+            if (applied) {
+              this.defaultConfigInserted = true;
+              log(
+                `Inserted default configuration preamble selectedConfig="${cfgName}"`,
+              );
+            } else {
+              log("Failed to insert default configuration preamble");
             }
-          } catch (e) {
-            log(`Error inserting default configuration preamble: ${e}`);
           }
+        } catch (e) {
+          log(`Error inserting default configuration preamble: ${e}`);
         }
+      }
 
-        // Images in a system block are rejected by startStreaming, which parses the
-        // document anyway. Checking here too would mean a full parse per keystroke
-        // to report an error that only matters at send time.
+      // Images in a system block are rejected by startStreaming, which parses the
+      // document anyway. Checking here too would mean a full parse per keystroke
+      // to report an error that only matters at send time.
 
-        // Check for action triggers. Both scans read only the tail of the document.
-        // Check for empty assistant block first (streaming priority)
-        if (hasEmptyAssistantBlock(text)) {
-          log(`Change detected: Found empty assistant block, starting streaming`);
-          await this.startStreaming(); // This function now handles parsing internally
-        }
-        // Otherwise, check for empty tool_execute block
-        else if (hasEmptyToolExecuteBlock(text)) {
-          log(`Change detected: Found empty tool_execute block, executing tool`);
-          await this.executeToolFromPreviousBlock();
-        } else {
-          // Log only if neither trigger is found
-          // log(`Change detected: No empty assistant or tool_execute block found`);
-        }
+      // Check for action triggers. Both scans read only the tail of the document.
+      // Check for empty assistant block first (streaming priority)
+      if (hasEmptyAssistantBlock(text)) {
+        log(`Change detected: Found empty assistant block, starting streaming`);
+        await this.startStreaming(); // This function now handles parsing internally
+      }
+      // Otherwise, check for empty tool_execute block
+      else if (hasEmptyToolExecuteBlock(text)) {
+        log(`Change detected: Found empty tool_execute block, executing tool`);
+        await this.executeToolFromPreviousBlock();
+      } else {
+        // Log only if neither trigger is found
+        // log(`Change detected: No empty assistant or tool_execute block found`);
+      }
     } catch (error) {
       // Check for specific parse errors
       if (error instanceof Error && error.message === "INVALID_START_CONTENT") {
@@ -277,9 +326,14 @@ export class DocumentListener {
         // Prevent triggering stream/tool execution if there's an error
         this.removeLastEmptyBlock("assistant");
         this.removeLastEmptyBlock("tool_execute");
-      } else if (error instanceof Error && error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")) {
+      } else if (
+        error instanceof Error &&
+        error.message.startsWith("FORBIDDEN_INLINE_CONFIG_KEY:")
+      ) {
         const forbiddenKey = error.message.split(": ")[1];
-        log(`Change detected: Forbidden config key '${forbiddenKey}' in inline config.`);
+        log(
+          `Change detected: Forbidden config key '${forbiddenKey}' in inline config.`,
+        );
         vscode.window.showErrorMessage(
           `Configuration key '${forbiddenKey}' is not allowed in .chat.md files. These keys (type, apiKey, base_url, model_name, apiConfigs) must be defined in global settings only. Use 'selectedConfig' to reference a named configuration.`,
         );
@@ -289,7 +343,9 @@ export class DocumentListener {
       } else {
         // Handle other errors
         log(`Error handling document change: ${error}`);
-        vscode.window.showErrorMessage(`Error processing document change: ${error}`);
+        vscode.window.showErrorMessage(
+          `Error processing document change: ${error}`,
+        );
       }
     }
   }
@@ -298,6 +354,7 @@ export class DocumentListener {
    * Execute tool from previous assistant block with tool call
    */
   private async executeToolFromPreviousBlock(): Promise<void> {
+    if (this.abortIfDocumentClosed()) return;
     // The chat.md CLI may be driving this same file from a background process.
     // Whoever holds the lock owns the document until it releases.
     const fileLock = acquireChatFileLock(this.document.uri.fsPath);
@@ -314,6 +371,7 @@ export class DocumentListener {
     log(`DocumentListener: Requested status update for tool execution`);
 
     try {
+      if (this.abortIfDocumentClosed()) return;
       const text = this.document.getText();
 
       // Find all tool_execute blocks and check which ones are empty
@@ -375,7 +433,9 @@ export class DocumentListener {
       // Extract the assistant's response
       const assistantResponse = lastMatch[1].trim();
       log(
-        `Found assistant response: "${assistantResponse.substring(0, 100)}${assistantResponse.length > 100 ? "..." : ""}"`,
+        `Found assistant response: "${assistantResponse.substring(0, 100)}${
+          assistantResponse.length > 100 ? "..." : ""
+        }"`,
       );
 
       // Look for tool call XML - the assistant block may contain several tool calls
@@ -407,12 +467,18 @@ export class DocumentListener {
       );
       const toolCallIndex = Math.min(alreadyExecuted, toolCalls.length - 1);
       log(
-        `Assistant block contains ${toolCalls.length} tool call(s), ${alreadyExecuted} already executed, executing #${toolCallIndex + 1}`,
+        `Assistant block contains ${
+          toolCalls.length
+        } tool call(s), ${alreadyExecuted} already executed, executing #${
+          toolCallIndex + 1
+        }`,
       );
 
       const toolCallXml = toolCalls[toolCallIndex];
       log(
-        `Found tool call: "${toolCallXml.substring(0, 100)}${toolCallXml.length > 100 ? "..." : ""}"`,
+        `Found tool call: "${toolCallXml.substring(0, 100)}${
+          toolCallXml.length > 100 ? "..." : ""
+        }"`,
       );
 
       const parsedToolCall = parseToolCall(toolCallXml);
@@ -426,11 +492,15 @@ export class DocumentListener {
 
       // Log that we have a valid parsed tool call with parameter details
       log(
-        `Successfully parsed tool call: ${parsedToolCall.name} with ${Object.keys(parsedToolCall.params).length} parameters`,
+        `Successfully parsed tool call: ${parsedToolCall.name} with ${
+          Object.keys(parsedToolCall.params).length
+        } parameters`,
       );
 
       log(
-        `Executing tool: ${parsedToolCall.name} with params: ${JSON.stringify(parsedToolCall.params)}`,
+        `Executing tool: ${parsedToolCall.name} with params: ${JSON.stringify(
+          parsedToolCall.params,
+        )}`,
       );
 
       // Add detailed parsing information to the document itself
@@ -440,7 +510,6 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 \`\`\`
 `;
 
-
       // Execute the tool, passing the raw tool call XML for logging
       const rawResult = await executeToolCall(
         parsedToolCall.name,
@@ -449,16 +518,20 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         toolCallXml, // Pass the raw XML for logging
       );
 
+      if (this.abortIfDocumentClosed()) return;
+
       // Check if this is a cancellation result
-      if (typeof rawResult === 'string' && rawResult.startsWith('CANCELLED:')) {
+      if (typeof rawResult === "string" && rawResult.startsWith("CANCELLED:")) {
         log(`Tool execution was cancelled - not inserting any result`);
-        
+
         // Remove the empty tool_execute block
         this.removeLastEmptyBlock("tool_execute");
-        
+
         // Set status back to idle
-        vscode.window.showInformationMessage("Tool execution cancelled, but it may still have gone through successfully");
-        
+        vscode.window.showInformationMessage(
+          "Tool execution cancelled, but it may still have gone through successfully",
+        );
+
         // Don't insert anything into the document
         return;
       }
@@ -467,19 +540,19 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       await this.insertToolResult(rawResult);
     } catch (error) {
       // Check if this is a cancellation-related error
-      if ((error as any).name === 'AbortError' || 
-          ((error as any).message && (
-            (error as any).message.includes('AbortError') || 
-            (error as any).message.includes('cancelled') || 
-            (error as any).message.includes('canceled')
-          ))
+      if (
+        (error as any).name === "AbortError" ||
+        ((error as any).message &&
+          ((error as any).message.includes("AbortError") ||
+            (error as any).message.includes("cancelled") ||
+            (error as any).message.includes("canceled")))
       ) {
         log(`Tool execution cancelled (caught in error handler): ${error}`);
         // Remove the empty tool_execute block without inserting any error
         this.removeLastEmptyBlock("tool_execute");
         return;
       }
-      
+
       log(`Error executing tool: ${error}`);
       // Format and insert the error message directly
       const formattedError = formatToolResult(`Error executing tool: ${error}`);
@@ -488,8 +561,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       this.lock.release();
       fileLock.release();
       this.isExecutingTool = false;
-      try { 
-        requestStatusBarUpdate(this.document.uri.fsPath, "tool execution finished");
+      try {
+        requestStatusBarUpdate(
+          this.document.uri.fsPath,
+          "tool execution finished",
+        );
       } catch {}
     }
   }
@@ -544,6 +620,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     rawResult: McpToolExecutionResult | string,
     isPreformattedError = false,
   ): Promise<void> {
+    if (this.abortIfDocumentClosed()) return;
 
     const text = this.document.getText();
     let contentToInsert = "";
@@ -558,10 +635,13 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       log("Formatting structured McpToolExecutionResult.");
       const docDir = path.dirname(this.document.uri.fsPath);
       const formattedMarkdown = await formatMcpResult(rawResult, docDir);
-      
+      if (this.abortIfDocumentClosed()) return;
+
       const lines = formattedMarkdown.split("\n");
       if (lines.length > lineCountThreshold) {
-        log(`Formatted rich result exceeds ${lineCountThreshold} lines, saving to file.`);
+        log(
+          `Formatted rich result exceeds ${lineCountThreshold} lines, saving to file.`,
+        );
         try {
           const assetsDir = getAssetsDirectory(docDir);
           ensureDirectoryExists(assetsDir);
@@ -577,10 +657,14 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           const relativeFilePath = getAssetsRelativePath(docDir, filename);
           const fullFilePath = path.join(assetsDir, filename);
 
+          if (this.abortIfDocumentClosed()) return;
           writeFile(fullFilePath, formattedMarkdown);
           log(`Saved formatted rich result to: ${fullFilePath}`);
 
-          const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, "/")})`;
+          const markdownLink = `[Tool Result](${relativeFilePath.replace(
+            /\\/g,
+            "/",
+          )})`;
           contentToInsert = formatToolResult(markdownLink);
         } catch (fileError) {
           log(`Error saving rich tool result to file: ${fileError}`);
@@ -592,8 +676,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       shouldInsertAsMarkdown = true;
     } else {
       // Check if the result contains image markdown links (from MCP tool image output)
-      const containsImageMarkdown = /!\[[^\]]*\]\([^)]+\.(?:png|jpg|jpeg|gif|webp|bmp)\)/i.test(rawResult);
-      
+      const containsImageMarkdown =
+        /!\[[^\]]*\]\([^)]+\.(?:png|jpg|jpeg|gif|webp|bmp)\)/i.test(rawResult);
+
       if (containsImageMarkdown) {
         log("Tool result contains image markdown, preserving it as-is.");
         contentToInsert = formatToolResult(rawResult);
@@ -621,16 +706,22 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
             const relativeFilePath = getAssetsRelativePath(docDir, filename);
             const fullFilePath = path.join(assetsDir, filename);
 
+            if (this.abortIfDocumentClosed()) return;
             writeFile(fullFilePath, rawResult);
             log(`Saved tool result to: ${fullFilePath}`);
 
-            const markdownLink = `[Tool Result](${relativeFilePath.replace(/\\/g, "/")})`; // Ensure forward slashes for Markdown
+            const markdownLink = `[Tool Result](${relativeFilePath.replace(
+              /\\/g,
+              "/",
+            )})`; // Ensure forward slashes for Markdown
             contentToInsert = formatToolResult(markdownLink); // Wrap the link in result tags
             log(`Inserting Markdown link: ${markdownLink}`);
           } catch (fileError) {
             log(`Error saving tool result to file: ${fileError}`);
             // Fallback: insert truncated result with error message
-            const truncatedResult = lines.slice(0, lineCountThreshold).join("\n");
+            const truncatedResult = lines
+              .slice(0, lineCountThreshold)
+              .join("\n");
             contentToInsert = formatToolResult(
               `${truncatedResult}\n...\n[Error: Failed to save full result to file - ${fileError}]`,
             );
@@ -647,6 +738,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     }
 
     // Find the insertion point (within the last empty tool_execute block)
+    if (this.abortIfDocumentClosed()) return;
     const blockRegex = blockContentRegex("tool_execute");
     const emptyBlocks = [];
     let match;
@@ -678,7 +770,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
     // We need to replace the empty content within the block, not insert after it.
     const startPos = this.document.positionAt(insertOffset);
-    const actualEndOffset = lastEmptyBlock.position + lastEmptyBlock.blockLength;
+    const actualEndOffset =
+      lastEmptyBlock.position + lastEmptyBlock.blockLength;
     const endPos = this.document.positionAt(actualEndOffset);
 
     log(
@@ -705,7 +798,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     const resultText = typeof rawResult === "string" ? rawResult : "";
     const isMarkdownLink =
       shouldInsertAsMarkdown ||
-      (resultText.split("\n").length > lineCountThreshold && contentToInsert.includes("[Tool Result]"));
+      (resultText.split("\n").length > lineCountThreshold &&
+        contentToInsert.includes("[Tool Result]"));
 
     // Escaped on the way in: a tool that read or wrote another chat returns
     // content full of marker lines, and writing those raw tears this document
@@ -739,6 +833,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
 
     log(`Applying edit to insert: "${textToInsert.substring(0, 100)}..."`);
 
+    if (this.abortIfDocumentClosed()) return;
     const applied = await vscode.workspace.applyEdit(edit);
     if (!applied) {
       log("Failed to insert tool result into document");
@@ -753,58 +848,84 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    * This mimics the behavior when max tokens is reached and streaming continues
    */
   public async resumeStreaming(): Promise<void> {
+    if (this.abortIfDocumentClosed()) return;
     const text = this.document.getText();
-    
+
     // Find the last assistant block
     const assistantMarkers = findAllAssistantBlocks(text);
-    
+
     if (assistantMarkers.length === 0) {
       log("No assistant blocks found, cannot resume streaming");
-      vscode.window.showWarningMessage("No assistant blocks found to resume from");
+      vscode.window.showWarningMessage(
+        "No assistant blocks found to resume from",
+      );
       return;
     }
-    
+
     // Get the last assistant block
     const lastMarker = assistantMarkers[assistantMarkers.length - 1];
     log(`Found last assistant block at position ${lastMarker.markerStart}`);
-    
+
     // Get the content of the last assistant block (from contentStart to end of document)
     const nextMarkerStart = text.length; // End of document since it's the last block
-    const existingContent = text.substring(lastMarker.contentStart, nextMarkerStart);
-    
-    log(`Resuming streaming in existing assistant block with ${existingContent.length} characters of existing content`);
-    
+    const existingContent = text.substring(
+      lastMarker.contentStart,
+      nextMarkerStart,
+    );
+
+    log(
+      `Resuming streaming in existing assistant block with ${existingContent.length} characters of existing content`,
+    );
+
     // Parse the document to get messages, treating the existing content as partial assistant response
-    const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
-    
+    const parseResult: ParsedDocumentResult = parseDocument(
+      text,
+      this.document,
+    );
+
     if (parseResult.hasImageInSystemBlock) {
-      log("Error: Image found in system block during resumeStreaming. Aborting.");
-      vscode.window.showErrorMessage("Images are not allowed in system blocks. Please remove image references.");
+      log(
+        "Error: Image found in system block during resumeStreaming. Aborting.",
+      );
+      vscode.window.showErrorMessage(
+        "Images are not allowed in system blocks. Please remove image references.",
+      );
       return;
     }
-    
+
     const messages: readonly MessageParam[] = parseResult.messages;
     const customSystemPrompt: string = parseResult.systemPrompt;
-    
+
     if (messages.length === 0) {
       log("No valid messages found to resume streaming.");
-      vscode.window.showWarningMessage("No valid conversation found to resume from");
+      vscode.window.showWarningMessage(
+        "No valid conversation found to resume from",
+      );
       return;
     }
-    
+
     // Create updated messages that include the existing partial assistant response
     const updatedMessages = [...messages];
-    
+
     // If there's existing content in the last assistant block, we need to include it in the context
     if (existingContent.trim()) {
-      log(`Including existing assistant content (${existingContent.trim().length} chars) in context for resumption`);
-      
+      log(
+        `Including existing assistant content (${
+          existingContent.trim().length
+        } chars) in context for resumption`,
+      );
+
       // Check if the last message is from the assistant
-      if (updatedMessages.length > 0 && updatedMessages[updatedMessages.length - 1].role === "assistant") {
+      if (
+        updatedMessages.length > 0 &&
+        updatedMessages[updatedMessages.length - 1].role === "assistant"
+      ) {
         // parseDocument already parsed this very block (thinking sections included),
         // so appending the raw block text would duplicate it and leak the "## %%"
         // markers into the API payload.
-        log("Last parsed message already carries the partial assistant content");
+        log(
+          "Last parsed message already carries the partial assistant content",
+        );
       } else {
         // Add new assistant message with the partial response
         updatedMessages.push({
@@ -813,15 +934,16 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         });
       }
     }
-    
+
     // API key will be resolved later based on per-file config
     // Don't get global API key here as it might fail when per-file config is valid
-    
+
     // Create StreamingService with per-file overrides if available
     const StreamingService = require("./streamer").StreamingService;
 
     // Determine per-file config
-    const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
+    const perFileConfigName: string | undefined = (parseResult as any)
+      .fileConfig?.selectedConfig;
 
     // Resolve API key and provider/baseUrl with per-file override if provided
     let apiKeyToUse: string;
@@ -829,7 +951,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     let baseUrlOverride: string | undefined = undefined;
     try {
       if (perFileConfigName) {
-        const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
+        const {
+          getApiKeyForConfig,
+          getProviderForConfig,
+          getBaseUrlForConfig,
+        } = require("./config");
         apiKeyToUse = getApiKeyForConfig(perFileConfigName);
         providerOverride = getProviderForConfig(perFileConfigName);
         baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
@@ -842,29 +968,34 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         statusManager.updateProvider(providerOverride);
       }
     } catch (e) {
-      const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+      const errorMsg = `Configuration error: ${
+        e instanceof Error ? e.message : String(e)
+      }`;
       log(errorMsg);
       vscode.window.showErrorMessage(errorMsg);
       return;
     }
 
-    const { getDefaultSystemPrompt, getModelName, getModelNameForConfig } = require("./config");
+    const {
+      getDefaultSystemPrompt,
+      getModelName,
+      getModelNameForConfig,
+    } = require("./config");
     const modelName = perFileConfigName
       ? getModelNameForConfig(perFileConfigName)
       : getModelName();
     const mcpGroupedTools = mcpClientManager.getGroupedTools();
     const mcpGroupedResources = mcpClientManager.getGroupedResources();
-    const sdkProvider = providerOverride === "claude-code" || providerOverride === "codex";
+    const sdkProvider =
+      providerOverride === "claude-code" || providerOverride === "codex";
     const toolSystemPrompt = usesNativeTools(modelName || "")
       ? generateNativeToolSystemPrompt(mcpGroupedResources)
       : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
     const finalSystemPrompt = sdkProvider
       ? customSystemPrompt
-      : [
-          getDefaultSystemPrompt(),
-          customSystemPrompt,
-          toolSystemPrompt,
-        ].filter((part) => part && part.trim() !== "").join("\n\n");
+      : [getDefaultSystemPrompt(), customSystemPrompt, toolSystemPrompt]
+          .filter((part) => part && part.trim() !== "")
+          .join("\n\n");
 
     const streamingService = new StreamingService(
       apiKeyToUse as string,
@@ -874,7 +1005,7 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       baseUrlOverride,
       perFileConfigName,
     );
-    
+
     // Create a streamer state that will resume in the existing assistant block
     const messageIndex = updatedMessages.length - 1;
     const streamer: StreamerState = {
@@ -885,14 +1016,23 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       isHandlingToolCall: false,
       cancel: () => streamingService.cancelStreaming(streamer),
     };
-    
+
     // Store the streamer
     this.streamers.set(messageIndex, streamer);
-    log(`Created streamer for resuming in message index ${messageIndex} with ${streamer.tokens.length} existing tokens`);
-    
+    log(
+      `Created streamer for resuming in message index ${messageIndex} with ${streamer.tokens.length} existing tokens`,
+    );
+
     // Start streaming, which will continue from where the last response left off
     streamingService
-      .streamResponse(updatedMessages, streamer, finalSystemPrompt, 0, 0, (parseResult as any).fileConfig)
+      .streamResponse(
+        updatedMessages,
+        streamer,
+        finalSystemPrompt,
+        0,
+        0,
+        (parseResult as any).fileConfig,
+      )
       .catch((err: any) => {
         log(`Resume streaming error for index ${messageIndex}: ${err}`);
       })
@@ -900,8 +1040,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         log(`Resume streamer ${messageIndex} promise finally block reached.`);
         // Same backstop as startStreaming: the turn is over once this settles.
         streamer.isActive = false;
-        try { 
-          requestStatusBarUpdate(this.document.uri.fsPath, "resume streaming finished");
+        try {
+          requestStatusBarUpdate(
+            this.document.uri.fsPath,
+            "resume streaming finished",
+          );
         } catch {}
       });
   }
@@ -910,17 +1053,22 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
    * Start streaming response from LLM. Handles parsing, errors, prompt assembly, and initiation.
    */
   private async startStreaming(): Promise<void> {
+    if (this.abortIfDocumentClosed()) return;
     // Keep generated files ignored in the Git repository containing this chat file.
     // Do not let Git discovery or .gitignore I/O delay the API request.
-    void Promise.resolve().then(() =>
-      ensureChatMdGitignore(path.dirname(this.document.uri.fsPath)),
-    );
+    void Promise.resolve().then(() => {
+      if (!this.abortIfDocumentClosed()) {
+        ensureChatMdGitignore(path.dirname(this.document.uri.fsPath));
+      }
+    });
 
     // Prevent concurrent streams for the same document
     const activeStreamer = this.getActiveStreamer();
     if (activeStreamer) {
-        log(`Streaming is already active for this document. Active streamer: messageIndex=${activeStreamer.messageIndex}, isActive=${activeStreamer.isActive}, tokensLength=${activeStreamer.tokens.length}, isHandlingToolCall=${activeStreamer.isHandlingToolCall}`);
-        return;
+      log(
+        `Streaming is already active for this document. Active streamer: messageIndex=${activeStreamer.messageIndex}, isActive=${activeStreamer.isActive}, tokensLength=${activeStreamer.tokens.length}, isHandlingToolCall=${activeStreamer.isHandlingToolCall}`,
+      );
+      return;
     }
     const fileLock = acquireChatFileLock(this.document.uri.fsPath);
     if (!fileLock) {
@@ -936,13 +1084,19 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
     log("Acquired streaming lock.");
 
     try {
+      if (this.abortIfDocumentClosed()) return;
       const text = this.document.getText();
       // Parse document to read per-file configuration preamble first
-      const parseResult: ParsedDocumentResult = parseDocument(text, this.document);
+      const parseResult: ParsedDocumentResult = parseDocument(
+        text,
+        this.document,
+      );
 
       // **Handle Image in System Block Error**
       if (parseResult.hasImageInSystemBlock) {
-        log("Error: Image found in system block during startStreaming. Aborting.");
+        log(
+          "Error: Image found in system block during startStreaming. Aborting.",
+        );
         // Reported here rather than on every document change: this is the first
         // point at which the document is parsed, and the first at which the error
         // actually matters.
@@ -957,7 +1111,8 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       const messages: readonly MessageParam[] = parseResult.messages;
 
       // Determine per-file config (selectedConfig) if present
-      const perFileConfigName: string | undefined = (parseResult as any).fileConfig?.selectedConfig;
+      const perFileConfigName: string | undefined = (parseResult as any)
+        .fileConfig?.selectedConfig;
       const customSystemPrompt: string = parseResult.systemPrompt;
 
       // Resolve API key using per-file config if present, else global
@@ -970,7 +1125,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           getProviderForConfig,
           getProvider,
         } = require("./config");
-        apiKeyToUse = perFileConfigName ? getApiKeyForConfig(perFileConfigName) : getApiKey();
+        apiKeyToUse = perFileConfigName
+          ? getApiKeyForConfig(perFileConfigName)
+          : getApiKey();
         selectedProvider = perFileConfigName
           ? getProviderForConfig(perFileConfigName)
           : getProvider();
@@ -978,8 +1135,13 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         apiKeyToUse = undefined;
         selectedProvider = "";
       }
-      if (!apiKeyToUse && (selectedProvider === "anthropic" || selectedProvider === "openai")) {
-        const which = perFileConfigName ? `for config "${perFileConfigName}"` : "in settings";
+      if (
+        !apiKeyToUse &&
+        (selectedProvider === "anthropic" || selectedProvider === "openai")
+      ) {
+        const which = perFileConfigName
+          ? `for config "${perFileConfigName}"`
+          : "in settings";
         const message = `Configuration error: API key missing ${which}.`;
         log(message);
         vscode.window.showErrorMessage(message);
@@ -987,7 +1149,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         return;
       }
 
-      log(`Parsed ${messages.length} messages. Custom system prompt length: ${customSystemPrompt.length}`);
+      log(
+        `Parsed ${messages.length} messages. Custom system prompt length: ${customSystemPrompt.length}`,
+      );
 
       // **Check for Valid Messages**
       if (messages.length === 0) {
@@ -1008,14 +1172,13 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
         ? generateNativeToolSystemPrompt(mcpGroupedResources)
         : generateToolCallingSystemPrompt(mcpGroupedTools, mcpGroupedResources);
       // Combine
-      const sdkProvider = selectedProvider === "claude-code" || selectedProvider === "codex";
+      const sdkProvider =
+        selectedProvider === "claude-code" || selectedProvider === "codex";
       const finalSystemPrompt = sdkProvider
         ? customSystemPrompt
-        : [
-            defaultSystemPrompt,
-            customSystemPrompt,
-            toolSystemPrompt,
-          ].filter(p => p && p.trim() !== '').join('\n\n');
+        : [defaultSystemPrompt, customSystemPrompt, toolSystemPrompt]
+            .filter((p) => p && p.trim() !== "")
+            .join("\n\n");
 
       log(`Final System Prompt Length: ${finalSystemPrompt.length}`);
       // log(`Final System Prompt:\n---\n${finalSystemPrompt}\n---`); // Debug if needed
@@ -1040,12 +1203,16 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       );
       log(`Saved chat history (before call) to: ${historyFilePath}`);
 
-
       // **Streamer Initialization and Management (as per current structure)**
       const messageIndex = messages.length - 1;
 
-      if (this.streamers.has(messageIndex) && this.streamers.get(messageIndex)?.isActive) {
-        log(`Streamer for message index ${messageIndex} already active, skipping.`);
+      if (
+        this.streamers.has(messageIndex) &&
+        this.streamers.get(messageIndex)?.isActive
+      ) {
+        log(
+          `Streamer for message index ${messageIndex} already active, skipping.`,
+        );
         return;
       }
 
@@ -1054,7 +1221,11 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       let baseUrlOverride: string | undefined = undefined;
       try {
         if (perFileConfigName) {
-          const { getApiKeyForConfig, getProviderForConfig, getBaseUrlForConfig } = require("./config");
+          const {
+            getApiKeyForConfig,
+            getProviderForConfig,
+            getBaseUrlForConfig,
+          } = require("./config");
           apiKeyToUse = getApiKeyForConfig(perFileConfigName);
           providerOverride = getProviderForConfig(perFileConfigName);
           baseUrlOverride = getBaseUrlForConfig(perFileConfigName);
@@ -1067,7 +1238,9 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           statusManager.updateProvider(providerOverride);
         }
       } catch (e) {
-        const errorMsg = `Configuration error: ${e instanceof Error ? e.message : String(e)}`;
+        const errorMsg = `Configuration error: ${
+          e instanceof Error ? e.message : String(e)
+        }`;
         log(errorMsg);
         vscode.window.showErrorMessage(errorMsg);
         this.removeLastEmptyBlock("assistant");
@@ -1096,14 +1269,24 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
       this.streamers.set(messageIndex, streamer);
       log(`Created new streamer for message index ${messageIndex}.`);
       // Update status bar to reflect new active streamer count/provider
-      try { 
-        requestStatusBarUpdate(this.document.uri.fsPath, "new streamer created");
+      try {
+        requestStatusBarUpdate(
+          this.document.uri.fsPath,
+          "new streamer created",
+        );
       } catch {}
 
       // **Start streaming in background, passing the FINAL system prompt and file config**
       fileLockHandedOff = true;
       streamingService
-        .streamResponse(messages, streamer, finalSystemPrompt, 0, 0, (parseResult as any).fileConfig) // Pass the combined prompt and file config
+        .streamResponse(
+          messages,
+          streamer,
+          finalSystemPrompt,
+          0,
+          0,
+          (parseResult as any).fileConfig,
+        ) // Pass the combined prompt and file config
         .catch((err) => {
           log(`Streaming error for index ${messageIndex}: ${err}`);
         })
@@ -1117,17 +1300,18 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
           // stream on this document until the extension was reloaded.
           streamer.isActive = false;
           // Refresh status bar when stream ends
-          try { 
-            requestStatusBarUpdate(this.document.uri.fsPath, "start streaming finished");
+          try {
+            requestStatusBarUpdate(
+              this.document.uri.fsPath,
+              "start streaming finished",
+            );
           } catch {}
         });
-
     } catch (error) {
-        log(`Error in startStreaming setup phase: ${error}`);
-        vscode.window.showErrorMessage(`Failed to initiate streaming: ${error}`);
-        this.removeLastEmptyBlock("assistant"); // Clean up trigger on setup error
-    }
-    finally {
+      log(`Error in startStreaming setup phase: ${error}`);
+      vscode.window.showErrorMessage(`Failed to initiate streaming: ${error}`);
+      this.removeLastEmptyBlock("assistant"); // Clean up trigger on setup error
+    } finally {
       // Always release the lock
       this.lock.release();
       log("Released streaming lock.");
@@ -1140,49 +1324,57 @@ ${JSON.stringify(parsedToolCall.params, null, 2)}
   /**
    * Helper to remove the last empty block (assistant or tool_execute) from the end of the document.
    */
-   // --- Keep the removeLastEmptyBlock function as defined in the previous attempt ---
-   // --- (Assuming that part was correct and only startStreaming needed adjustment) ---
-   private async removeLastEmptyBlock(type: "assistant" | "tool_execute"): Promise<void> {
-       const text = this.document.getText();
-       const marker = `# %% ${type}`;
-       const lastMarkerIndex = text.lastIndexOf(marker);
+  // --- Keep the removeLastEmptyBlock function as defined in the previous attempt ---
+  // --- (Assuming that part was correct and only startStreaming needed adjustment) ---
+  private async removeLastEmptyBlock(
+    type: "assistant" | "tool_execute",
+  ): Promise<void> {
+    if (this.abortIfDocumentClosed()) return;
+    const text = this.document.getText();
+    const marker = `# %% ${type}`;
+    const lastMarkerIndex = text.lastIndexOf(marker);
 
-       if (lastMarkerIndex === -1 || lastMarkerIndex < text.length - (marker.length + 50)) {
-           return;
-       }
+    if (
+      lastMarkerIndex === -1 ||
+      lastMarkerIndex < text.length - (marker.length + 50)
+    ) {
+      return;
+    }
 
-        const newlineAfterMarker = text.indexOf('\n', lastMarkerIndex);
-        const contentStartIndex = newlineAfterMarker === -1
-            ? lastMarkerIndex + marker.length
-            : newlineAfterMarker + 1;
-        const contentAfterMarker = text.substring(contentStartIndex);
+    const newlineAfterMarker = text.indexOf("\n", lastMarkerIndex);
+    const contentStartIndex =
+      newlineAfterMarker === -1
+        ? lastMarkerIndex + marker.length
+        : newlineAfterMarker + 1;
+    const contentAfterMarker = text.substring(contentStartIndex);
 
-        if (/^\s*$/.test(contentAfterMarker)) {
-            log(`Removing empty ${type} block starting at index ${lastMarkerIndex}`);
-            let lineStartIndex = lastMarkerIndex;
-            while (lineStartIndex > 0 && text[lineStartIndex - 1] !== '\n') {
-                lineStartIndex--;
-            }
-            const adjustedStartPos = this.document.positionAt(lineStartIndex);
-            const endPos = this.document.positionAt(text.length);
-            const adjustedRange = new vscode.Range(adjustedStartPos, endPos);
+    if (/^\s*$/.test(contentAfterMarker)) {
+      log(`Removing empty ${type} block starting at index ${lastMarkerIndex}`);
+      let lineStartIndex = lastMarkerIndex;
+      while (lineStartIndex > 0 && text[lineStartIndex - 1] !== "\n") {
+        lineStartIndex--;
+      }
+      const adjustedStartPos = this.document.positionAt(lineStartIndex);
+      const endPos = this.document.positionAt(text.length);
+      const adjustedRange = new vscode.Range(adjustedStartPos, endPos);
 
-            const edit = new vscode.WorkspaceEdit();
-            edit.replace(this.document.uri, adjustedRange, "");
+      const edit = new vscode.WorkspaceEdit();
+      edit.replace(this.document.uri, adjustedRange, "");
 
-            try {
-                 const success = await vscode.workspace.applyEdit(edit);
-                 if (success) {
-                     log(`Successfully removed empty ${type} block.`);
-                 } else {
-                     log(`Failed to apply edit to remove empty ${type} block.`);
-                 }
-            } catch (editError) {
-                log(`Error applying edit to remove empty ${type} block: ${editError}`);
-            }
+      try {
+        if (this.abortIfDocumentClosed()) return;
+        const success = await vscode.workspace.applyEdit(edit);
+        if (success) {
+          log(`Successfully removed empty ${type} block.`);
+        } else {
+          log(`Failed to apply edit to remove empty ${type} block.`);
         }
-   }
-   // --- End of removeLastEmptyBlock ---
+      } catch (editError) {
+        log(`Error applying edit to remove empty ${type} block: ${editError}`);
+      }
+    }
+  }
+  // --- End of removeLastEmptyBlock ---
 
-   // ... (rest of the listener class, e.g., executeToolFromPreviousBlock, insertToolResult) ...
+  // ... (rest of the listener class, e.g., executeToolFromPreviousBlock, insertToolResult) ...
 }

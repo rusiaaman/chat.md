@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 from collections.abc import AsyncIterator, Sequence
 from pathlib import Path
@@ -35,7 +34,7 @@ from ..types import (
     UsageDelta,
 )
 from .agent_context import build_agent_prompt
-from .native_tools import NativeToolDefinition
+from .native_tools import NativeToolDefinition, tool_result_text
 from .prompt import chatmd_agent_section
 from .sdk_config import (
     allow_all_codex_mcp_tools,
@@ -58,12 +57,6 @@ _TOOL_NAMES = {
     "contextCompaction": "compact",
 }
 _MCP_OVERRIDE = re.compile(r"^\s*mcp_servers(?:\.|=)")
-
-
-def _json_text(value: object) -> str:
-    if isinstance(value, str):
-        return value
-    return json.dumps(value, ensure_ascii=False, indent=2, default=str)
 
 
 def _sandbox(value: object) -> Sandbox | None:
@@ -113,9 +106,11 @@ def _tool_input(item: object) -> dict[str, Any]:
 
 def _tool_result(item: object) -> str:
     data = _item_data(item)
-    for key in ("id", "type"):
-        data.pop(key, None)
-    return _json_text(data)
+    output = data.get("aggregatedOutput")
+    if isinstance(output, str):
+        return output
+    status = str(data.get("status", ""))
+    return "Tool execution failed" if "fail" in status.lower() else "Completed"
 
 
 class CodexSdkClient:
@@ -334,10 +329,8 @@ class CodexSdkClient:
                             continue
                         name, server_tool = identity
                         if isinstance(item, McpToolCallThreadItem):
-                            result: object = (
-                                item.result.model_dump(by_alias=True, exclude_none=True)
-                                if item.result is not None
-                                else {"error": item.error.message if item.error else "No result"}
+                            result: object = item.result or (
+                                item.error.message if item.error else "No result"
                             )
                             is_error = item.error is not None
                         else:
@@ -347,7 +340,7 @@ class CodexSdkClient:
                         yield ToolResultDelta(
                             tool_use_id=item.id,
                             name=name,
-                            content=_json_text(result),
+                            content=tool_result_text(result) or "No result",
                             is_error=is_error,
                             server_tool=server_tool,
                         )

@@ -5,7 +5,13 @@ from typing import Any
 
 from chatmd.config.model import ResolvedConfig
 from chatmd.providers.anthropic_client import AnthropicClient
-from chatmd.providers.native_tools import NativeToolDefinition, native_tool_name
+from chatmd.providers.native_tools import (
+    NativeToolDefinition,
+    native_tool_name,
+    render_server_tool_result,
+    render_tool_call,
+    tool_result_text,
+)
 from chatmd.providers.openai_chat import _translate_stream, format_messages
 from chatmd.providers.openai_responses import (
     OpenAIResponsesClient,
@@ -32,6 +38,16 @@ def native_tool() -> NativeToolDefinition:
             "properties": {"uri": {"type": "string"}},
             "required": ["uri"],
         },
+    )
+
+
+def test_persistent_tool_format_has_no_ids_and_results_keep_only_output() -> None:
+    call = render_tool_call("files.read", {"path": "a.txt"})
+
+    assert "<cmd:tool_id>" not in call
+    assert render_server_tool_result("contents") == "contents"
+    assert (
+        tool_result_text({"output": "contents", "exitCode": 0, "status": "completed"}) == "contents"
     )
 
 
@@ -92,11 +108,12 @@ def test_anthropic_request_uses_mcp_schema_and_native_history() -> None:
     ]
     assert request["messages"][0]["content"][0] == {
         "type": "tool_use",
-        "id": "call_1",
+        "id": "chatmd_call_0",
         "name": tool.api_name,
         "input": {"uri": "file://a<b"},
     }
     assert request["messages"][1]["content"][0]["type"] == "tool_result"
+    assert request["messages"][1]["content"][0]["tool_use_id"] == "chatmd_call_0"
 
 
 def test_google_model_keeps_custom_protocol_and_receives_no_native_schemas() -> None:
@@ -104,9 +121,7 @@ def test_google_model_keeps_custom_protocol_and_receives_no_native_schemas() -> 
     request = client._build_request(tool_history(), "system", [native_tool()])
 
     assert "tools" not in request
-    assistant_text = "".join(
-        block["text"] for block in request["messages"][0]["content"]
-    )
+    assistant_text = "".join(block["text"] for block in request["messages"][0]["content"])
     assert "<cmd:tool_call>" in assistant_text
     assert "<cmd:wait-tool-result/>" in assistant_text
 
@@ -125,9 +140,7 @@ async def test_anthropic_partial_json_is_rendered_as_parseable_chat_call() -> No
         SimpleNamespace(
             type="content_block_delta",
             index=0,
-            delta=SimpleNamespace(
-                type="input_json_delta", partial_json='{"uri":"file://a<'
-            ),
+            delta=SimpleNamespace(type="input_json_delta", partial_json='{"uri":"file://a<'),
         ),
         SimpleNamespace(
             type="content_block_delta",
@@ -139,13 +152,12 @@ async def test_anthropic_partial_json_is_rendered_as_parseable_chat_call() -> No
 
     translated = [
         event
-        async for event in client._iter_stream_events(
-            events(raw), "claude-sonnet-4-5", [tool]
-        )
+        async for event in client._iter_stream_events(events(raw), "claude-sonnet-4-5", [tool])
     ]
     parsed = parse_tool_call(text(translated).strip())
     assert parsed is not None
-    assert parsed.id == "call_1"
+    assert parsed.id is None
+    assert "<cmd:tool_id>" not in text(translated)
     assert parsed.name == tool.name
     assert parsed.input == {"uri": "file://a<b"}
 
@@ -157,7 +169,7 @@ def test_openai_chat_history_uses_tool_call_and_tool_result_roles() -> None:
     assert formatted[0]["tool_calls"][0]["function"]["name"] == tool.api_name
     assert formatted[1] == {
         "role": "tool",
-        "tool_call_id": "call_1",
+        "tool_call_id": "chatmd_call_0",
         "content": "contents",
     }
 
@@ -223,9 +235,7 @@ async def test_openai_chat_argument_fragments_form_one_chat_call() -> None:
         ),
     ]
 
-    translated = [
-        event async for event in _translate_stream(events(raw), "gpt-5", [tool])
-    ]
+    translated = [event async for event in _translate_stream(events(raw), "gpt-5", [tool])]
     parsed = parse_tool_call(text(translated).strip())
     assert parsed is not None
     assert parsed.input == {"uri": "a<b"}
@@ -239,7 +249,7 @@ def test_responses_history_uses_function_call_items() -> None:
     assert items[0]["name"] == tool.api_name
     assert items[1] == {
         "type": "function_call_output",
-        "call_id": "call_1",
+        "call_id": "chatmd_call_0",
         "output": [{"type": "input_text", "text": "contents"}],
     }
 
@@ -267,9 +277,7 @@ async def test_responses_argument_delta_is_rendered_before_done() -> None:
         ),
     ]
 
-    translated = [
-        event async for event in client._translate_stream(events(raw), "gpt-5", [tool])
-    ]
+    translated = [event async for event in client._translate_stream(events(raw), "gpt-5", [tool])]
     parsed = parse_tool_call(text(translated).strip())
     assert parsed is not None
     assert parsed.input == {"uri": "a<b"}

@@ -9,9 +9,9 @@ import {
 import * as path from "path";
 import * as vscode from "vscode";
 import { buildAgentPrompt } from "./agentContext";
-import { isolatedCodexHome } from "./codexHome";
+import { IsolatedCodexHome, isolatedCodexHome } from "./codexHome";
 import { getReasoningEffort } from "./config";
-import { encodeAgentToolEvent } from "./nativeTools";
+import { encodeAgentToolEvent, toolResultText } from "./nativeTools";
 import {
   activeApiConfig,
   allowAllCodexMcpTools,
@@ -31,12 +31,21 @@ const BUILTIN_TOOL_NAMES: Partial<Record<ThreadItem["type"], string>> = {
   todo_list: "update_plan",
 };
 
-function itemInput(item: ThreadItem): Record<string, unknown> {
+function itemInput(
+  item: ThreadItem,
+  codexHome: IsolatedCodexHome,
+): Record<string, unknown> {
   switch (item.type) {
     case "command_execution":
       return { command: item.command };
-    case "file_change":
-      return { changes: item.changes };
+    case "file_change": {
+      const fallback = { changes: item.changes };
+      return codexHome.takeToolInput(
+        "apply_patch",
+        fallback,
+        item.changes.map((change) => change.path),
+      );
+    }
     case "web_search":
       return { query: item.query };
     case "todo_list":
@@ -49,25 +58,12 @@ function itemInput(item: ThreadItem): Record<string, unknown> {
 function itemResult(item: ThreadItem): string {
   switch (item.type) {
     case "command_execution":
-      return JSON.stringify(
-        {
-          output: item.aggregated_output,
-          exitCode: item.exit_code,
-          status: item.status,
-        },
-        null,
-        2,
-      );
+      return item.aggregated_output;
     case "file_change":
-      return JSON.stringify(
-        { changes: item.changes, status: item.status },
-        null,
-        2,
-      );
+      return item.status === "failed" ? "File changes failed" : "Completed";
     case "web_search":
-      return JSON.stringify({ query: item.query }, null, 2);
     case "todo_list":
-      return JSON.stringify({ items: item.items }, null, 2);
+      return "Completed";
     default:
       return "Completed";
   }
@@ -153,6 +149,7 @@ export class CodexSdkClient {
     this.controller = controller;
     const codexHome = isolatedCodexHome(
       subscriptionEnvironment("codex", rawOptions.env),
+      codexPath,
     );
     try {
       const bridge = await sdkMcpBridge.acquire(document, controller.signal);
@@ -162,10 +159,20 @@ export class CodexSdkClient {
         );
         const options: CodexOptions = {
           ...(rawOptions as CodexOptions),
-          codexPathOverride: codexPath,
+          codexPathOverride: codexHome.codexPath,
           apiKey: undefined,
           baseUrl: undefined,
-          config,
+          config: {
+            ...config,
+            features: {
+              ...(config.features &&
+              typeof config.features === "object" &&
+              !Array.isArray(config.features)
+                ? config.features
+                : {}),
+              hooks: codexHome.capturesToolInput,
+            },
+          },
           configOverrides: [
             ...configuredOverrides.filter(
               (value) => !isMcpServerOverride(value),
@@ -211,6 +218,7 @@ export class CodexSdkClient {
             emittedLengths,
             tools,
             bridge.codexServerNames,
+            codexHome,
           );
           if (tokens.length > 0) yield tokens;
         }
@@ -228,6 +236,7 @@ export class CodexSdkClient {
     emittedLengths: Map<string, number>,
     tools: Map<string, { name: string; serverTool: boolean }>,
     codexServerNames: Readonly<Record<string, string>>,
+    codexHome: IsolatedCodexHome,
   ): string[] {
     if (event.type === "turn.completed") {
       this.lastUsage = {
@@ -258,6 +267,7 @@ export class CodexSdkClient {
       return delta ? [encodeThinkingToken(delta)] : [];
     }
     if (item.type === "error") {
+      if (item.message.includes("--dangerously-bypass-hook-trust")) return [];
       return event.type === "item.completed" ? [`Error: ${item.message}`] : [];
     }
 
@@ -287,7 +297,7 @@ export class CodexSdkClient {
               ? item.arguments && typeof item.arguments === "object"
                 ? (item.arguments as Record<string, unknown>)
                 : { value: item.arguments }
-              : itemInput(item),
+              : itemInput(item, codexHome),
           serverTool: identity.serverTool,
         }),
       );
@@ -295,13 +305,13 @@ export class CodexSdkClient {
     if (event.type !== "item.completed") return output;
 
     if (item.type === "mcp_tool_call") {
-      const result = item.result ?? item.error ?? { message: "No result" };
+      const result = item.result ?? item.error ?? "No result";
       output.push(
         encodeAgentToolEvent({
           type: "tool_result",
           toolUseId: item.id,
           name: identity.name,
-          content: JSON.stringify(result, null, 2),
+          content: toolResultText(result) || "No result",
           isError: item.error !== undefined,
           serverTool: false,
         }),
