@@ -195,6 +195,21 @@ chat.md supports the new **Streamable HTTP** transport from the [MCP spec 2025-1
 }
 ```
 
+#### Parallel Search (optional)
+
+To opt in to web search and URL fetching, explicitly edit your own VS Code settings and add this separately named server to your existing `chatmd.mcpServers` map. Do not replace your other configured servers:
+
+```json
+"chatmd.mcpServers": {
+  "parallel-search": {
+    "url": "https://search.parallel.ai/mcp",
+    "transport": "streamable-http"
+  }
+}
+```
+
+The endpoint needs no account or API key, and native Streamable HTTP transport headers are optional. When you explicitly use its tools, user-provided search objectives, search queries, and requested URLs are sent to Parallel. See the [Parallel Search MCP documentation](https://docs.parallel.ai/integrations/mcp/search-mcp) for details.
+
 You can also pass custom HTTP headers (e.g. for authentication):
 
 ```json
