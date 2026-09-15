@@ -13,8 +13,10 @@ interface ToolActivity {
 export function chatmdFormatInstructions(configLocation: string): string {
   return `## ChatMD document format
 
-The editable \`.chat.md\` file is the source of truth. Top-level blocks use \`# %% system\`,
-\`# %% user\`, \`# %% assistant\`, \`# %% tool_execute\`, and \`# %% settings\`. Assistant
+The current \`.chat.md\` transcript is the source of truth and is read-only to you. Do not
+modify, overwrite, append to, or delete that file with tools. ChatMD automatically updates
+it with your replies, tool calls, and tool results as they stream. Top-level blocks use
+\`# %% system\`, \`# %% user\`, \`# %% assistant\`, \`# %% tool_execute\`, and \`# %% settings\`. Assistant
 reasoning may appear under \`## %% thinking\`; visible answers use \`## %% text\`. Tool
 calls are stored as \`<cmd:tool_call>\` blocks and results are stored in corresponding
 \`# %% tool_execute\` blocks, paired with calls in document order. SDK built-in activity
@@ -108,7 +110,7 @@ export function buildAgentPrompt(
     ? `## Chat-specific system instructions\n${customSystemPrompt.trim()}`
     : "";
   return [
-    "You are responding to the latest user turn in an editable ChatMD transcript.",
+    "You are responding to the latest user turn in a ChatMD transcript.",
     `Current chat file: ${chatPath}`,
     chatmdFormatInstructions(configLocation),
     custom,
