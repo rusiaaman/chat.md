@@ -23,9 +23,7 @@ import {
   apiToolName,
   canonicalToolName,
   openaiChatToolSchemas,
-  renderToolArgumentsDelta,
-  renderToolCallEnd,
-  renderToolCallStart,
+  renderToolCallFromArguments,
   usesNativeTools,
 } from "./nativeTools";
 
@@ -345,31 +343,17 @@ export class OpenAIClient {
         id: string;
         name: string;
         arguments: string;
-        emitted: number;
-        started: boolean;
       }
     >();
-    let activeToolCall: number | undefined;
 
     const finishToolCalls = (): string[] => {
-      const tokens: string[] = [];
-      if (activeToolCall !== undefined) {
-        tokens.push(renderToolCallEnd());
-      }
-      for (const [index, call] of partialToolCalls) {
-        if (index === activeToolCall) {
-          continue;
-        }
-        tokens.push(
-          renderToolCallStart(canonicalToolName(call.name, nativeTools)),
-        );
-        if (call.arguments) {
-          tokens.push(renderToolArgumentsDelta(call.arguments));
-        }
-        tokens.push(renderToolCallEnd());
-      }
+      const tokens = [...partialToolCalls.values()].map((call) =>
+        renderToolCallFromArguments(
+          canonicalToolName(call.name, nativeTools),
+          call.arguments || "{}",
+        ),
+      );
       partialToolCalls.clear();
-      activeToolCall = undefined;
       return tokens;
     };
 
@@ -552,8 +536,6 @@ export class OpenAIClient {
                           id: "",
                           name: "",
                           arguments: "",
-                          emitted: 0,
-                          started: false,
                         };
                         if (delta.id) {
                           call.id += delta.id;
@@ -565,38 +547,6 @@ export class OpenAIClient {
                           call.arguments += delta.function.arguments;
                         }
                         partialToolCalls.set(index, call);
-                        if (
-                          activeToolCall === undefined &&
-                          call.name &&
-                          delta.function?.arguments
-                        ) {
-                          activeToolCall = index;
-                        }
-                        const tokens: string[] = [];
-                        if (
-                          activeToolCall === index &&
-                          !call.started &&
-                          call.name
-                        ) {
-                          call.started = true;
-                          tokens.push(
-                            renderToolCallStart(
-                              canonicalToolName(call.name, nativeTools),
-                            ),
-                          );
-                        }
-                        if (activeToolCall === index && call.started) {
-                          const pending = call.arguments.substring(
-                            call.emitted,
-                          );
-                          if (pending) {
-                            call.emitted = call.arguments.length;
-                            tokens.push(renderToolArgumentsDelta(pending));
-                          }
-                        }
-                        if (tokens.length > 0) {
-                          yield tokens;
-                        }
                       }
                     }
 

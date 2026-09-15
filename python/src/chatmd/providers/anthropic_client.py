@@ -52,9 +52,7 @@ from .native_tools import (
     api_tool_name,
     assign_deterministic_tool_ids,
     canonical_tool_name,
-    render_tool_arguments_delta,
-    render_tool_call_end,
-    render_tool_call_start,
+    render_tool_call_from_arguments,
     uses_native_tools,
 )
 
@@ -318,7 +316,7 @@ class AnthropicClient:
         Duck-typed on ``.type``/attribute access rather than the SDK's event
         classes, so this is unit-testable with plain stub objects.
         """
-        active_tool_blocks: set[int] = set()
+        active_tool_blocks: dict[int, tuple[str, str]] = {}
         async for event in raw_events:
             event_type = getattr(event, "type", None)
 
@@ -345,8 +343,10 @@ class AnthropicClient:
                         )
                 elif delta_type == "input_json_delta":
                     partial_json = getattr(delta, "partial_json", "")
-                    if partial_json:
-                        yield TextDelta(render_tool_arguments_delta(partial_json))
+                    index = getattr(event, "index", 0)
+                    if partial_json and index in active_tool_blocks:
+                        name, arguments_json = active_tool_blocks[index]
+                        active_tool_blocks[index] = (name, arguments_json + partial_json)
 
             elif event_type == "content_block_start":
                 block = event.content_block
@@ -365,22 +365,21 @@ class AnthropicClient:
                         yield ThinkingDelta(thinking_text)
                 elif block_type == "tool_use":
                     index = getattr(event, "index", 0)
-                    active_tool_blocks.add(index)
                     api_name = getattr(block, "name", "")
-                    yield TextDelta(render_tool_call_start(canonical_tool_name(api_name, tools)))
                     initial_input = getattr(block, "input", None)
-                    if initial_input:
-                        yield TextDelta(
-                            render_tool_arguments_delta(
-                                json.dumps(initial_input, separators=(",", ":"))
-                            )
-                        )
+                    arguments_json = (
+                        json.dumps(initial_input, separators=(",", ":")) if initial_input else ""
+                    )
+                    active_tool_blocks[index] = (
+                        canonical_tool_name(api_name, tools),
+                        arguments_json,
+                    )
 
             elif event_type == "content_block_stop":
                 index = getattr(event, "index", 0)
                 if index in active_tool_blocks:
-                    active_tool_blocks.remove(index)
-                    yield TextDelta(render_tool_call_end())
+                    name, arguments_json = active_tool_blocks.pop(index)
+                    yield TextDelta(render_tool_call_from_arguments(name, arguments_json or "{}"))
 
             elif event_type == "message_start":
                 usage = getattr(event.message, "usage", None)

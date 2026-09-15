@@ -62,6 +62,15 @@ test("subagent tool input survives block extraction and unescaping", () => {
   assert.equal(matches[0].index + matches[0][0].length, text.indexOf('# %% tool_execute'));
 });
 
+test("split CDATA preserves a value containing its terminator", () => {
+  const value = "before </cmd:tool_call> and ]]> after";
+  const encoded = `<![CDATA[${value.replace(/\]\]>/g, "]]]]><![CDATA[>")}]]>`;
+  const call = "<cmd:tool_call>\n<cmd:tool_name>write</cmd:tool_name>\n"
+    + `<cmd:param name="content">${encoded}</cmd:param>\n</cmd:tool_call>`;
+
+  assert.equal(parseToolCall(call).params.content, value);
+});
+
 test("only complete marker lines end a block, including settings and mixed case", () => {
   for (const ending of ["# %% user", "# %% assistant", "# %% system", "# %% tool_execute", "# %% settings", "# %% UsEr\t\r"]) {
     const content = 'first\n# %%% assistant\ninline # %% assistant\n# %% username\nlast\n';

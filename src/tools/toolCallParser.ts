@@ -279,7 +279,7 @@ export function extractCdataContent(text: string): string {
   if (cdataMatch) {
     // If the entire trimmed text is a CDATA block, return the captured content (group 1)
     log("Found parameter value fully wrapped in CDATA, extracting content.");
-    return cdataMatch[1];
+    return cdataMatch[1].replace(/\]\]\]\]><!\[CDATA\[>/g, "]]>");
   }
 
   // If the entire string wasn't a CDATA block, check if CDATA exists *within* the text.

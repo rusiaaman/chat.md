@@ -273,7 +273,7 @@ def extract_cdata_content(text: str) -> str:
     full_match = _FULL_CDATA_RE.match(trimmed)
     if full_match:
         logger.debug("Found parameter value fully wrapped in CDATA, extracting content.")
-        return full_match.group(1)
+        return full_match.group(1).replace("]]]]><![CDATA[>", "]]>")
 
     if "<![CDATA[" in text:
         logger.debug("Found CDATA section within parameter value, attempting replacement.")

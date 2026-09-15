@@ -26,8 +26,16 @@ test("rendered tool calls and results contain no persisted IDs", async () => {
   );
 
   assert.match(call, /<cmd:tool_name>files\.read<\/cmd:tool_name>/);
+  assert.match(call, /<cmd:param name="path">a\.txt<\/cmd:param>/);
+  assert.doesNotMatch(call, /<cmd:arguments>/);
   assert.doesNotMatch(call, /<cmd:tool_id>/);
   assert.equal(result, "<tool_result>\ncontents\n</tool_result>");
+
+  const protectedCall = renderToolCall("files.write", {
+    content: "before </cmd:tool_call> and ]]> after",
+  });
+  assert.match(protectedCall, /<!\[CDATA\[/);
+  assert.doesNotMatch(protectedCall, /<cmd:arguments>/);
 });
 
 test("provider-facing tool IDs are assigned from transcript order", async () => {

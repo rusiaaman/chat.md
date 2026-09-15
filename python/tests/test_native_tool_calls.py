@@ -12,6 +12,7 @@ from chatmd.providers.native_tools import (
     native_tool_name,
     render_server_tool_result,
     render_tool_call,
+    tool_call_input,
     tool_result_text,
     truncate_tool_results_for_api,
 )
@@ -49,10 +50,23 @@ def test_persistent_tool_format_has_no_ids_and_results_keep_only_output() -> Non
     call = render_tool_call("files.read", {"path": "a.txt"})
 
     assert "<cmd:tool_id>" not in call
+    assert '<cmd:param name="path">a.txt</cmd:param>' in call
+    assert "<cmd:arguments>" not in call
     assert render_server_tool_result("contents") == "contents"
     assert (
         tool_result_text({"output": "contents", "exitCode": 0, "status": "completed"}) == "contents"
     )
+
+
+def test_param_renderer_round_trips_structural_tags_and_cdata_terminator() -> None:
+    expected = {
+        "content": "before </cmd:tool_call> and ]]> after",
+        "options": {"nested": [1, True]},
+    }
+    parsed = parse_tool_call(render_tool_call("files.write", expected).strip())
+
+    assert parsed is not None
+    assert tool_call_input(parsed) == expected
 
 
 def test_tool_result_text_is_capped_before_api_without_dropping_images() -> None:
@@ -191,7 +205,7 @@ async def test_anthropic_partial_json_is_rendered_as_parseable_chat_call() -> No
     assert parsed.id is None
     assert "<cmd:tool_id>" not in text(translated)
     assert parsed.name == tool.name
-    assert parsed.input == {"uri": "file://a<b"}
+    assert tool_call_input(parsed) == {"uri": "file://a<b"}
 
 
 def test_openai_chat_history_uses_tool_call_and_tool_result_roles() -> None:
@@ -270,7 +284,7 @@ async def test_openai_chat_argument_fragments_form_one_chat_call() -> None:
     translated = [event async for event in _translate_stream(events(raw), "gpt-5", [tool])]
     parsed = parse_tool_call(text(translated).strip())
     assert parsed is not None
-    assert parsed.input == {"uri": "a<b"}
+    assert tool_call_input(parsed) == {"uri": "a<b"}
 
 
 def test_responses_history_uses_function_call_items() -> None:
@@ -286,7 +300,7 @@ def test_responses_history_uses_function_call_items() -> None:
     }
 
 
-async def test_responses_argument_delta_is_rendered_before_done() -> None:
+async def test_responses_argument_delta_is_rendered_as_params_after_done() -> None:
     tool = native_tool()
     client = OpenAIResponsesClient(config("openai", "gpt-5"))
     raw = [
@@ -312,4 +326,4 @@ async def test_responses_argument_delta_is_rendered_before_done() -> None:
     translated = [event async for event in client._translate_stream(events(raw), "gpt-5", [tool])]
     parsed = parse_tool_call(text(translated).strip())
     assert parsed is not None
-    assert parsed.input == {"uri": "a<b"}
+    assert tool_call_input(parsed) == {"uri": "a<b"}

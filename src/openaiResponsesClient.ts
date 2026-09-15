@@ -20,9 +20,7 @@ import {
   apiToolName,
   canonicalToolName,
   openaiResponsesToolSchemas,
-  renderToolArgumentsDelta,
-  renderToolCallEnd,
-  renderToolCallStart,
+  renderToolCallFromArguments,
   usesNativeTools,
 } from "./nativeTools";
 
@@ -242,13 +240,9 @@ export class OpenAIResponsesClient {
         callId: string;
         name: string;
         arguments: string;
-        emitted: number;
-        started: boolean;
-        done: boolean;
         closed: boolean;
       }
     >();
-    let activeIndex: number | undefined;
 
     try {
       for await (const chunk of response) {
@@ -301,29 +295,12 @@ export class OpenAIResponsesClient {
                   callId: "",
                   name: "",
                   arguments: "",
-                  emitted: 0,
-                  started: false,
-                  done: false,
                   closed: false,
                 };
                 state.callId = data.item.call_id || state.callId;
                 state.name = data.item.name || state.name;
                 state.arguments += data.item.arguments || "";
                 calls.set(index, state);
-                if (activeIndex === undefined) {
-                  activeIndex = index;
-                  state.started = true;
-                  const tokens = [
-                    renderToolCallStart(
-                      canonicalToolName(state.name, nativeTools),
-                    ),
-                  ];
-                  if (state.arguments) {
-                    state.emitted = state.arguments.length;
-                    tokens.push(renderToolArgumentsDelta(state.arguments));
-                  }
-                  yield tokens;
-                }
               }
               break;
             }
@@ -332,10 +309,6 @@ export class OpenAIResponsesClient {
               const state = calls.get(index);
               if (state && typeof data.delta === "string") {
                 state.arguments += data.delta;
-                if (activeIndex === index) {
-                  state.emitted = state.arguments.length;
-                  yield [renderToolArgumentsDelta(data.delta)];
-                }
               }
               break;
             }
@@ -346,41 +319,14 @@ export class OpenAIResponsesClient {
                 if (typeof data.arguments === "string" && data.arguments) {
                   state.arguments = data.arguments;
                 }
-                state.done = true;
-                if (activeIndex === index) {
-                  const pending = state.arguments.substring(state.emitted);
+                if (!state.closed) {
                   yield [
-                    ...(pending ? [renderToolArgumentsDelta(pending)] : []),
-                    renderToolCallEnd(),
+                    renderToolCallFromArguments(
+                      canonicalToolName(state.name, nativeTools),
+                      state.arguments || "{}",
+                    ),
                   ];
                   state.closed = true;
-                  activeIndex = undefined;
-                  while (activeIndex === undefined) {
-                    const next = Array.from(calls.entries()).find(
-                      ([, candidate]) =>
-                        !candidate.started && !candidate.closed,
-                    );
-                    if (!next) {
-                      break;
-                    }
-                    const [nextIndex, candidate] = next;
-                    candidate.started = true;
-                    activeIndex = nextIndex;
-                    candidate.emitted = candidate.arguments.length;
-                    yield [
-                      renderToolCallStart(
-                        canonicalToolName(candidate.name, nativeTools),
-                      ),
-                      ...(candidate.arguments
-                        ? [renderToolArgumentsDelta(candidate.arguments)]
-                        : []),
-                    ];
-                    if (candidate.done) {
-                      yield [renderToolCallEnd()];
-                      candidate.closed = true;
-                      activeIndex = undefined;
-                    }
-                  }
                 }
               }
               break;
@@ -416,6 +362,15 @@ export class OpenAIResponsesClient {
                   state.callId = item.call_id || state.callId;
                   state.name = item.name || state.name;
                   state.arguments = item.arguments || state.arguments;
+                  if (!state.closed) {
+                    yield [
+                      renderToolCallFromArguments(
+                        canonicalToolName(state.name, nativeTools),
+                        state.arguments || "{}",
+                      ),
+                    ];
+                    state.closed = true;
+                  }
                 }
               }
               break;
@@ -450,17 +405,10 @@ export class OpenAIResponsesClient {
           continue;
         }
         yield [
-          ...(!state.started
-            ? [renderToolCallStart(canonicalToolName(state.name, nativeTools))]
-            : []),
-          ...(state.arguments.substring(state.emitted)
-            ? [
-                renderToolArgumentsDelta(
-                  state.arguments.substring(state.emitted),
-                ),
-              ]
-            : []),
-          renderToolCallEnd(),
+          renderToolCallFromArguments(
+            canonicalToolName(state.name, nativeTools),
+            state.arguments || "{}",
+          ),
         ];
       }
 

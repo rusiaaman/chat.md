@@ -48,9 +48,7 @@ from .native_tools import (
     assign_deterministic_tool_ids,
     canonical_tool_name,
     openai_responses_tool_schemas,
-    render_tool_arguments_delta,
-    render_tool_call_end,
-    render_tool_call_start,
+    render_tool_call_from_arguments,
     uses_native_tools,
 )
 
@@ -236,9 +234,6 @@ class _PartialFunctionCall:
     call_id: str = ""
     name: str = ""
     arguments: str = ""
-    emitted: int = 0
-    started: bool = False
-    done: bool = False
     closed: bool = False
 
 
@@ -373,7 +368,6 @@ class OpenAIResponsesClient:
         shows up once the reasoning item is done.
         """
         calls: dict[int, _PartialFunctionCall] = {}
-        active_index: int | None = None
         async for event in events:
             usage_delta = _extract_usage(event)
             if usage_delta is not None:
@@ -394,17 +388,6 @@ class OpenAIResponsesClient:
                     state.name = getattr(item, "name", "") or state.name
                     initial = getattr(item, "arguments", "") or ""
                     state.arguments += initial
-                    if active_index is None:
-                        active_index = index
-                        state.started = True
-                        yield TextDelta(
-                            render_tool_call_start(
-                                canonical_tool_name(state.name, tools),
-                            )
-                        )
-                        if state.arguments:
-                            state.emitted = len(state.arguments)
-                            yield TextDelta(render_tool_arguments_delta(state.arguments))
                 continue
 
             if event_type == "response.function_call_arguments.delta":
@@ -412,9 +395,6 @@ class OpenAIResponsesClient:
                 state = calls.setdefault(index, _PartialFunctionCall(output_index=index))
                 delta = getattr(event, "delta", "") or ""
                 state.arguments += delta
-                if active_index == index and delta:
-                    state.emitted = len(state.arguments)
-                    yield TextDelta(render_tool_arguments_delta(delta))
                 continue
 
             if event_type == "response.function_call_arguments.done":
@@ -423,42 +403,14 @@ class OpenAIResponsesClient:
                 final_arguments = getattr(event, "arguments", None)
                 if isinstance(final_arguments, str) and final_arguments:
                     state.arguments = final_arguments
-                state.done = True
-                if active_index == index:
-                    pending = state.arguments[state.emitted :]
-                    if pending:
-                        yield TextDelta(render_tool_arguments_delta(pending))
-                    yield TextDelta(render_tool_call_end())
+                if not state.closed:
+                    yield TextDelta(
+                        render_tool_call_from_arguments(
+                            canonical_tool_name(state.name, tools),
+                            state.arguments or "{}",
+                        )
+                    )
                     state.closed = True
-                    active_index = None
-                    while active_index is None:
-                        pending_candidate = next(
-                            (
-                                (candidate_index, candidate)
-                                for candidate_index, candidate in calls.items()
-                                if not candidate.started and not candidate.closed
-                            ),
-                            None,
-                        )
-                        if pending_candidate is None:
-                            break
-                        candidate_index, candidate = pending_candidate
-                        candidate.started = True
-                        active_index = candidate_index
-                        yield TextDelta(
-                            render_tool_call_start(
-                                canonical_tool_name(candidate.name, tools),
-                            )
-                        )
-                        if candidate.arguments:
-                            candidate.emitted = len(candidate.arguments)
-                            yield TextDelta(render_tool_arguments_delta(candidate.arguments))
-                        if candidate.done:
-                            yield TextDelta(render_tool_call_end())
-                            candidate.closed = True
-                            active_index = None
-                        else:
-                            break
                 continue
 
             if event_type == "response.output_text.delta":
@@ -494,6 +446,14 @@ class OpenAIResponsesClient:
                     final_arguments = getattr(item, "arguments", None)
                     if isinstance(final_arguments, str) and final_arguments:
                         state.arguments = final_arguments
+                    if not state.closed:
+                        yield TextDelta(
+                            render_tool_call_from_arguments(
+                                canonical_tool_name(state.name, tools),
+                                state.arguments or "{}",
+                            )
+                        )
+                        state.closed = True
             elif event_type == "response.incomplete":
                 response_obj = getattr(event, "response", None)
                 incomplete_details = getattr(response_obj, "incomplete_details", None)
@@ -515,13 +475,9 @@ class OpenAIResponsesClient:
         for state in calls.values():
             if state.closed:
                 continue
-            if not state.started:
-                yield TextDelta(
-                    render_tool_call_start(
-                        canonical_tool_name(state.name, tools),
-                    )
+            yield TextDelta(
+                render_tool_call_from_arguments(
+                    canonical_tool_name(state.name, tools),
+                    state.arguments or "{}",
                 )
-            pending = state.arguments[state.emitted :]
-            if pending:
-                yield TextDelta(render_tool_arguments_delta(pending))
-            yield TextDelta(render_tool_call_end())
+            )

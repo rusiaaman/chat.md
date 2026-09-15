@@ -155,29 +155,39 @@ export function unescapeXml(value: string): string {
     .replace(/&amp;/g, "&");
 }
 
-export function renderToolCallStart(name: string): string {
-  return `\n<cmd:tool_call>\n<cmd:tool_name>${escapeXml(
-    name,
-  )}</cmd:tool_name>\n<cmd:arguments>`;
-}
-
-export function renderToolArgumentsDelta(delta: string): string {
-  return escapeXml(delta);
-}
-
-export function renderToolCallEnd(): string {
-  return "</cmd:arguments>\n</cmd:tool_call>";
+function renderParamValue(value: unknown): string {
+  const rendered =
+    typeof value === "string"
+      ? value
+      : value === undefined
+      ? ""
+      : JSON.stringify(value);
+  if (!/<\/?cmd:|<!\[CDATA\[|\]\]>/.test(rendered)) return rendered;
+  return `<![CDATA[${rendered.replace(/\]\]>/g, "]]]]><![CDATA[>")}]]>`;
 }
 
 export function renderToolCall(
   name: string,
   input: Record<string, unknown>,
 ): string {
-  return (
-    renderToolCallStart(name) +
-    renderToolArgumentsDelta(JSON.stringify(input)) +
-    renderToolCallEnd()
-  );
+  const params = Object.entries(input)
+    .map(
+      ([key, value]) =>
+        `<cmd:param name="${escapeXml(key)}">${renderParamValue(
+          value,
+        )}</cmd:param>`,
+    )
+    .join("\n");
+  return `\n<cmd:tool_call>\n<cmd:tool_name>${escapeXml(
+    name,
+  )}</cmd:tool_name>\n${params}${params ? "\n" : ""}</cmd:tool_call>`;
+}
+
+export function renderToolCallFromArguments(
+  name: string,
+  argumentsJson: string,
+): string {
+  return renderToolCall(name, parseNativeArguments(argumentsJson) ?? {});
 }
 
 export function renderServerToolResult(result: string): string {

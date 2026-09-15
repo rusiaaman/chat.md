@@ -116,25 +116,30 @@ def openai_responses_tool_schemas(
     ]
 
 
-def render_tool_call_start(name: str) -> str:
-    return f"\n<cmd:tool_call>\n<cmd:tool_name>{escape(name)}</cmd:tool_name>\n<cmd:arguments>"
-
-
-def render_tool_arguments_delta(delta: str) -> str:
-    return escape(delta)
-
-
-def render_tool_call_end() -> str:
-    return "</cmd:arguments>\n</cmd:tool_call>"
+def _render_param_value(value: object) -> str:
+    if isinstance(value, str):
+        rendered = value
+    else:
+        rendered = json.dumps(value, separators=(",", ":"), ensure_ascii=False)
+    if not re.search(r"</?cmd:|<!\[CDATA\[|\]\]>", rendered):
+        return rendered
+    return "<![CDATA[" + rendered.replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
 def render_tool_call(name: str, input_: Mapping[str, Any]) -> str:
-    arguments = json.dumps(input_, separators=(",", ":"), ensure_ascii=False)
-    return (
-        render_tool_call_start(name)
-        + render_tool_arguments_delta(arguments)
-        + render_tool_call_end()
+    params = "\n".join(
+        f'<cmd:param name="{escape(key)}">{_render_param_value(value)}</cmd:param>'
+        for key, value in input_.items()
     )
+    suffix = "\n" if params else ""
+    return (
+        f"\n<cmd:tool_call>\n<cmd:tool_name>{escape(name)}</cmd:tool_name>\n"
+        f"{params}{suffix}</cmd:tool_call>"
+    )
+
+
+def render_tool_call_from_arguments(name: str, arguments_json: str) -> str:
+    return render_tool_call(name, decode_tool_arguments(arguments_json) or {})
 
 
 def render_server_tool_result(result: str) -> str:

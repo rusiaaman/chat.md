@@ -50,9 +50,7 @@ from .native_tools import (
     assign_deterministic_tool_ids,
     canonical_tool_name,
     openai_chat_tool_schemas,
-    render_tool_arguments_delta,
-    render_tool_call_end,
-    render_tool_call_start,
+    render_tool_call_from_arguments,
     uses_native_tools,
 )
 
@@ -298,8 +296,6 @@ class _PartialToolCall:
     id: str = ""
     name: str = ""
     arguments: str = ""
-    emitted: int = 0
-    started: bool = False
 
 
 async def _translate_stream(
@@ -320,7 +316,6 @@ async def _translate_stream(
     reasoning_open = False
     running_usage: Usage | None = None
     partial_calls: dict[int, _PartialToolCall] = {}
-    active_call: int | None = None
 
     def close_reasoning() -> ThinkingPayloadDelta:
         nonlocal accumulator, reasoning_open
@@ -399,21 +394,6 @@ async def _translate_stream(
                 if argument_delta:
                     state.arguments += argument_delta
 
-                if active_call is None and state.name and argument_delta:
-                    active_call = index
-                if active_call == index and not state.started and state.name:
-                    state.started = True
-                    yield TextDelta(
-                        render_tool_call_start(
-                            canonical_tool_name(state.name, tools),
-                        )
-                    )
-                if active_call == index and state.started:
-                    pending = state.arguments[state.emitted :]
-                    if pending:
-                        state.emitted = len(state.arguments)
-                        yield TextDelta(render_tool_arguments_delta(pending))
-
         # The first content delta closes the reasoning run.
         if content and reasoning_open:
             yield close_reasoning()
@@ -428,36 +408,23 @@ async def _translate_stream(
             yield TextDelta(text=content)
 
         if finish_reason is not None and partial_calls:
-            if active_call is not None:
-                yield TextDelta(render_tool_call_end())
-            for index, state in partial_calls.items():
-                if index == active_call:
-                    continue
+            for state in partial_calls.values():
                 yield TextDelta(
-                    render_tool_call_start(
+                    render_tool_call_from_arguments(
                         canonical_tool_name(state.name, tools),
+                        state.arguments or "{}",
                     )
                 )
-                if state.arguments:
-                    yield TextDelta(render_tool_arguments_delta(state.arguments))
-                yield TextDelta(render_tool_call_end())
             partial_calls.clear()
-            active_call = None
 
     if partial_calls:
-        if active_call is not None:
-            yield TextDelta(render_tool_call_end())
-        for index, state in partial_calls.items():
-            if index == active_call:
-                continue
+        for state in partial_calls.values():
             yield TextDelta(
-                render_tool_call_start(
+                render_tool_call_from_arguments(
                     canonical_tool_name(state.name, tools),
+                    state.arguments or "{}",
                 )
             )
-            if state.arguments:
-                yield TextDelta(render_tool_arguments_delta(state.arguments))
-            yield TextDelta(render_tool_call_end())
 
     if reasoning_open:
         yield close_reasoning()

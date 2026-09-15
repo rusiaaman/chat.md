@@ -20,9 +20,7 @@ import {
   anthropicToolSchemas,
   apiToolName,
   canonicalToolName,
-  renderToolArgumentsDelta,
-  renderToolCallEnd,
-  renderToolCallStart,
+  renderToolCallFromArguments,
   usesNativeTools,
 } from "./nativeTools";
 import {
@@ -312,7 +310,10 @@ export class AnthropicClient {
     let eventCount = 0;
     // Accumulated thinking text of the block currently being streamed
     let thinkingText = "";
-    const activeToolBlocks = new Set<number>();
+    const activeToolBlocks = new Map<
+      number,
+      { name: string; argumentsJson: string }
+    >();
 
     try {
       for await (const chunk of response) {
@@ -398,7 +399,8 @@ export class AnthropicClient {
                 data.delta?.type === "input_json_delta" &&
                 data.delta.partial_json
               ) {
-                yield [renderToolArgumentsDelta(data.delta.partial_json)];
+                const state = activeToolBlocks.get(data.index || 0);
+                if (state) state.argumentsJson += data.delta.partial_json;
               } else if (data.type === "content_block_start") {
                 log(
                   `Content block start: ${JSON.stringify(data.content_block)}`,
@@ -423,25 +425,28 @@ export class AnthropicClient {
                   thinkingText += block.thinking;
                   yield [encodeThinkingToken(block.thinking)];
                 } else if (block && block.type === "tool_use") {
-                  activeToolBlocks.add(data.index || 0);
-                  const tokens = [
-                    renderToolCallStart(
-                      canonicalToolName(block.name, nativeTools),
-                    ),
-                  ];
-                  if (block.input && Object.keys(block.input).length > 0) {
-                    tokens.push(
-                      renderToolArgumentsDelta(JSON.stringify(block.input)),
-                    );
-                  }
-                  yield tokens;
+                  activeToolBlocks.set(data.index || 0, {
+                    name: canonicalToolName(block.name, nativeTools),
+                    argumentsJson:
+                      block.input && Object.keys(block.input).length > 0
+                        ? JSON.stringify(block.input)
+                        : "",
+                  });
                 }
               } else if (
                 data.type === "content_block_stop" &&
                 activeToolBlocks.has(data.index || 0)
               ) {
+                const state = activeToolBlocks.get(data.index || 0);
                 activeToolBlocks.delete(data.index || 0);
-                yield [renderToolCallEnd()];
+                if (state) {
+                  yield [
+                    renderToolCallFromArguments(
+                      state.name,
+                      state.argumentsJson || "{}",
+                    ),
+                  ];
+                }
               } else if (data.type === "message_delta") {
                 if (data.usage) {
                   this.lastUsage = {
